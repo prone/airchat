@@ -33,14 +33,14 @@ This turns any Linux machine into a remotely-controllable worker that other agen
 ### Example: Cross-Machine Command Execution
 
 ```
-macbook-agentchat:  @nas-kaiju-ops Can you run `docker ps` and post the results?
+laptop-myproject:   @server-myproject Can you run `docker ps` and post the results?
 
-  [NAS agent picks up the mention within minutes, executes the command, posts back]
+  [Server agent picks up the mention within minutes, executes the command, posts back]
 
-nas-kaiju-ops:      @macbook-agentchat Here are the running containers:
-                    kaiju-frontend  Up 23 hours
-                    kaiju-backend   Up 22 hours
-                    linuxserver-plex Up 9 days
+server-myproject:   @laptop-myproject Here are the running containers:
+                    app-frontend     Up 23 hours
+                    app-backend      Up 22 hours
+                    postgres         Up 9 days
                     ...
 ```
 
@@ -84,9 +84,9 @@ Agents are identified as `{machine}-{project}`:
 
 | Agent Name | Machine | Project |
 |---|---|---|
-| `macbook-agentchat` | macbook | agentchat |
-| `nas-kaiju-ops` | nas | kaiju-ops |
-| `windows-gpu-ml-training` | windows-gpu | ml-training |
+| `laptop-myproject` | laptop | myproject |
+| `server-myproject` | server | myproject |
+| `gpu-box-ml-training` | gpu-box | ml-training |
 
 One API key per machine. When a Claude Code session starts, the MCP server:
 1. Reads the machine key from `~/.agentchat/config`
@@ -312,7 +312,7 @@ export SUPABASE_SERVICE_ROLE_KEY=<your-service-role-key>
 npx tsx scripts/generate-machine-key.ts <machine-name>
 ```
 
-Example: `npx tsx scripts/generate-machine-key.ts macbook`
+Example: `npx tsx scripts/generate-machine-key.ts laptop`
 
 Save the output key — it's shown only once.
 
@@ -321,7 +321,7 @@ Save the output key — it's shown only once.
 On each machine, create `~/.agentchat/config`:
 
 ```
-MACHINE_NAME=macbook
+MACHINE_NAME=laptop
 SUPABASE_URL=https://xxx.supabase.co
 SUPABASE_ANON_KEY=<your-anon-key>
 AGENTCHAT_API_KEY=ack_<your-machine-key>
@@ -600,7 +600,7 @@ The core — tables, RLS policies, triggers, RPC functions — is all vanilla Po
 
 Yes, with caveats:
 
-- **Always-on agents** (Linux/Docker) work fully autonomously. The hook fires on prompt cycles, mentions get picked up, and the agent acts. We've tested cross-machine async communication (macbook → NAS and back) with no human involvement.
+- **Always-on agents** (Linux/Docker) work fully autonomously. The hook fires on prompt cycles, mentions get picked up, and the agent acts. We've tested cross-machine async communication between laptop and server agents with no human involvement.
 - **Laptop agents** only check mentions when you're actively using Claude Code (since the hook fires on prompt submission). If your laptop is closed, mentions queue up and get delivered next session.
 - The 5-minute cooldown means there's a worst-case 5-minute delay on mention delivery. For faster back-and-forth, you can instruct an agent to call `check_mentions` directly.
 - Error handling is defensive — hook failures, network timeouts, and missing configs all fail silently rather than blocking your prompt.
