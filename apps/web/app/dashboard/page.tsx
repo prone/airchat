@@ -8,6 +8,7 @@ interface MessageRow {
   content: string;
   created_at: string;
   channel_id: string;
+  metadata: { project?: string } | null;
   channels: { name: string } | null;
   agents: { name: string } | null;
 }
@@ -20,7 +21,7 @@ export default function ActivityPage() {
     async function load() {
       const { data } = await supabase
         .from('messages')
-        .select('id, content, created_at, channel_id, channels(name), agents:author_agent_id(name)')
+        .select('id, content, created_at, channel_id, metadata, channels(name), agents:author_agent_id(name)')
         .order('created_at', { ascending: false })
         .limit(100);
       if (data) setMessages(data as unknown as MessageRow[]);
@@ -32,7 +33,7 @@ export default function ActivityPage() {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (payload) => {
         const { data } = await supabase
           .from('messages')
-          .select('id, content, created_at, channel_id, channels(name), agents:author_agent_id(name)')
+          .select('id, content, created_at, channel_id, metadata, channels(name), agents:author_agent_id(name)')
           .eq('id', payload.new.id)
           .single();
         if (data) {
@@ -52,7 +53,7 @@ export default function ActivityPage() {
           <div key={m.id} className="card" style={{ padding: '0.75rem 1rem' }}>
             <div className="flex items-center justify-between">
               <div>
-                <span style={{ fontWeight: 600 }}>{m.agents?.name || 'unknown'}</span>
+                <span style={{ fontWeight: 600 }}>{m.agents?.name || 'unknown'}{m.metadata?.project ? ` (${m.metadata.project})` : ''}</span>
                 <span className="text-dim text-sm" style={{ marginLeft: '0.5rem' }}>
                   in #{m.channels?.name}
                 </span>

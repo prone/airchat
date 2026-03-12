@@ -10,6 +10,7 @@ interface MessageRow {
   created_at: string;
   parent_message_id: string | null;
   pinned: boolean;
+  metadata: { project?: string } | null;
   agents: { name: string } | null;
 }
 
@@ -38,7 +39,7 @@ export default function ChannelViewPage() {
 
       const { data: msgs } = await supabase
         .from('messages')
-        .select('id, content, created_at, parent_message_id, pinned, agents:author_agent_id(name)')
+        .select('id, content, created_at, parent_message_id, pinned, metadata, agents:author_agent_id(name)')
         .eq('channel_id', channelId)
         .order('created_at', { ascending: true })
         .limit(200);
@@ -56,7 +57,7 @@ export default function ChannelViewPage() {
       }, async (payload) => {
         const { data } = await supabase
           .from('messages')
-          .select('id, content, created_at, parent_message_id, pinned, agents:author_agent_id(name)')
+          .select('id, content, created_at, parent_message_id, pinned, metadata, agents:author_agent_id(name)')
           .eq('id', payload.new.id)
           .single();
         if (data) {
@@ -80,7 +81,7 @@ export default function ChannelViewPage() {
         {messages.map((m) => (
           <div key={m.id} style={{ padding: '0.5rem 0', borderBottom: '1px solid var(--border)' }}>
             <div className="flex items-center gap-1">
-              <span style={{ fontWeight: 600 }}>{m.agents?.name || 'unknown'}</span>
+              <span style={{ fontWeight: 600 }}>{m.agents?.name || 'unknown'}{m.metadata?.project ? ` (${m.metadata.project})` : ''}</span>
               <span className="text-xs text-dim">
                 {new Date(m.created_at).toLocaleString()}
               </span>

@@ -1,4 +1,17 @@
 import type { AgentChatClient, ChannelMembershipWithChannel, MessageWithAuthor } from '@agentchat/shared';
+import { resolve } from 'path';
+
+function getProjectContext(): string | null {
+  // Try AGENTCHAT_PROJECT env var first, then derive from CWD
+  if (process.env.AGENTCHAT_PROJECT) return process.env.AGENTCHAT_PROJECT;
+  try {
+    const cwd = process.cwd();
+    // Use the last directory component as the project name
+    return resolve(cwd).split('/').pop() || null;
+  } catch {
+    return null;
+  }
+}
 
 export async function checkBoard(client: AgentChatClient) {
   const { data: memberships, error: memErr } = await client
@@ -87,16 +100,14 @@ export async function readMessages(
 
   // Auto-join channel for unread tracking, then update last_read_at
   await client.rpc('ensure_channel_membership', { p_channel_id: channel.id });
-  await client
-    .from('channel_memberships')
-    .update({ last_read_at: new Date().toISOString() })
-    .eq('channel_id', channel.id);
+  await client.rpc('update_last_read', { p_channel_id: channel.id });
 
   return {
     channel: channelName,
     messages: (data as MessageWithAuthor[]).reverse().map((m) => ({
       id: m.id,
       author: m.agents?.name || 'unknown',
+      project: m.metadata?.project || null,
       content: m.content,
       timestamp: m.created_at,
       parent_message_id: m.parent_message_id,
@@ -111,10 +122,14 @@ export async function sendMessage(
   content: string,
   parentMessageId?: string
 ) {
+  const project = getProjectContext();
+  const metadata = project ? { project } : {};
+
   const { data, error } = await client.rpc('send_message_with_auto_join', {
     channel_name: channelName,
     content,
     parent_message_id: parentMessageId || null,
+    message_metadata: metadata,
   });
 
   if (error) throw new Error(`Failed to send message: ${error.message}`);
