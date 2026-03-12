@@ -236,3 +236,95 @@ export async function sendDirectMessage(
   const message = Array.isArray(data) ? data[0] : data;
   return { message, target: targetAgentName, channel: 'direct-messages' };
 }
+
+// File operations go through the web API (/api/files) which has the service role key.
+// This keeps the service role key off agent machines.
+
+function getFileApiBase(): string {
+  return process.env.AGENTCHAT_WEB_URL || 'http://localhost:3002';
+}
+
+function getAgentHeaders(): Record<string, string> {
+  // Read from env or config — same key the client uses
+  return {
+    'x-agent-api-key': process.env.AGENTCHAT_API_KEY || '',
+    'x-agent-name': process.env.AGENTCHAT_AGENT_NAME || '',
+  };
+}
+
+export async function getFileUrl(
+  _client: AgentChatClient,
+  filePath: string
+) {
+  const base = getFileApiBase();
+  const res = await fetch(`${base}/api/files?path=${encodeURIComponent(filePath)}&url=true`, {
+    headers: getAgentHeaders(),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(`Failed to get file URL: ${err.error}`);
+  }
+
+  const data = await res.json();
+  return {
+    path: filePath,
+    signed_url: data.signed_url,
+    expires_in: '1 hour',
+  };
+}
+
+export async function downloadFile(
+  _client: AgentChatClient,
+  filePath: string
+) {
+  const base = getFileApiBase();
+  const res = await fetch(`${base}/api/files?path=${encodeURIComponent(filePath)}`, {
+    headers: getAgentHeaders(),
+    signal: AbortSignal.timeout(30000),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(`Failed to download file: ${err.error}`);
+  }
+
+  const contentType = res.headers.get('content-type') || 'application/octet-stream';
+  const buffer = Buffer.from(await res.arrayBuffer());
+  const isText = contentType.startsWith('text/') || contentType === 'application/json';
+  const isImage = contentType.startsWith('image/');
+
+  if (isText) {
+    return {
+      path: filePath,
+      type: contentType,
+      size: buffer.length,
+      content: buffer.toString('utf-8'),
+    };
+  }
+
+  if (isImage) {
+    return {
+      path: filePath,
+      type: contentType,
+      size: buffer.length,
+      content_base64: buffer.toString('base64'),
+    };
+  }
+
+  // For binary files, get a signed URL instead
+  const urlRes = await fetch(`${base}/api/files?path=${encodeURIComponent(filePath)}&url=true`, {
+    headers: getAgentHeaders(),
+    signal: AbortSignal.timeout(15000),
+  });
+  const urlData = await urlRes.json().catch(() => ({}));
+
+  return {
+    path: filePath,
+    type: contentType,
+    size: buffer.length,
+    signed_url: urlData.signed_url,
+    note: 'Binary file — use the signed URL to download.',
+  };
+}

@@ -7,7 +7,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { createAgentClient } from '@agentchat/shared';
-import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, markMentionsRead, sendDirectMessage } from './handlers.js';
+import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, markMentionsRead, sendDirectMessage, getFileUrl, downloadFile } from './handlers.js';
 
 function sanitizeError(e: any): string {
   const msg = e?.message || 'Unknown error';
@@ -82,6 +82,10 @@ function deriveAgentName(machineName: string): string {
 const config = loadConfig();
 const agentName = deriveAgentName(config.MACHINE_NAME);
 const client = createAgentClient(config.SUPABASE_URL, config.SUPABASE_ANON_KEY, config.AGENTCHAT_API_KEY, agentName);
+
+// Expose config for file handlers (they call the web API with agent auth)
+process.env.AGENTCHAT_API_KEY = config.AGENTCHAT_API_KEY;
+process.env.AGENTCHAT_AGENT_NAME = agentName;
 
 // Auto-register agent on startup
 try {
@@ -187,6 +191,37 @@ server.tool('send_direct_message', 'Send a message that mentions a specific agen
 } as any, async (args: any) => {
   try {
     const result = await sendDirectMessage(client, args.target_agent, args.content);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  } catch (e: any) {
+    return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+  }
+});
+
+server.tool('get_file_url', 'Get a signed download URL for a file shared via AgentChat. The URL is valid for 1 hour.', {
+  file_path: z.string().min(1).max(500).describe('File path from the message metadata (e.g. "direct-messages/1234-file.png")'),
+} as any, async (args: any) => {
+  try {
+    const result = await getFileUrl(client, args.file_path);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+  } catch (e: any) {
+    return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+  }
+});
+
+server.tool('download_file', 'Download a file shared via AgentChat. Returns file content for text/images, or a signed URL for binary files.', {
+  file_path: z.string().min(1).max(500).describe('File path from the message metadata (e.g. "direct-messages/1234-file.png")'),
+} as any, async (args: any) => {
+  try {
+    const result = await downloadFile(client, args.file_path);
+    // For images, return as an image content block
+    if (result.content_base64) {
+      return {
+        content: [
+          { type: 'text' as const, text: `File: ${result.path} (${result.type}, ${result.size} bytes)` },
+          { type: 'image' as const, data: result.content_base64, mimeType: result.type },
+        ],
+      };
+    }
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   } catch (e: any) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
