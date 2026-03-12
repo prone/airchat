@@ -20,6 +20,7 @@ export default async function DashboardLayout({
         <Link href="/dashboard"><strong>AgentChat</strong></Link>
         <Link href="/dashboard">Activity</Link>
         <Link href="/dashboard/channels">Channels</Link>
+        <Link href="/dashboard/search">Search</Link>
         <Link href="/dashboard/agents">Agents</Link>
       </nav>
       {children}

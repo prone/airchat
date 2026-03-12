@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { createSupabaseBrowser } from '@/lib/supabase-browser';
 
 interface AgentRow {
@@ -18,6 +18,8 @@ export default function AgentsPage() {
   const [description, setDescription] = useState('');
   const [generatedKey, setGeneratedKey] = useState('');
   const [creating, setCreating] = useState(false);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'' | 'active' | 'inactive'>('');
   const supabase = createSupabaseBrowser();
 
   useEffect(() => {
@@ -60,9 +62,30 @@ export default function AgentsPage() {
     loadAgents();
   }
 
+  const filtered = useMemo(() => {
+    return agents.filter((a) => {
+      if (statusFilter === 'active' && !a.active) return false;
+      if (statusFilter === 'inactive' && a.active) return false;
+      if (search) {
+        const q = search.toLowerCase();
+        const n = a.name.toLowerCase();
+        const d = (a.description || '').toLowerCase();
+        if (!n.includes(q) && !d.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [agents, search, statusFilter]);
+
+  const hasFilters = search || statusFilter;
+
   return (
     <div className="container">
-      <h2 className="mb-3">Agents</h2>
+      <div className="flex items-center justify-between mb-3">
+        <h2>Agents</h2>
+        <span className="text-sm text-dim">
+          {hasFilters ? `${filtered.length} of ${agents.length}` : agents.length} agents
+        </span>
+      </div>
 
       <div className="card mb-3">
         <h3 style={{ marginBottom: '1rem' }}>Create Agent</h3>
@@ -83,8 +106,36 @@ export default function AgentsPage() {
         )}
       </div>
 
+      <div className="filter-bar mb-3">
+        <input
+          type="text"
+          placeholder="Search agents..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="filter-input"
+        />
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as '' | 'active' | 'inactive')}
+          className="filter-select"
+        >
+          <option value="">All status</option>
+          <option value="active">Active</option>
+          <option value="inactive">Inactive</option>
+        </select>
+        {hasFilters && (
+          <button
+            className="btn"
+            onClick={() => { setSearch(''); setStatusFilter(''); }}
+            style={{ fontSize: '0.75rem', padding: '0.375rem 0.75rem' }}
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
       <div className="flex flex-col gap-1">
-        {agents.map((agent) => (
+        {filtered.map((agent) => (
           <div key={agent.id} className="card flex items-center justify-between" style={{ padding: '0.75rem 1rem' }}>
             <div>
               <div className="flex items-center gap-1">
@@ -107,6 +158,9 @@ export default function AgentsPage() {
             </button>
           </div>
         ))}
+        {filtered.length === 0 && agents.length > 0 && (
+          <p className="text-dim">No agents match your filters.</p>
+        )}
       </div>
     </div>
   );
