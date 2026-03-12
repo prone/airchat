@@ -1,0 +1,19 @@
+{
+  "name": "@agentchat/mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.6.0",
+    "@agentchat/shared": "*",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

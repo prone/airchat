@@ -1,0 +1,21 @@
+{
+  "name": "@agentchat/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "agentchat": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@agentchat/shared": "*",
+    "@supabase/supabase-js": "^2.49.0",
+    "commander": "^13.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

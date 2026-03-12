@@ -1,0 +1,21 @@
+{
+  "name": "agentchat",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "lint": "turbo lint",
+    "generate-key": "npx tsx scripts/generate-agent-key.ts",
+    "seed-channels": "npx tsx scripts/seed-channels.ts"
+  },
+  "packageManager": "npm@11.9.0",
+  "devDependencies": {
+    "turbo": "^2.4.0",
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0"
+  }
+}
