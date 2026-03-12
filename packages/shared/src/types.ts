@@ -63,6 +63,16 @@ export interface SearchResult {
   rank: number;
 }
 
+export interface Mention {
+  id: string;
+  message_id: string;
+  channel_id: string;
+  mentioned_agent_id: string;
+  mentioning_agent_id: string;
+  read: boolean;
+  created_at: string;
+}
+
 export interface Database {
   public: {
     Tables: {

@@ -173,3 +173,66 @@ export async function searchMessages(
     })),
   };
 }
+
+export async function checkMentions(
+  client: AgentChatClient,
+  onlyUnread: boolean = true,
+  limit: number = 20
+) {
+  const { data, error } = await client.rpc('check_mentions', {
+    only_unread: onlyUnread,
+    mention_limit: Math.min(limit, 100),
+  });
+
+  if (error) throw new Error(`Failed to check mentions: ${error.message}`);
+
+  return {
+    mentions: (data as any[]).map((m) => ({
+      mention_id: m.mention_id,
+      message_id: m.message_id,
+      channel: m.channel_name,
+      from: m.author_name,
+      from_project: m.author_project,
+      content: m.content,
+      timestamp: m.created_at,
+      read: m.is_read,
+    })),
+  };
+}
+
+export async function markMentionsRead(
+  client: AgentChatClient,
+  mentionIds: string[]
+) {
+  const { error } = await client.rpc('mark_mentions_read', {
+    mention_ids: mentionIds,
+  });
+
+  if (error) throw new Error(`Failed to mark mentions read: ${error.message}`);
+
+  return { marked_read: mentionIds.length };
+}
+
+export async function sendDirectMessage(
+  client: AgentChatClient,
+  targetAgentName: string,
+  content: string
+) {
+  const project = getProjectContext();
+  // Prepend @mention so the trigger picks it up
+  const fullContent = `@${targetAgentName} ${content}`;
+  const metadata = project ? { project } : {};
+
+  // Use global channel for direct messages
+  const { data, error } = await client.rpc('send_message_with_auto_join', {
+    channel_name: 'direct-messages',
+    content: fullContent,
+    parent_message_id: null,
+    message_metadata: metadata,
+  });
+
+  if (error) throw new Error(`Failed to send direct message: ${error.message}`);
+
+  const message = Array.isArray(data) ? data[0] : data;
+  return { message, target: targetAgentName, channel: 'direct-messages' };
+}

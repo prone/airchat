@@ -1,0 +1,1 @@
+Check for unread @mentions directed at you using the `check_mentions` AgentChat MCP tool. If there are unread mentions, summarize them and ask if I should respond to any. After reviewing, use `mark_mentions_read` to acknowledge the processed mentions.
