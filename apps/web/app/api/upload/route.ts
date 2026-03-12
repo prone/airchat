@@ -4,14 +4,6 @@ import { createClient } from '@supabase/supabase-js';
 
 const BUCKET = 'agentchat-files';
 
-// Ensure the storage bucket exists (idempotent)
-async function ensureBucket(admin: any) {
-  const { data: buckets } = await admin.storage.listBuckets();
-  if (buckets && !buckets.find((b: any) => b.name === BUCKET)) {
-    await admin.storage.createBucket(BUCKET, { public: false });
-  }
-}
-
 export async function POST(request: NextRequest) {
   // Verify authenticated
   const supabase = await createSupabaseServer();
@@ -33,25 +25,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'File too large (max 50MB)' }, { status: 400 });
   }
 
-  // Use service role key for storage operations
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const agentApiKey = process.env.AGENTCHAT_API_KEY;
+  if (!agentApiKey) {
+    return NextResponse.json({ error: 'No AGENTCHAT_API_KEY configured' }, { status: 500 });
+  }
 
-  // Prefer service role for storage, fall back to creating bucket manually
-  const storageClient = serviceKey
-    ? createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, serviceKey, { auth: { persistSession: false } })
-    : createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
-
-  await ensureBucket(storageClient);
-
-  // Upload with path: channel/timestamp-filename
+  // Upload using the authenticated user's session (has storage access)
   const timestamp = Date.now();
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
   const path = `${channel}/${timestamp}-${safeName}`;
-
   const buffer = Buffer.from(await file.arrayBuffer());
 
-  const { error: uploadErr } = await storageClient.storage
+  // Try with the user's auth session first
+  const { error: uploadErr } = await supabase.storage
     .from(BUCKET)
     .upload(path, buffer, {
       contentType: file.type,
@@ -59,55 +45,67 @@ export async function POST(request: NextRequest) {
     });
 
   if (uploadErr) {
-    return NextResponse.json({ error: `Upload failed: ${uploadErr.message}` }, { status: 500 });
-  }
+    // If RLS blocks it, try with service role key if available
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (serviceKey) {
+      const adminClient = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        serviceKey,
+        { auth: { persistSession: false } }
+      );
+      const { error: adminUploadErr } = await adminClient.storage
+        .from(BUCKET)
+        .upload(path, buffer, { contentType: file.type, upsert: false });
 
-  // Generate a signed URL (valid for 7 days)
-  const { data: urlData } = await storageClient.storage
-    .from(BUCKET)
-    .createSignedUrl(path, 7 * 24 * 60 * 60);
+      if (adminUploadErr) {
+        return NextResponse.json({ error: `Upload failed: ${adminUploadErr.message}` }, { status: 500 });
+      }
+    } else {
+      return NextResponse.json({
+        error: `Upload failed: ${uploadErr.message}. Add a storage policy for authenticated users on the "${BUCKET}" bucket, or set SUPABASE_SERVICE_ROLE_KEY in .env.local.`,
+      }, { status: 500 });
+    }
+  }
 
   // Post a message with the file reference
-  if (agentApiKey) {
-    const agentClient = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        global: {
-          headers: {
-            'x-agent-api-key': agentApiKey,
-            'x-agent-name': 'dashboard-admin',
-          },
+  const agentClient = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      global: {
+        headers: {
+          'x-agent-api-key': agentApiKey,
+          'x-agent-name': 'dashboard-admin',
         },
-      }
-    );
-
-    await agentClient.rpc('ensure_agent_exists', { p_agent_name: 'dashboard-admin' });
-
-    const target = formData.get('target_agent') as string | null;
-    const messageContent = target
-      ? `@${target} Shared a file: **${file.name}** (${formatSize(file.size)})`
-      : `Shared a file: **${file.name}** (${formatSize(file.size)})`;
-
-    const actualChannel = target ? 'direct-messages' : channel;
-
-    await agentClient.rpc('send_message_with_auto_join', {
-      channel_name: actualChannel,
-      content: messageContent,
-      parent_message_id: null,
-      message_metadata: {
-        source: 'dashboard',
-        user_email: user.email,
-        files: [{
-          name: file.name,
-          size: file.size,
-          type: file.type,
-          path,
-          bucket: BUCKET,
-        }],
       },
-    });
-  }
+    }
+  );
+
+  await agentClient.rpc('ensure_agent_exists', { p_agent_name: 'dashboard-admin' });
+
+  const target = formData.get('target_agent') as string | null;
+  const messageContent = target
+    ? `@${target} Shared a file: **${file.name}** (${formatSize(file.size)})`
+    : `Shared a file: **${file.name}** (${formatSize(file.size)})`;
+
+  const actualChannel = target ? 'direct-messages' : channel;
+
+  await agentClient.rpc('send_message_with_auto_join', {
+    channel_name: actualChannel,
+    content: messageContent,
+    parent_message_id: null,
+    message_metadata: {
+      source: 'dashboard',
+      user_email: user.email,
+      files: [{
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        path,
+        bucket: BUCKET,
+      }],
+    },
+  });
 
   return NextResponse.json({
     file: {
@@ -115,7 +113,6 @@ export async function POST(request: NextRequest) {
       size: file.size,
       path,
       bucket: BUCKET,
-      signedUrl: urlData?.signedUrl,
     },
   });
 }
