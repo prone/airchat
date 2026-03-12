@@ -6,6 +6,15 @@ import { z } from 'zod';
 import { createAgentClient } from '@agentchat/shared';
 import { checkBoard, listChannels, readMessages, sendMessage, searchMessages } from './handlers.js';
 
+function sanitizeError(e: any): string {
+  const msg = e?.message || 'Unknown error';
+  // Strip Postgres internal details (constraint names, schema info)
+  if (msg.includes('violates') || msg.includes('constraint') || msg.includes('relation')) {
+    return 'Operation failed due to a data constraint. Check your input and try again.';
+  }
+  return msg;
+}
+
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const AGENTCHAT_API_KEY = process.env.AGENTCHAT_API_KEY;
@@ -27,7 +36,7 @@ server.tool('check_board', 'Get an overview of recent activity and unread counts
     const result = await checkBoard(client);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   } catch (e: any) {
-    return { content: [{ type: 'text' as const, text: `Error: ${e.message}` }], isError: true };
+    return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
   }
 });
 
@@ -39,46 +48,46 @@ server.tool('list_channels', 'List your accessible channels, optionally filtered
     const result = await listChannels(client, args.type);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   } catch (e: any) {
-    return { content: [{ type: 'text' as const, text: `Error: ${e.message}` }], isError: true };
+    return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
   }
 });
 
 const readMessagesSchema = {
-  channel: z.string().describe('Channel name (without #)'),
-  limit: z.number().optional().describe('Number of messages to fetch (default 20, max 200)'),
-  before: z.string().optional().describe('ISO timestamp to fetch messages before'),
+  channel: z.string().max(100).describe('Channel name (without #)'),
+  limit: z.number().min(1).max(200).optional().describe('Number of messages to fetch (default 20, max 200)'),
+  before: z.string().max(50).optional().describe('ISO timestamp to fetch messages before'),
 };
 server.tool('read_messages', 'Read recent messages from a channel', readMessagesSchema as any, async (args: any) => {
   try {
     const result = await readMessages(client, args.channel, args.limit, args.before);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   } catch (e: any) {
-    return { content: [{ type: 'text' as const, text: `Error: ${e.message}` }], isError: true };
+    return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
   }
 });
 
 server.tool('send_message', 'Post a message to a channel', {
-  channel: z.string().describe('Channel name (without #)'),
-  content: z.string().describe('Message content'),
-  parent_message_id: z.string().optional().describe('UUID of parent message for threading'),
+  channel: z.string().max(100).regex(/^[a-z0-9][a-z0-9-]{1,99}$/, 'Channel name must be lowercase alphanumeric with hyphens').describe('Channel name (without #)'),
+  content: z.string().min(1).max(32000).describe('Message content'),
+  parent_message_id: z.string().uuid().optional().describe('UUID of parent message for threading'),
 } as any, async (args: any) => {
   try {
     const result = await sendMessage(client, args.channel, args.content, args.parent_message_id);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   } catch (e: any) {
-    return { content: [{ type: 'text' as const, text: `Error: ${e.message}` }], isError: true };
+    return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
   }
 });
 
 server.tool('search_messages', 'Full-text search across messages in your accessible channels', {
-  query: z.string().describe('Search query text'),
-  channel: z.string().optional().describe('Optional channel name to restrict search to'),
+  query: z.string().min(1).max(500).describe('Search query text'),
+  channel: z.string().max(100).optional().describe('Optional channel name to restrict search to'),
 } as any, async (args: any) => {
   try {
     const result = await searchMessages(client, args.query, args.channel);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   } catch (e: any) {
-    return { content: [{ type: 'text' as const, text: `Error: ${e.message}` }], isError: true };
+    return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
   }
 });
 

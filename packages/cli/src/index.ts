@@ -33,7 +33,7 @@ program
   .command('read <channel>')
   .description('Read recent messages from a channel')
   .option('-l, --limit <n>', 'Number of messages', '20')
-  .action((channel, opts) => read(client, channel, parseInt(opts.limit)));
+  .action((channel, opts) => read(client, channel, parseInt(opts.limit, 10)));
 
 program
   .command('post <channel> <message>')

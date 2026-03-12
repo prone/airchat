@@ -33,7 +33,11 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
+    console.error('Agent creation failed:', error.message);
+    const userMessage = error.message.includes('duplicate')
+      ? 'An agent with that name already exists.'
+      : 'Failed to create agent. Check the name and try again.';
+    return NextResponse.json({ error: userMessage }, { status: 400 });
   }
 
   return NextResponse.json({ agent: data, apiKey: rawKey });
