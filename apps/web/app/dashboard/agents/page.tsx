@@ -20,6 +20,9 @@ export default function AgentsPage() {
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'' | 'active' | 'inactive'>('');
+  const [messagingAgent, setMessagingAgent] = useState<string | null>(null);
+  const [messageContent, setMessageContent] = useState('');
+  const [sendingMessage, setSendingMessage] = useState(false);
   const supabase = createSupabaseBrowser();
 
   useEffect(() => {
@@ -75,6 +78,30 @@ export default function AgentsPage() {
       return true;
     });
   }, [agents, search, statusFilter]);
+
+  async function sendDirectMessage(e: React.FormEvent) {
+    e.preventDefault();
+    if (!messageContent.trim() || !messagingAgent) return;
+    setSendingMessage(true);
+
+    const res = await fetch('/api/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channel: 'direct-messages',
+        content: `@${messagingAgent} ${messageContent}`,
+      }),
+    });
+
+    if (res.ok) {
+      setMessageContent('');
+      setMessagingAgent(null);
+    } else {
+      const err = await res.json().catch(() => ({ error: 'Unknown error' }));
+      alert(`Failed to send: ${err.error}`);
+    }
+    setSendingMessage(false);
+  }
 
   const hasFilters = search || statusFilter;
 
@@ -136,26 +163,61 @@ export default function AgentsPage() {
 
       <div className="flex flex-col gap-1">
         {filtered.map((agent) => (
-          <div key={agent.id} className="card flex items-center justify-between" style={{ padding: '0.75rem 1rem' }}>
-            <div>
-              <div className="flex items-center gap-1">
-                <span style={{ fontWeight: 600 }}>{agent.name}</span>
-                <span className={`badge ${agent.active ? '' : 'badge-dim'}`}>
-                  {agent.active ? 'active' : 'inactive'}
-                </span>
+          <div key={agent.id} className="card" style={{ padding: '0.75rem 1rem' }}>
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-1">
+                  <span style={{ fontWeight: 600 }}>{agent.name}</span>
+                  <span className={`badge ${agent.active ? '' : 'badge-dim'}`}>
+                    {agent.active ? 'active' : 'inactive'}
+                  </span>
+                </div>
+                {agent.description && <p className="text-sm text-dim mt-1">{agent.description}</p>}
+                <p className="text-xs text-dim mt-1">
+                  Last seen: {agent.last_seen_at ? new Date(agent.last_seen_at).toLocaleString() : 'never'}
+                </p>
               </div>
-              {agent.description && <p className="text-sm text-dim mt-1">{agent.description}</p>}
-              <p className="text-xs text-dim mt-1">
-                Last seen: {agent.last_seen_at ? new Date(agent.last_seen_at).toLocaleString() : 'never'}
-              </p>
+              <div className="flex gap-1">
+                {agent.active && (
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => setMessagingAgent(messagingAgent === agent.name ? null : agent.name)}
+                    style={{ fontSize: '0.75rem' }}
+                  >
+                    Message
+                  </button>
+                )}
+                <button
+                  className={`btn ${agent.active ? 'btn-danger' : 'btn-primary'}`}
+                  onClick={() => toggleAgent(agent.id, agent.active)}
+                  style={{ fontSize: '0.75rem' }}
+                >
+                  {agent.active ? 'Deactivate' : 'Activate'}
+                </button>
+              </div>
             </div>
-            <button
-              className={`btn ${agent.active ? 'btn-danger' : 'btn-primary'}`}
-              onClick={() => toggleAgent(agent.id, agent.active)}
-              style={{ fontSize: '0.75rem' }}
-            >
-              {agent.active ? 'Deactivate' : 'Activate'}
-            </button>
+            {messagingAgent === agent.name && (
+              <form onSubmit={sendDirectMessage} className="flex gap-1 mt-2" style={{ alignItems: 'flex-start' }}>
+                <textarea
+                  placeholder={`Message @${agent.name}... (they'll be notified on next prompt)`}
+                  value={messageContent}
+                  onChange={(e) => setMessageContent(e.target.value)}
+                  rows={2}
+                  style={{ resize: 'vertical', flex: 1 }}
+                  autoFocus
+                />
+                <div className="flex flex-col gap-1">
+                  <button type="submit" className="btn btn-primary" disabled={sendingMessage || !messageContent.trim()}
+                    style={{ fontSize: '0.75rem' }}>
+                    {sendingMessage ? 'Sending...' : 'Send'}
+                  </button>
+                  <button type="button" className="btn" onClick={() => { setMessagingAgent(null); setMessageContent(''); }}
+                    style={{ fontSize: '0.75rem' }}>
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         ))}
         {filtered.length === 0 && agents.length > 0 && (
