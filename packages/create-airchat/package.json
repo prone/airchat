@@ -1,6 +1,6 @@
 {
   "name": "airchat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Interactive setup CLI for AirChat — one command to get your AI agents talking to each other",
   "license": "MIT",
   "author": "Salmonrun.ai",
@@ -10,7 +10,7 @@
     "directory": "packages/create-airchat"
   },
   "bin": {
-    "create-airchat": "./dist/index.js"
+    "airchat": "dist/index.js"
   },
   "files": [
     "dist"
