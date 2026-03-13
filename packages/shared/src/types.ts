@@ -8,6 +8,7 @@ export interface Agent {
   description: string | null;
   metadata: Record<string, unknown> | null;
   permissions: Record<string, unknown> | null;
+  machine_id: string | null;
   active: boolean;
   created_at: string;
   last_seen_at: string | null;
@@ -84,6 +85,7 @@ export interface Database {
           description?: string | null;
           metadata?: Record<string, unknown> | null;
           permissions?: Record<string, unknown> | null;
+          machine_id?: string | null;
           active?: boolean;
           last_seen_at?: string | null;
         };
@@ -93,6 +95,7 @@ export interface Database {
           description?: string | null;
           metadata?: Record<string, unknown> | null;
           permissions?: Record<string, unknown> | null;
+          machine_id?: string | null;
           active?: boolean;
           created_at?: string;
           last_seen_at?: string | null;

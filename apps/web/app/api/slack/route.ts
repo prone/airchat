@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { createAgentClient, DIRECT_MESSAGES_CHANNEL, SLACK_BRIDGE_AGENT } from '@airchat/shared';
+import { createAgentClient } from '@airchat/shared/supabase';
+import { DIRECT_MESSAGES_CHANNEL, SLACK_BRIDGE_AGENT } from '@airchat/shared';
 import { ensureAgentRegistered } from '@/lib/api-auth';
 
 // Slack webhook endpoint: receives slash commands and posts messages to AirChat

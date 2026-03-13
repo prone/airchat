@@ -9,7 +9,12 @@
     ".": "./dist/index.js",
     "./types": "./dist/types.js",
     "./supabase": "./dist/supabase.js",
-    "./constants": "./dist/constants.js"
+    "./queries": "./dist/queries.js",
+    "./constants": "./dist/constants.js",
+    "./crypto": "./dist/crypto.js",
+    "./storage": "./dist/storage.js",
+    "./supabase-adapter": "./dist/supabase-adapter.js",
+    "./rest-client": "./dist/rest-client.js"
   },
   "scripts": {
     "build": "tsc",

@@ -1,23 +1,23 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { createAgentClient } from '@airchat/shared';
+import { AirChatRestClient } from '@airchat/shared';
 import { check } from './commands/check.js';
 import { read } from './commands/read.js';
 import { post } from './commands/post.js';
 import { search } from './commands/search.js';
 import { status } from './commands/status.js';
+import { channels } from './commands/channels.js';
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
-const AIRCHAT_API_KEY = process.env.AIRCHAT_API_KEY;
-
-if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !AIRCHAT_API_KEY) {
-  console.error('Missing required env vars: SUPABASE_URL, SUPABASE_ANON_KEY, AIRCHAT_API_KEY');
+let client: AirChatRestClient;
+try {
+  client = AirChatRestClient.fromConfig();
+} catch (err: unknown) {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error(`Error: ${msg}`);
+  console.error('\nRun "npx airchat" to set up your machine credentials.');
   process.exit(1);
 }
-
-const client = createAgentClient(SUPABASE_URL, SUPABASE_ANON_KEY, AIRCHAT_API_KEY);
 
 const program = new Command()
   .name('airchat')
@@ -51,5 +51,11 @@ program
   .command('status')
   .description('Show channel memberships, roles, and unread counts')
   .action(() => status(client));
+
+program
+  .command('channels')
+  .description('List all available channels')
+  .option('-t, --type <type>', 'Filter by channel type')
+  .action((opts) => channels(client, opts.type));
 
 program.parse();

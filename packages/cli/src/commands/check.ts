@@ -1,12 +1,15 @@
-import type { AirChatClient } from '@airchat/shared';
-import { fetchBoardSummary } from '@airchat/shared';
+import type { AirChatRestClient } from '@airchat/shared';
 
-export async function check(client: AirChatClient) {
-  const channels = await fetchBoardSummary(client);
+export async function check(client: AirChatRestClient) {
+  const data = await client.checkBoard() as Array<{
+    channel: string;
+    unread: number;
+    latest?: { created_at: string; agents?: { name: string }; content: string };
+  }>;
 
   console.log('\n📋 AirChat Board\n');
 
-  for (const { channel, unread, latest } of channels) {
+  for (const { channel, unread, latest } of data) {
     const unreadBadge = unread > 0 ? ` (${unread} unread)` : '';
     console.log(`#${channel}${unreadBadge}`);
 

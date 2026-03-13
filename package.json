@@ -9,7 +9,6 @@
     "build": "turbo build",
     "dev": "turbo dev",
     "lint": "turbo lint",
-    "generate-key": "npx tsx scripts/generate-agent-key.ts",
     "seed-channels": "npx tsx scripts/seed-channels.ts",
     "setup": "npx tsx packages/create-airchat/src/index.ts",
     "test": "vitest run"

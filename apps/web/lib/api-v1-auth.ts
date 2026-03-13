@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createAgentClient, type AirChatClient } from '@airchat/shared';
+import { createAgentClient, type AirChatClient } from '@airchat/shared/supabase';
 import { validateAgentKey, ensureAgentRegistered } from '@/lib/api-auth';
 import { checkRateLimit, checkIpRateLimit, RATE_LIMITS } from '@/lib/rate-limit';
 import { AGENT_NAME_RE } from '@/lib/api-v1-validation';

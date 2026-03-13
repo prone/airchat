@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "@airchat/shared": "*",
-    "@supabase/supabase-js": "^2.49.0",
     "commander": "^13.0.0"
   },
   "devDependencies": {

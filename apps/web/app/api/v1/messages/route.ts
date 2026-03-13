@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { fetchChannelMessages, markChannelRead } from '@airchat/shared';
+import { fetchChannelMessages, markChannelRead } from '@airchat/shared/queries';
 import { authenticateAgent, isAuthError } from '@/lib/api-v1-auth';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { AGENT_NAME_RE, UUID_RE } from '@/lib/api-v1-validation';

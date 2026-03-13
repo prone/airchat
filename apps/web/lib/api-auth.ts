@@ -1,4 +1,4 @@
-import { createAgentClient, createAdminClient } from '@airchat/shared';
+import { createAgentClient, createAdminClient } from '@airchat/shared/supabase';
 import { createSupabaseServer } from '@/lib/supabase-server';
 import crypto from 'crypto';
 import type { NextRequest } from 'next/server';

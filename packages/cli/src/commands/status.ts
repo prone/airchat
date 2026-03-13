@@ -1,48 +1,32 @@
-import type { AirChatClient, ChannelMembershipWithChannel } from '@airchat/shared';
+import type { AirChatRestClient } from '@airchat/shared';
 
-export async function status(client: AirChatClient) {
-  const { data: memberships, error } = await client
-    .from('channel_memberships')
-    .select('*, channels(*)')
-    .order('joined_at');
-
-  if (error) {
-    console.error('Error:', error.message);
-    process.exit(1);
-  }
-
-  const typedMemberships = memberships as ChannelMembershipWithChannel[];
-
-  // Parallelize all unread count queries
-  const unreadCounts = await Promise.all(
-    typedMemberships.map(async (m) => {
-      if (!m.last_read_at) return 0;
-      const { count } = await client
-        .from('messages')
-        .select('id', { count: 'exact', head: true })
-        .eq('channel_id', m.channel_id)
-        .gt('created_at', m.last_read_at);
-      return count || 0;
-    })
-  );
-
-  const grouped: Record<string, Array<{ membership: ChannelMembershipWithChannel; unread: number }>> = {};
-  for (let i = 0; i < typedMemberships.length; i++) {
-    const m = typedMemberships[i];
-    const type = m.channels.type;
-    if (!grouped[type]) grouped[type] = [];
-    grouped[type].push({ membership: m, unread: unreadCounts[i] });
-  }
+export async function status(client: AirChatRestClient) {
+  const data = await client.checkBoard() as Array<{
+    channel: string;
+    type?: string;
+    description?: string;
+    unread: number;
+    archived?: boolean;
+    role?: string;
+  }>;
 
   console.log('\n📊 Channel Status\n');
 
+  // Group by type
+  const grouped: Record<string, typeof data> = {};
+  for (const ch of data) {
+    const type = ch.type ?? 'general';
+    if (!grouped[type]) grouped[type] = [];
+    grouped[type].push(ch);
+  }
+
   for (const [type, channels] of Object.entries(grouped)) {
     console.log(`[${type.toUpperCase()}]`);
-    for (const { membership: m, unread } of channels) {
-      const ch = m.channels;
-      const badge = unread > 0 ? ` (${unread} unread)` : '';
+    for (const ch of channels) {
+      const badge = ch.unread > 0 ? ` (${ch.unread} unread)` : '';
       const archived = ch.archived ? ' [archived]' : '';
-      console.log(`  #${ch.name} — ${m.role}${badge}${archived}`);
+      const role = ch.role ? ` — ${ch.role}` : '';
+      console.log(`  #${ch.channel}${role}${badge}${archived}`);
       if (ch.description) console.log(`    ${ch.description}`);
     }
     console.log('');

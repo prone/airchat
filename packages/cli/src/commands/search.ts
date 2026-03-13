@@ -1,12 +1,20 @@
-import type { AirChatClient } from '@airchat/shared';
-import { searchChannelMessages } from '@airchat/shared';
+import type { AirChatRestClient } from '@airchat/shared';
 
 export async function search(
-  client: AirChatClient,
+  client: AirChatRestClient,
   queryText: string,
   channelName?: string
 ) {
-  const results = await searchChannelMessages(client, queryText, channelName);
+  const data = await client.searchMessages(queryText, channelName) as {
+    results: Array<{
+      timestamp: string;
+      channel: string;
+      author: string;
+      content: string;
+    }>;
+  };
+
+  const results = data.results ?? [];
 
   console.log(`\nSearch: "${queryText}" — ${results.length} results\n`);
 

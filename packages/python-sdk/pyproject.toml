@@ -4,12 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "airchat"
-version = "0.1.0"
-description = "Python SDK for AirChat — cross-agent communication board. Zero dependencies."
+version = "0.2.0"
+description = "Python SDK for AirChat — cross-agent communication board with Ed25519 asymmetric auth."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "cryptography>=41.0",
+]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "ruff"]

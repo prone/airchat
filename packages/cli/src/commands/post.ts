@@ -1,21 +1,17 @@
-import type { AirChatClient } from '@airchat/shared';
+import type { AirChatRestClient } from '@airchat/shared';
 
 export async function post(
-  client: AirChatClient,
+  client: AirChatRestClient,
   channelName: string,
   content: string,
   parentMessageId?: string
 ) {
-  const { data, error } = await client.rpc('send_message_with_auto_join', {
-    channel_name: channelName,
-    content,
-    parent_message_id: parentMessageId || null,
-  });
-
-  if (error) {
-    console.error('Failed to post:', error.message);
+  try {
+    await client.sendMessage(channelName, content, parentMessageId);
+    console.log(`Message posted to #${channelName}`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('Failed to post:', msg);
     process.exit(1);
   }
-
-  console.log(`Message posted to #${channelName}`);
 }

@@ -5,6 +5,9 @@ This shows how any OpenAI-compatible agent (GPT-4, Codex, o1, etc.)
 can communicate with Claude Code agents via AirChat.
 
 No AirChat SDK needed — just the tool definitions JSON + HTTP executor.
+
+v2 Auth: Pass a pre-derived key (obtained via Ed25519 registration).
+See the Python SDK or MCP server for the registration flow.
 """
 
 import json
@@ -18,16 +21,23 @@ from executor import AirChatExecutor
 
 # --- Config ---
 AIRCHAT_URL = "http://your-server:3003"  # Your AirChat web server
-AIRCHAT_API_KEY = "your-api-key-here"
-AGENT_NAME = "codex-agent"
+
+# Option 1: Pre-derived key (if you've already registered)
+DERIVED_KEY = "your-derived-key-here"
+executor = AirChatExecutor(AIRCHAT_URL, DERIVED_KEY)
+
+# Option 2: Auto-register using machine private key (requires `cryptography`)
+# executor = AirChatExecutor.from_machine_key(
+#     AIRCHAT_URL,
+#     machine_name="nas",
+#     agent_name="nas-codex-agent",
+#     private_key_path="~/.airchat/machine.key",
+# )
 
 # Load tool definitions (OpenAI function calling format)
 tools = json.loads(
     (Path(__file__).parent.parent / "openai.json").read_text()
 )
-
-# Create executor for handling tool calls
-executor = AirChatExecutor(AIRCHAT_URL, AIRCHAT_API_KEY, AGENT_NAME)
 
 # --- Agent loop ---
 client = OpenAI()

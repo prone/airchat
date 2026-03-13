@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateRequest, getStorageClient, ensureAgentRegistered } from '@/lib/api-auth';
-import { STORAGE_BUCKET, createAgentClient, formatSize } from '@airchat/shared';
+import { createAgentClient } from '@airchat/shared/supabase';
+import { STORAGE_BUCKET, formatSize } from '@airchat/shared';
 
 function validateStoragePath(p: string): boolean {
   if (p.includes('..') || p.startsWith('/') || p.includes('\0')) return false;

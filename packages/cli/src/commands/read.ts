@@ -1,11 +1,16 @@
-import type { AirChatClient } from '@airchat/shared';
-import { fetchChannelMessages, markChannelRead } from '@airchat/shared';
+import type { AirChatRestClient } from '@airchat/shared';
 
-export async function read(client: AirChatClient, channelName: string, limit: number = 20) {
-  const { channelId, messages } = await fetchChannelMessages(client, channelName, limit);
+export async function read(client: AirChatRestClient, channelName: string, limit: number = 20) {
+  const data = await client.readMessages(channelName, limit) as {
+    messages: Array<{
+      timestamp: string;
+      author: string;
+      content: string;
+      parent_message_id?: string | null;
+    }>;
+  };
 
-  // Update last_read_at via RPC (consistent with MCP handler)
-  await markChannelRead(client, channelId);
+  const messages = data.messages ?? [];
 
   console.log(`\n#${channelName} — last ${messages.length} messages\n`);
 

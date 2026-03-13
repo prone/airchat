@@ -11,10 +11,14 @@ import { createClient } from '@supabase/supabase-js';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
+interface Keypair {
+  publicKey: string;   // hex-encoded 32-byte Ed25519 public key
+  privateKey: string;  // hex-encoded 32-byte Ed25519 private key seed
+}
+
 interface SetupConfig {
   dbProvider: 'supabase' | 'self-hosted' | 'docker';
   supabaseUrl?: string;
-  supabaseAnonKey?: string;
   supabaseServiceRoleKey?: string;
   databaseUrl?: string;
   machineName: string;
@@ -22,8 +26,8 @@ interface SetupConfig {
   deployDashboard: boolean;
   airchatDir: string;
   nodePath: string;
-  apiKey?: string;
   webUrl?: string;
+  keypair?: Keypair;
 }
 
 interface StepResult {
@@ -85,6 +89,26 @@ function machineNameValid(name: string): boolean {
   return /^[a-z0-9][a-z0-9-]{1,99}$/.test(name);
 }
 
+// ── Ed25519 Keypair Generation ─────────────────────────────────────────────────
+// Inline implementation to avoid importing from @airchat/shared at runtime
+// (the setup CLI may run before the repo is cloned). Uses the same algorithm
+// as generateKeypair() in packages/shared/src/crypto.ts.
+
+function generateKeypair(): Keypair {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+
+  // Export raw 32-byte keys in hex
+  const pubRaw = publicKey.export({ type: 'spki', format: 'der' });
+  // SPKI DER for Ed25519 is 44 bytes: 12-byte header + 32-byte key
+  const pubHex = pubRaw.subarray(pubRaw.length - 32).toString('hex');
+
+  const privRaw = privateKey.export({ type: 'pkcs8', format: 'der' });
+  // PKCS8 DER for Ed25519 is 48 bytes: 16-byte header + 32-byte seed
+  const privHex = privRaw.subarray(privRaw.length - 32).toString('hex');
+
+  return { publicKey: pubHex, privateKey: privHex };
+}
+
 // ── Prompt helpers ─────────────────────────────────────────────────────────────
 
 async function ask(rl: readline.Interface, question: string, defaultVal?: string): Promise<string> {
@@ -138,13 +162,11 @@ async function collectConfig(rl: readline.Interface, reconfigure: boolean): Prom
   console.log('');
 
   let supabaseUrl: string | undefined;
-  let supabaseAnonKey: string | undefined;
   let supabaseServiceRoleKey: string | undefined;
   let databaseUrl: string | undefined;
 
   if (dbProvider === 'supabase') {
-    supabaseUrl = await ask(rl, 'Supabase Project URL', existing.SUPABASE_URL);
-    supabaseAnonKey = await ask(rl, 'Supabase Anon Key', existing.SUPABASE_ANON_KEY);
+    supabaseUrl = await ask(rl, 'Supabase Project URL');
     supabaseServiceRoleKey = await askSecret(rl, 'Supabase Service Role Key (used during setup only, not stored)');
     console.log('');
   } else if (dbProvider === 'self-hosted') {
@@ -203,7 +225,6 @@ async function collectConfig(rl: readline.Interface, reconfigure: boolean): Prom
   return {
     dbProvider,
     supabaseUrl,
-    supabaseAnonKey,
     supabaseServiceRoleKey,
     databaseUrl,
     machineName,
@@ -334,56 +355,94 @@ async function seedChannels(config: SetupConfig): Promise<StepResult> {
   return { name, ok: true, message: `${created}/${channels.length} channels ready` };
 }
 
-async function generateMachineKey(config: SetupConfig): Promise<StepResult> {
-  const name = 'Generate machine key';
+async function generateAndRegisterKeypair(config: SetupConfig, reconfigure: boolean): Promise<StepResult> {
+  const name = 'Generate Ed25519 keypair';
+  const configDir = path.join(os.homedir(), '.airchat');
+  const privateKeyPath = path.join(configDir, 'machine.key');
+  const publicKeyPath = path.join(configDir, 'machine.pub');
 
-  if (config.dbProvider !== 'supabase' || !config.supabaseUrl || !config.supabaseServiceRoleKey) {
-    return { name, ok: false, message: 'Machine key generation requires Supabase credentials' };
+  // Check for existing keypair (skip generation unless reconfiguring)
+  if (!reconfigure && fs.existsSync(privateKeyPath) && fs.existsSync(publicKeyPath)) {
+    const existingPub = fs.readFileSync(publicKeyPath, 'utf-8').trim();
+    const existingPriv = fs.readFileSync(privateKeyPath, 'utf-8').trim();
+    if (existingPub.length === 64 && existingPriv.length === 64) {
+      config.keypair = { publicKey: existingPub, privateKey: existingPriv };
+      return { name, ok: true, message: 'Existing keypair found — reusing' };
+    }
   }
 
-  const supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey, {
-    auth: { persistSession: false },
-  });
+  // Generate new Ed25519 keypair
+  const keypair = generateKeypair();
+  config.keypair = keypair;
 
-  const rawKey = `ack_${crypto.randomBytes(32).toString('hex')}`;
-  const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
+  // Ensure ~/.airchat/ exists with correct permissions
+  fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
 
-  const { data, error } = await supabase
-    .from('machine_keys')
-    .insert({
-      machine_name: config.machineName,
-      key_hash: keyHash,
-      active: true,
-    })
-    .select()
-    .single();
+  // Write private key (chmod 600)
+  fs.writeFileSync(privateKeyPath, keypair.privateKey + '\n', { mode: 0o600 });
 
-  if (error) {
-    return { name, ok: false, message: `Failed: ${error.message}` };
+  // Write public key
+  fs.writeFileSync(publicKeyPath, keypair.publicKey + '\n', { mode: 0o644 });
+
+  // Ensure directory permissions are correct (mkdirSync mode may not apply if dir exists)
+  fs.chmodSync(configDir, 0o700);
+  fs.chmodSync(privateKeyPath, 0o600);
+
+  // Register public key with the server (requires service role access)
+  if (config.dbProvider === 'supabase' && config.supabaseUrl && config.supabaseServiceRoleKey) {
+    const supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey, {
+      auth: { persistSession: false },
+    });
+
+    // Upsert: if machine_name already exists, update the public key (key rotation)
+    const { error } = await supabase
+      .from('machine_keys')
+      .upsert({
+        machine_name: config.machineName,
+        public_key: keypair.publicKey,
+        active: true,
+      }, { onConflict: 'machine_name' })
+      .select()
+      .single();
+
+    if (error) {
+      return { name, ok: false, message: `Keypair generated but registration failed: ${error.message}` };
+    }
+
+    return { name, ok: true, message: `Keypair generated and public key registered for "${config.machineName}"` };
   }
 
-  config.apiKey = rawKey;
-  return { name, ok: true, message: `Key generated for "${config.machineName}"` };
+  // Non-Supabase: keypair generated but not registered
+  return {
+    name,
+    ok: true,
+    message: `Keypair generated. Public key must be registered manually with the server.`,
+  };
 }
 
 function writeAirchatConfig(config: SetupConfig): StepResult {
   const name = 'Write ~/.airchat/config';
   try {
     const configDir = path.join(os.homedir(), '.airchat');
-    fs.mkdirSync(configDir, { recursive: true });
+    fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
 
+    // v2 config: only MACHINE_NAME and AIRCHAT_WEB_URL
     const lines: string[] = [
       `MACHINE_NAME=${config.machineName}`,
     ];
 
-    if (config.apiKey) lines.push(`AIRCHAT_API_KEY=${config.apiKey}`);
     if (config.webUrl) lines.push(`AIRCHAT_WEB_URL=${config.webUrl}`);
 
-    // Supabase-specific (needed by check-mentions hook)
-    if (config.supabaseUrl) lines.push(`SUPABASE_URL=${config.supabaseUrl}`);
-    if (config.supabaseAnonKey) lines.push(`SUPABASE_ANON_KEY=${config.supabaseAnonKey}`);
+    fs.writeFileSync(path.join(configDir, 'config'), lines.join('\n') + '\n', { mode: 0o600 });
 
-    fs.writeFileSync(path.join(configDir, 'config'), lines.join('\n') + '\n');
+    // Ensure agents directory exists with correct permissions
+    const agentsDir = path.join(configDir, 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(agentsDir, 0o700);
+
+    // Ensure parent dir permissions are correct
+    fs.chmodSync(configDir, 0o700);
+
     return { name, ok: true, message: configDir };
   } catch (e: any) {
     return { name, ok: false, message: e.message };
@@ -403,17 +462,11 @@ function writeWebEnv(config: SetupConfig): StepResult {
     if (config.supabaseUrl) {
       lines.push(`NEXT_PUBLIC_SUPABASE_URL=${config.supabaseUrl}`);
     }
-    if (config.supabaseAnonKey) {
-      lines.push(`NEXT_PUBLIC_SUPABASE_ANON_KEY=${config.supabaseAnonKey}`);
-    }
     if (config.supabaseServiceRoleKey) {
       lines.push(`SUPABASE_SERVICE_ROLE_KEY=${config.supabaseServiceRoleKey}`);
     }
     if (config.databaseUrl) {
       lines.push(`DATABASE_URL=${config.databaseUrl}`);
-    }
-    if (config.apiKey) {
-      lines.push(`AIRCHAT_API_KEY=${config.apiKey}`);
     }
 
     fs.writeFileSync(envPath, lines.join('\n') + '\n');
@@ -433,18 +486,12 @@ function registerMcpServer(config: SetupConfig): StepResult {
     return { name, ok: false, message: `MCP server not found at ${serverPath}` };
   }
 
-  // Build env args
-  const envArgs: string[] = [];
-  if (config.supabaseUrl) envArgs.push(`-e SUPABASE_URL=${config.supabaseUrl}`);
-  if (config.supabaseAnonKey) envArgs.push(`-e SUPABASE_ANON_KEY=${config.supabaseAnonKey}`);
-  if (config.apiKey) envArgs.push(`-e AIRCHAT_API_KEY=${config.apiKey}`);
-  if (config.webUrl) envArgs.push(`-e AIRCHAT_WEB_URL=${config.webUrl}`);
-
-  const cmd = `claude mcp add airchat -s user ${envArgs.join(' ')} -- "${config.nodePath}" "${tsxPath}" "${serverPath}"`;
+  // v2: No env vars passed — the MCP server reads from ~/.airchat/config and ~/.airchat/machine.key directly
+  const cmd = `claude mcp add airchat -s user -- "${config.nodePath}" "${tsxPath}" "${serverPath}"`;
 
   try {
     execSync(cmd, { stdio: 'pipe' });
-    return { name, ok: true, message: 'Registered at user level' };
+    return { name, ok: true, message: 'Registered at user level (no env vars — reads from ~/.airchat/)' };
   } catch (e: any) {
     // claude CLI might not be installed
     return {
@@ -551,7 +598,7 @@ async function main() {
   const reconfigure = process.argv.includes('--reconfigure');
 
   console.log('');
-  console.log(`  ${GREEN}>${RESET} ${BOLD}AirChat${RESET} ${dim('v0.1.0')}`);
+  console.log(`  ${GREEN}>${RESET} ${BOLD}AirChat${RESET} ${dim('v0.2.0')}`);
   console.log(`  ${dim('Your AI agents can talk to each other')}`);
 
   const rl = readline.createInterface({ input, output });
@@ -602,16 +649,14 @@ async function main() {
     if (seedResult.ok) ok(seedResult.message); else fail(seedResult.message);
   }
 
-  // 4. Generate machine key
-  if (!reconfigure) {
-    process.stdout.write(`  Generating machine key...`);
-    const keyResult = await generateMachineKey(config);
-    results.push(keyResult);
-    process.stdout.write(`\r`);
-    if (keyResult.ok) ok(keyResult.message); else fail(keyResult.message);
-  }
+  // 4. Generate Ed25519 keypair and register public key
+  process.stdout.write(`  Generating keypair...`);
+  const keypairResult = await generateAndRegisterKeypair(config, reconfigure);
+  results.push(keypairResult);
+  process.stdout.write(`\r`);
+  if (keypairResult.ok) ok(keypairResult.message); else fail(keypairResult.message);
 
-  // 5. Write config
+  // 5. Write config (v2: only MACHINE_NAME and AIRCHAT_WEB_URL)
   const configResult = writeAirchatConfig(config);
   results.push(configResult);
   if (configResult.ok) ok(`Config → ${configResult.message}`); else fail(configResult.message);
@@ -623,7 +668,7 @@ async function main() {
   else if (!config.deployDashboard) {} // silent skip
   else fail(envResult.message);
 
-  // 7. Register MCP server
+  // 7. Register MCP server (no env vars — reads from ~/.airchat/ directly)
   const mcpResult = registerMcpServer(config);
   results.push(mcpResult);
   if (mcpResult.ok) ok(`MCP server → ${mcpResult.message}`); else warn(mcpResult.message);
@@ -655,11 +700,23 @@ async function main() {
     }
   }
 
-  if (config.apiKey) {
+  // Show keypair info
+  if (config.keypair) {
     console.log('');
-    console.log(`  ${BOLD}Your API key:${RESET} ${config.apiKey}`);
-    console.log(`  ${YELLOW}Save this key — it cannot be retrieved later.${RESET}`);
+    console.log(`  ${BOLD}Machine keypair:${RESET}`);
+    console.log(`    Private key: ~/.airchat/machine.key ${dim('(chmod 600)')}`);
+    console.log(`    Public key:  ~/.airchat/machine.pub`);
+    console.log(`    Public key (hex): ${config.keypair.publicKey}`);
+    console.log(`  ${dim('The private key never leaves this machine.')}`);
+    console.log(`  ${dim('Agents will auto-register on startup using the keypair.')}`);
   }
+
+  console.log('');
+  console.log(`  ${dim('Config:')}`);
+  console.log(`    ~/.airchat/config      ${dim('MACHINE_NAME + AIRCHAT_WEB_URL')}`);
+  console.log(`    ~/.airchat/machine.key ${dim('Ed25519 private key')}`);
+  console.log(`    ~/.airchat/machine.pub ${dim('Ed25519 public key')}`);
+  console.log(`    ~/.airchat/agents/     ${dim('Cached derived keys (auto-created)')}`);
 
   console.log('');
   console.log(`  ${dim('Next steps:')}`);
@@ -667,7 +724,7 @@ async function main() {
   if (config.deployDashboard) {
     console.log(`  2. Start the dashboard: cd ${config.airchatDir} && docker compose up -d --build`);
   }
-  console.log(`  ${dim('Run with --reconfigure to update settings later.')}`);
+  console.log(`  ${dim('Run with --reconfigure to regenerate keypair and update settings.')}`);
   console.log('');
 }
 

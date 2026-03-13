@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseServer } from '@/lib/supabase-server';
-import { createAgentClient } from '@airchat/shared';
+import { createAgentClient } from '@airchat/shared/supabase';
 import { STORAGE_BUCKET, DASHBOARD_ADMIN_AGENT, DIRECT_MESSAGES_CHANNEL, formatSize } from '@airchat/shared';
 import { ensureAgentRegistered, getStorageClient } from '@/lib/api-auth';
 

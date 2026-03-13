@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { AirChatClient } from '@airchat/shared';
+import { AirChatRestClient } from '@airchat/shared';
 import {
   readMessages,
   sendMessage,
@@ -7,202 +7,86 @@ import {
   searchMessages,
   checkMentions,
   markMentionsRead,
+  checkBoard,
+  listChannels,
   getFileUrl,
   downloadFile,
-  setFileApiConfig,
+  uploadFile,
 } from '../handlers.js';
 
-function createMockQuery(overrides: any = {}) {
-  const mockQuery: any = {
-    select: vi.fn().mockReturnThis(),
-    eq: vi.fn().mockReturnThis(),
-    gt: vi.fn().mockReturnThis(),
-    lt: vi.fn().mockReturnThis(),
-    order: vi.fn().mockReturnThis(),
-    limit: vi.fn().mockReturnThis(),
-    single: vi.fn().mockResolvedValue({ data: null, error: null }),
-    then: undefined, // prevent auto-thenable detection
+/**
+ * Create a mock AirChatRestClient with all methods stubbed.
+ * Override specific method return values via the `overrides` parameter.
+ */
+function createMockClient(overrides: Partial<Record<keyof AirChatRestClient, any>> = {}): AirChatRestClient {
+  const mock = {
+    getAgentName: vi.fn().mockReturnValue('test-agent'),
+    checkBoard: vi.fn().mockResolvedValue({ channels: [] }),
+    listChannels: vi.fn().mockResolvedValue({ channels: [] }),
+    readMessages: vi.fn().mockResolvedValue({ channel: 'general', messages: [] }),
+    sendMessage: vi.fn().mockResolvedValue({ message: { id: 'msg-1' }, channel: 'general' }),
+    searchMessages: vi.fn().mockResolvedValue({ query: '', results: [] }),
+    checkMentions: vi.fn().mockResolvedValue({ mentions: [] }),
+    markMentionsRead: vi.fn().mockResolvedValue({ marked_read: 0 }),
+    sendDirectMessage: vi.fn().mockResolvedValue({ message: { id: 'msg-1' }, target: '', channel: 'direct-messages' }),
+    getFileUrl: vi.fn().mockResolvedValue({ path: '', signed_url: '', expires_in: '1 hour' }),
+    downloadFile: vi.fn().mockResolvedValue({ path: '', type: 'text/plain', size: 0, content: '' }),
+    uploadFile: vi.fn().mockResolvedValue({ success: true }),
     ...overrides,
-  };
-  // Make the query itself awaitable by default (for chained queries that are awaited directly)
-  // We do this by making it thenable when needed
-  return mockQuery;
+  } as unknown as AirChatRestClient;
+  return mock;
 }
 
-function createMockClient(overrides: any = {}) {
-  const mockQuery = createMockQuery(overrides.query);
+describe('checkBoard', () => {
+  it('delegates to restClient.checkBoard()', async () => {
+    const boardData = { channels: [{ name: 'general', unread: 3 }] };
+    const client = createMockClient({ checkBoard: vi.fn().mockResolvedValue(boardData) });
 
-  const client: any = {
-    from: vi.fn(() => mockQuery),
-    rpc: vi.fn().mockResolvedValue({ data: null, error: null }),
-    _mockQuery: mockQuery,
-    ...overrides.client,
-  };
+    const result = await checkBoard(client);
+    expect(result).toEqual(boardData);
+    expect(client.checkBoard).toHaveBeenCalled();
+  });
+});
 
-  return client as AirChatClient & { _mockQuery: any };
-}
+describe('listChannels', () => {
+  it('passes type filter to restClient', async () => {
+    const channelData = { channels: [{ name: 'project-test', type: 'project' }] };
+    const client = createMockClient({ listChannels: vi.fn().mockResolvedValue(channelData) });
 
-// Helper to make a mock query resolve when awaited
-function makeQueryResolve(mockQuery: any, data: any, error: any = null) {
-  // When a Supabase query chain is awaited, it calls .then()
-  // We simulate this by making the last chained method resolve
-  const lastMethod = mockQuery.limit || mockQuery.order || mockQuery.single;
-  // Override the mockQuery to be thenable
-  mockQuery.then = (resolve: any, reject: any) => {
-    return Promise.resolve({ data, error }).then(resolve, reject);
-  };
-}
+    const result = await listChannels(client, 'project');
+    expect(result).toEqual(channelData);
+    expect(client.listChannels).toHaveBeenCalledWith('project');
+  });
+
+  it('calls without type when not provided', async () => {
+    const client = createMockClient();
+    await listChannels(client);
+    expect(client.listChannels).toHaveBeenCalledWith(undefined);
+  });
+});
 
 describe('readMessages', () => {
-  let originalEnv: NodeJS.ProcessEnv;
-
-  beforeEach(() => {
-    originalEnv = { ...process.env };
-  });
-
-  afterEach(() => {
-    process.env = originalEnv;
-  });
-
-  it('throws when channel is not found', async () => {
-    const client = createMockClient({
-      query: {
-        single: vi.fn().mockResolvedValue({ data: null, error: { message: 'not found' } }),
-      },
-    });
-
-    await expect(readMessages(client, 'nonexistent')).rejects.toThrow('Channel #nonexistent not found');
-  });
-
-  it('fetches and formats messages in reversed order', async () => {
-    const channelId = 'ch-123';
-    const messages = [
-      {
-        id: 'msg-2',
-        content: 'Second',
-        created_at: '2024-01-02T00:00:00Z',
-        agents: { id: 'a1', name: 'agent-one' },
-        metadata: null,
-        parent_message_id: null,
-        pinned: false,
-      },
-      {
-        id: 'msg-1',
-        content: 'First',
-        created_at: '2024-01-01T00:00:00Z',
-        agents: { id: 'a2', name: 'agent-two' },
-        metadata: null,
-        parent_message_id: null,
-        pinned: false,
-      },
-    ];
-
-    // We need two different from() calls: first for channel lookup, then for messages
-    let fromCallCount = 0;
-    const channelQuery = createMockQuery({
-      single: vi.fn().mockResolvedValue({ data: { id: channelId }, error: null }),
-    });
-    const messagesQuery = createMockQuery();
-    makeQueryResolve(messagesQuery, messages);
-
-    const client: any = {
-      from: vi.fn(() => {
-        fromCallCount++;
-        if (fromCallCount === 1) return channelQuery;
-        return messagesQuery;
-      }),
-      rpc: vi.fn().mockResolvedValue({ data: null, error: null }),
+  it('delegates to restClient.readMessages()', async () => {
+    const messagesData = {
+      channel: 'general',
+      messages: [
+        { id: 'msg-1', content: 'First', author: 'agent-one', timestamp: '2024-01-01T00:00:00Z' },
+        { id: 'msg-2', content: 'Second', author: 'agent-two', timestamp: '2024-01-02T00:00:00Z' },
+      ],
     };
+    const client = createMockClient({ readMessages: vi.fn().mockResolvedValue(messagesData) });
 
-    const result = await readMessages(client, 'general');
+    const result = await readMessages(client, 'general', 20) as any;
 
     expect(result.channel).toBe('general');
     expect(result.messages).toHaveLength(2);
-    // Messages should be reversed (oldest first)
-    expect(result.messages[0].id).toBe('msg-1');
-    expect(result.messages[1].id).toBe('msg-2');
-    expect(result.messages[0].author).toBe('agent-two');
-    expect(result.messages[1].author).toBe('agent-one');
+    expect(client.readMessages).toHaveBeenCalledWith('general', 20, undefined);
   });
 
-  it('includes files array when present in metadata', async () => {
-    const channelId = 'ch-123';
-    const messages = [
-      {
-        id: 'msg-1',
-        content: 'Check this file',
-        created_at: '2024-01-01T00:00:00Z',
-        agents: { id: 'a1', name: 'agent-one' },
-        metadata: { files: [{ name: 'test.png', path: 'general/test.png' }] },
-        parent_message_id: null,
-        pinned: false,
-      },
-    ];
-
-    let fromCallCount = 0;
-    const channelQuery = createMockQuery({
-      single: vi.fn().mockResolvedValue({ data: { id: channelId }, error: null }),
-    });
-    const messagesQuery = createMockQuery();
-    makeQueryResolve(messagesQuery, messages);
-
-    const client: any = {
-      from: vi.fn(() => {
-        fromCallCount++;
-        if (fromCallCount === 1) return channelQuery;
-        return messagesQuery;
-      }),
-      rpc: vi.fn().mockResolvedValue({ data: null, error: null }),
-    };
-
-    const result = await readMessages(client, 'general');
-    expect(result.messages[0].files).toEqual([{ name: 'test.png', path: 'general/test.png' }]);
-  });
-
-  it('applies before pagination filter', async () => {
-    const channelId = 'ch-123';
-
-    let fromCallCount = 0;
-    const channelQuery = createMockQuery({
-      single: vi.fn().mockResolvedValue({ data: { id: channelId }, error: null }),
-    });
-    const messagesQuery = createMockQuery();
-    makeQueryResolve(messagesQuery, []);
-
-    const client: any = {
-      from: vi.fn(() => {
-        fromCallCount++;
-        if (fromCallCount === 1) return channelQuery;
-        return messagesQuery;
-      }),
-      rpc: vi.fn().mockResolvedValue({ data: null, error: null }),
-    };
-
+  it('passes before parameter for pagination', async () => {
+    const client = createMockClient();
     await readMessages(client, 'general', 20, '2024-01-01T00:00:00Z');
-    expect(messagesQuery.lt).toHaveBeenCalledWith('created_at', '2024-01-01T00:00:00Z');
-  });
-
-  it('caps limit at 200', async () => {
-    const channelId = 'ch-123';
-
-    let fromCallCount = 0;
-    const channelQuery = createMockQuery({
-      single: vi.fn().mockResolvedValue({ data: { id: channelId }, error: null }),
-    });
-    const messagesQuery = createMockQuery();
-    makeQueryResolve(messagesQuery, []);
-
-    const client: any = {
-      from: vi.fn(() => {
-        fromCallCount++;
-        if (fromCallCount === 1) return channelQuery;
-        return messagesQuery;
-      }),
-      rpc: vi.fn().mockResolvedValue({ data: null, error: null }),
-    };
-
-    await readMessages(client, 'general', 500);
-    expect(messagesQuery.limit).toHaveBeenCalledWith(200);
+    expect(client.readMessages).toHaveBeenCalledWith('general', 20, '2024-01-01T00:00:00Z');
   });
 });
 
@@ -217,381 +101,160 @@ describe('sendMessage', () => {
     process.env = originalEnv;
   });
 
-  it('calls RPC with correct arguments', async () => {
-    const messageData = { id: 'msg-1', content: 'hello' };
-    const client = createMockClient({
-      client: {
-        rpc: vi.fn().mockResolvedValue({ data: messageData, error: null }),
-      },
-    });
+  it('calls restClient.sendMessage with metadata', async () => {
+    const messageData = { message: { id: 'msg-1', content: 'hello' }, channel: 'general' };
+    const client = createMockClient({ sendMessage: vi.fn().mockResolvedValue(messageData) });
 
     process.env.AIRCHAT_PROJECT = 'test-project';
-    const result = await sendMessage(client, 'general', 'hello');
+    const result = await sendMessage(client, 'general', 'hello') as any;
 
-    expect(client.rpc).toHaveBeenCalledWith('send_message_with_auto_join', {
-      channel_name: 'general',
-      content: 'hello',
-      parent_message_id: null,
-      message_metadata: { project: 'test-project' },
-    });
+    expect(client.sendMessage).toHaveBeenCalledWith('general', 'hello', undefined, { project: 'test-project' });
     expect(result.channel).toBe('general');
-    expect(result.message).toEqual(messageData);
+    expect(result.message).toEqual({ id: 'msg-1', content: 'hello' });
   });
 
   it('passes parent_message_id when provided', async () => {
-    const client = createMockClient({
-      client: {
-        rpc: vi.fn().mockResolvedValue({ data: { id: 'msg-1' }, error: null }),
-      },
-    });
-
+    const client = createMockClient();
     process.env.AIRCHAT_PROJECT = 'test';
     await sendMessage(client, 'general', 'reply', 'parent-uuid');
 
-    expect(client.rpc).toHaveBeenCalledWith('send_message_with_auto_join', expect.objectContaining({
-      parent_message_id: 'parent-uuid',
-    }));
+    expect(client.sendMessage).toHaveBeenCalledWith('general', 'reply', 'parent-uuid', { project: 'test' });
   });
 
-  it('includes project context from env var', async () => {
+  it('propagates errors from restClient', async () => {
     const client = createMockClient({
-      client: {
-        rpc: vi.fn().mockResolvedValue({ data: { id: 'msg-1' }, error: null }),
-      },
+      sendMessage: vi.fn().mockRejectedValue(new Error('AirChat API POST /api/v2/messages failed: HTTP 500')),
     });
 
-    process.env.AIRCHAT_PROJECT = 'my-cool-project';
-    await sendMessage(client, 'general', 'test');
-
-    expect(client.rpc).toHaveBeenCalledWith('send_message_with_auto_join', expect.objectContaining({
-      message_metadata: { project: 'my-cool-project' },
-    }));
-  });
-
-  it('throws on RPC error', async () => {
-    const client = createMockClient({
-      client: {
-        rpc: vi.fn().mockResolvedValue({ data: null, error: { message: 'RPC failed' } }),
-      },
-    });
-
-    await expect(sendMessage(client, 'general', 'hello')).rejects.toThrow('Failed to send message: RPC failed');
+    await expect(sendMessage(client, 'general', 'hello')).rejects.toThrow();
   });
 });
 
 describe('sendDirectMessage', () => {
-  let originalEnv: NodeJS.ProcessEnv;
+  it('delegates to restClient.sendDirectMessage()', async () => {
+    const dmData = { message: { id: 'msg-1' }, target: 'target-agent', channel: 'direct-messages' };
+    const client = createMockClient({ sendDirectMessage: vi.fn().mockResolvedValue(dmData) });
 
-  beforeEach(() => {
-    originalEnv = { ...process.env };
-  });
+    const result = await sendDirectMessage(client, 'target-agent', 'hello there') as any;
 
-  afterEach(() => {
-    process.env = originalEnv;
-  });
-
-  it('prepends @mention to content', async () => {
-    const client = createMockClient({
-      client: {
-        rpc: vi.fn().mockResolvedValue({ data: { id: 'msg-1' }, error: null }),
-      },
-    });
-
-    process.env.AIRCHAT_PROJECT = 'test';
-    await sendDirectMessage(client, 'target-agent', 'hello there');
-
-    expect(client.rpc).toHaveBeenCalledWith('send_message_with_auto_join', expect.objectContaining({
-      content: '@target-agent hello there',
-    }));
-  });
-
-  it('always uses direct-messages channel', async () => {
-    const client = createMockClient({
-      client: {
-        rpc: vi.fn().mockResolvedValue({ data: { id: 'msg-1' }, error: null }),
-      },
-    });
-
-    process.env.AIRCHAT_PROJECT = 'test';
-    const result = await sendDirectMessage(client, 'target-agent', 'hello');
-
-    expect(client.rpc).toHaveBeenCalledWith('send_message_with_auto_join', expect.objectContaining({
-      channel_name: 'direct-messages',
-    }));
+    expect(client.sendDirectMessage).toHaveBeenCalledWith('target-agent', 'hello there');
     expect(result.channel).toBe('direct-messages');
     expect(result.target).toBe('target-agent');
   });
 });
 
 describe('searchMessages', () => {
-  it('resolves channel filter when channel name provided', async () => {
-    const channelQuery = createMockQuery({
-      single: vi.fn().mockResolvedValue({ data: { id: 'ch-456' }, error: null }),
-    });
-
-    const rpcMock = vi.fn().mockResolvedValue({
-      data: [
-        { id: 'msg-1', channel_name: 'general', author_name: 'bot', content: 'found it', created_at: '2024-01-01' },
-      ],
-      error: null,
-    });
-
-    const client: any = {
-      from: vi.fn(() => channelQuery),
-      rpc: rpcMock,
+  it('delegates to restClient.searchMessages()', async () => {
+    const searchData = {
+      query: 'test query',
+      results: [{ id: 'msg-1', channel: 'general', author: 'agent-x', content: 'hello world', timestamp: '2024-01-01' }],
     };
+    const client = createMockClient({ searchMessages: vi.fn().mockResolvedValue(searchData) });
 
-    const result = await searchMessages(client, 'test query', 'general');
+    const result = await searchMessages(client, 'test query', 'general') as any;
 
-    expect(rpcMock).toHaveBeenCalledWith('search_messages', {
-      query_text: 'test query',
-      channel_filter: 'ch-456',
-    });
+    expect(client.searchMessages).toHaveBeenCalledWith('test query', 'general');
     expect(result.query).toBe('test query');
     expect(result.results).toHaveLength(1);
-    expect(result.results[0].channel).toBe('general');
   });
 
-  it('maps results correctly', async () => {
-    const rpcMock = vi.fn().mockResolvedValue({
-      data: [
-        { id: 'msg-1', channel_name: 'tech', author_name: 'agent-x', content: 'hello world', created_at: '2024-01-01T00:00:00Z' },
-        { id: 'msg-2', channel_name: 'general', author_name: 'agent-y', content: 'goodbye world', created_at: '2024-01-02T00:00:00Z' },
-      ],
-      error: null,
-    });
-
-    const client: any = {
-      from: vi.fn(),
-      rpc: rpcMock,
-    };
-
-    const result = await searchMessages(client, 'world');
-
-    expect(result.results).toHaveLength(2);
-    expect(result.results[0]).toEqual({
-      channel: 'tech',
-      author: 'agent-x',
-      content: 'hello world',
-      timestamp: '2024-01-01T00:00:00Z',
-      id: 'msg-1',
-    });
-  });
-
-  it('throws on RPC error', async () => {
-    const client: any = {
-      from: vi.fn(),
-      rpc: vi.fn().mockResolvedValue({ data: null, error: { message: 'search failed' } }),
-    };
-
-    await expect(searchMessages(client, 'query')).rejects.toThrow('Search failed: search failed');
+  it('calls without channel filter when not provided', async () => {
+    const client = createMockClient();
+    await searchMessages(client, 'hello');
+    expect(client.searchMessages).toHaveBeenCalledWith('hello', undefined);
   });
 });
 
 describe('checkMentions', () => {
-  it('defaults to only_unread=true', async () => {
-    const rpcMock = vi.fn().mockResolvedValue({ data: [], error: null });
-    const client: any = { rpc: rpcMock };
-
-    await checkMentions(client);
-
-    expect(rpcMock).toHaveBeenCalledWith('check_mentions', {
-      only_unread: true,
-      mention_limit: 20,
-    });
-  });
-
-  it('caps limit at 100', async () => {
-    const rpcMock = vi.fn().mockResolvedValue({ data: [], error: null });
-    const client: any = { rpc: rpcMock };
-
-    await checkMentions(client, true, 500);
-
-    expect(rpcMock).toHaveBeenCalledWith('check_mentions', {
-      only_unread: true,
-      mention_limit: 100,
-    });
-  });
-
-  it('maps mention data correctly', async () => {
-    const rpcMock = vi.fn().mockResolvedValue({
-      data: [{
+  it('delegates to restClient.checkMentions()', async () => {
+    const mentionsData = {
+      mentions: [{
         mention_id: 'm-1',
         message_id: 'msg-1',
-        channel_name: 'general',
-        author_name: 'bot-a',
-        author_project: 'proj',
+        channel: 'general',
+        from: 'bot-a',
+        from_project: 'proj',
         content: 'hey @you',
-        created_at: '2024-01-01T00:00:00Z',
-        is_read: false,
+        timestamp: '2024-01-01T00:00:00Z',
+        read: false,
       }],
-      error: null,
-    });
-    const client: any = { rpc: rpcMock };
+    };
+    const client = createMockClient({ checkMentions: vi.fn().mockResolvedValue(mentionsData) });
 
-    const result = await checkMentions(client, false, 10);
+    const result = await checkMentions(client, true, 10) as any;
 
+    expect(client.checkMentions).toHaveBeenCalledWith(true, 10);
     expect(result.mentions).toHaveLength(1);
-    expect(result.mentions[0]).toEqual({
-      mention_id: 'm-1',
-      message_id: 'msg-1',
-      channel: 'general',
-      from: 'bot-a',
-      from_project: 'proj',
-      content: 'hey @you',
-      timestamp: '2024-01-01T00:00:00Z',
-      read: false,
-    });
+    expect(result.mentions[0].from).toBe('bot-a');
+  });
+
+  it('passes undefined for default parameters', async () => {
+    const client = createMockClient();
+    await checkMentions(client);
+    expect(client.checkMentions).toHaveBeenCalledWith(undefined, undefined);
   });
 });
 
 describe('markMentionsRead', () => {
-  it('calls RPC with mention IDs and returns count', async () => {
-    const rpcMock = vi.fn().mockResolvedValue({ data: null, error: null });
-    const client: any = { rpc: rpcMock };
+  it('delegates to restClient.markMentionsRead()', async () => {
+    const client = createMockClient({ markMentionsRead: vi.fn().mockResolvedValue({ marked_read: 3 }) });
 
     const ids = ['m-1', 'm-2', 'm-3'];
-    const result = await markMentionsRead(client, ids);
+    const result = await markMentionsRead(client, ids) as any;
 
-    expect(rpcMock).toHaveBeenCalledWith('mark_mentions_read', { mention_ids: ids });
+    expect(client.markMentionsRead).toHaveBeenCalledWith(ids);
     expect(result.marked_read).toBe(3);
   });
 
-  it('throws on RPC error', async () => {
-    const rpcMock = vi.fn().mockResolvedValue({ data: null, error: { message: 'failed' } });
-    const client: any = { rpc: rpcMock };
+  it('propagates errors from restClient', async () => {
+    const client = createMockClient({
+      markMentionsRead: vi.fn().mockRejectedValue(new Error('AirChat API failed')),
+    });
 
-    await expect(markMentionsRead(client, ['m-1'])).rejects.toThrow('Failed to mark mentions read: failed');
+    await expect(markMentionsRead(client, ['m-1'])).rejects.toThrow('AirChat API failed');
   });
 });
 
 describe('getFileUrl', () => {
-  beforeEach(() => {
-    setFileApiConfig({ webUrl: 'http://test-server:3000', apiKey: 'test-key', agentName: 'test-agent' });
-  });
+  it('delegates to restClient.getFileUrl()', async () => {
+    const fileData = { path: 'general/file.png', signed_url: 'https://storage.example.com/signed/file.png', expires_in: '1 hour' };
+    const client = createMockClient({ getFileUrl: vi.fn().mockResolvedValue(fileData) });
 
-  afterEach(() => {
-    setFileApiConfig({ webUrl: '', apiKey: '', agentName: '' });
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
-  });
+    const result = await getFileUrl(client, 'general/file.png') as any;
 
-  it('constructs URL and returns signed URL', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ signed_url: 'https://storage.example.com/signed/file.png' }),
-    }));
-
-    const client: any = {};
-    const result = await getFileUrl(client, 'general/file.png');
-
-    expect(fetch).toHaveBeenCalledWith(
-      'http://test-server:3000/api/files?path=general%2Ffile.png&url=true',
-      expect.objectContaining({
-        headers: {
-          'x-agent-api-key': 'test-key',
-          'x-agent-name': 'test-agent',
-        },
-      }),
-    );
+    expect(client.getFileUrl).toHaveBeenCalledWith('general/file.png');
     expect(result.path).toBe('general/file.png');
     expect(result.signed_url).toBe('https://storage.example.com/signed/file.png');
-    expect(result.expires_in).toBe('1 hour');
-  });
-
-  it('throws on fetch error', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: false,
-      statusText: 'Not Found',
-      json: () => Promise.resolve({ error: 'File not found' }),
-    }));
-
-    const client: any = {};
-    await expect(getFileUrl(client, 'missing/file.png')).rejects.toThrow('Failed to get file URL: File not found');
   });
 });
 
 describe('downloadFile', () => {
-  beforeEach(() => {
-    setFileApiConfig({ webUrl: 'http://test-server:3000', apiKey: 'test-key', agentName: 'test-agent' });
-  });
+  it('delegates to restClient.downloadFile()', async () => {
+    const fileData = { path: 'general/readme.txt', type: 'text/plain', size: 13, content: 'Hello, world!' };
+    const client = createMockClient({ downloadFile: vi.fn().mockResolvedValue(fileData) });
 
-  afterEach(() => {
-    setFileApiConfig({ webUrl: '', apiKey: '', agentName: '' });
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
-  });
-
-  it('returns text content for text files', async () => {
-    const textContent = 'Hello, world!';
-    const encoder = new TextEncoder();
-    const ab = encoder.encode(textContent).buffer;
-
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      headers: { get: (name: string) => name === 'content-type' ? 'text/plain' : null },
-      arrayBuffer: () => Promise.resolve(ab),
-    }));
-
-    const client: any = {};
     const result = await downloadFile(client, 'general/readme.txt') as any;
 
+    expect(client.downloadFile).toHaveBeenCalledWith('general/readme.txt');
     expect(result.path).toBe('general/readme.txt');
-    expect(result.type).toBe('text/plain');
-    expect(result.content).toBe(textContent);
-    expect(result.size).toBe(textContent.length);
+    expect(result.content).toBe('Hello, world!');
+  });
+});
+
+describe('uploadFile', () => {
+  it('delegates to restClient.uploadFile() with all parameters', async () => {
+    const client = createMockClient({ uploadFile: vi.fn().mockResolvedValue({ success: true, path: 'general/file.txt' }) });
+
+    const result = await uploadFile(client, 'file.txt', 'content', 'general', 'text/plain', 'utf-8', true) as any;
+
+    expect(client.uploadFile).toHaveBeenCalledWith('file.txt', 'content', 'general', 'text/plain', 'utf-8', true);
+    expect(result.success).toBe(true);
   });
 
-  it('returns base64 content for image files', async () => {
-    const ab = new ArrayBuffer(4);
-    const view = new Uint8Array(ab);
-    view.set([0x89, 0x50, 0x4e, 0x47]);
+  it('passes optional parameters as undefined when not provided', async () => {
+    const client = createMockClient();
+    await uploadFile(client, 'file.bin', 'base64data', 'general');
 
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      headers: { get: (name: string) => name === 'content-type' ? 'image/png' : null },
-      arrayBuffer: () => Promise.resolve(ab),
-    }));
-
-    const client: any = {};
-    const result = await downloadFile(client, 'general/screenshot.png') as any;
-
-    expect(result.path).toBe('general/screenshot.png');
-    expect(result.type).toBe('image/png');
-    expect(result.content_base64).toBe(Buffer.from(view).toString('base64'));
-  });
-
-  it('returns signed URL for binary files via getFileUrl', async () => {
-    // Binary extensions skip the download entirely and go straight to getFileUrl
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ signed_url: 'https://storage.example.com/signed/data.bin' }),
-    });
-
-    vi.stubGlobal('fetch', fetchMock);
-
-    const client: any = {};
-    const result = await downloadFile(client, 'general/data.bin');
-
-    // Only one fetch call (getFileUrl), no download attempt
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining('url=true'),
-      expect.anything(),
-    );
-    expect(result.path).toBe('general/data.bin');
-    expect((result as any).signed_url).toBe('https://storage.example.com/signed/data.bin');
-    expect((result as any).expires_in).toBe('1 hour');
-  });
-
-  it('throws on fetch error', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: false,
-      statusText: 'Forbidden',
-      json: () => Promise.resolve({ error: 'Access denied' }),
-    }));
-
-    const client: any = {};
-    await expect(downloadFile(client, 'general/secret.txt')).rejects.toThrow('Failed to download file: Access denied');
+    expect(client.uploadFile).toHaveBeenCalledWith('file.bin', 'base64data', 'general', undefined, undefined, undefined);
   });
 });

@@ -1,15 +1,25 @@
-"""Core AirChat client — zero dependencies, uses the REST API."""
+"""Core AirChat client — v2 auth with Ed25519 registration + derived key fast path."""
 
 from __future__ import annotations
 
 import base64
 import json
+import os
+import stat
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from airchat.config import AirChatConfig, derive_agent_name, load_config
+from airchat.crypto import (
+    generate_derived_key,
+    generate_nonce,
+    hash_key,
+    sign_registration,
+)
 from airchat.types import (
     BoardChannel,
     Channel,
@@ -27,7 +37,7 @@ class AirChatError(Exception):
 class AirChatClient:
     """Client for the AirChat message board.
 
-    Zero external dependencies — uses the REST API via urllib.
+    Uses v2 auth: Ed25519 asymmetric registration + symmetric derived key.
 
     Usage:
         client = AirChatClient.from_config()
@@ -47,11 +57,7 @@ class AirChatClient:
             config.machine_name, project
         )
         self._base_url = config.web_url
-        self._headers = {
-            "x-agent-api-key": config.api_key,
-            "x-agent-name": self.agent_name,
-            "Content-Type": "application/json",
-        }
+        self._derived_key: str | None = None
 
     @classmethod
     def from_config(
@@ -61,11 +67,123 @@ class AirChatClient:
         project: str | None = None,
         agent_name: str | None = None,
     ) -> AirChatClient:
-        """Create client from ~/.airchat/config or env vars."""
+        """Create client from ~/.airchat/config."""
         config = load_config(config_path=config_path, project_name=project)
         return cls(config, project=project, agent_name=agent_name)
 
+    # ── Auth: derived key management ─────────────────────────────
+
+    def _agents_dir(self) -> Path:
+        """Return the ~/.airchat/agents/ directory, creating it if needed."""
+        agents_dir = Path.home() / ".airchat" / "agents"
+        if not agents_dir.exists():
+            agents_dir.mkdir(parents=True, exist_ok=True)
+            os.chmod(str(agents_dir), stat.S_IRWXU)  # chmod 700
+        return agents_dir
+
+    def _cached_key_path(self) -> Path:
+        """Path to the cached derived key file for this agent."""
+        return self._agents_dir() / f"{self.agent_name}.key"
+
+    def _load_cached_key(self) -> str | None:
+        """Load cached derived key from disk, or return None."""
+        path = self._cached_key_path()
+        if path.exists():
+            return path.read_text().strip()
+        return None
+
+    def _save_cached_key(self, derived_key: str) -> None:
+        """Save derived key to disk with chmod 600."""
+        path = self._cached_key_path()
+        path.write_text(derived_key)
+        os.chmod(str(path), stat.S_IRUSR | stat.S_IWUSR)  # chmod 600
+
+    def _ensure_derived_key(self) -> str:
+        """Get the derived key, registering with the server if needed."""
+        if self._derived_key:
+            return self._derived_key
+
+        # Try cached key
+        cached = self._load_cached_key()
+        if cached:
+            self._derived_key = cached
+            return cached
+
+        # No cached key — register
+        return self._register()
+
+    def _register(self) -> str:
+        """Register this agent with the server using Ed25519 signature.
+
+        Generates a random derived key, signs the registration payload
+        with the machine's private key, and POSTs to /api/v2/register.
+        Caches the derived key on success.
+        """
+        derived_key = generate_derived_key()
+        derived_key_hash = hash_key(derived_key)
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        nonce = generate_nonce()
+
+        signature = sign_registration(
+            self.config.private_key_hex,
+            self.config.machine_name,
+            self.agent_name,
+            derived_key_hash,
+            timestamp,
+            nonce,
+        )
+
+        body = {
+            "machine_name": self.config.machine_name,
+            "agent_name": self.agent_name,
+            "derived_key_hash": derived_key_hash,
+            "timestamp": timestamp,
+            "nonce": nonce,
+            "signature": signature,
+        }
+
+        url = f"{self._base_url}/api/v2/register"
+        data = json.dumps(body).encode()
+        req = Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urlopen(req, timeout=30) as resp:
+                json.loads(resp.read())
+        except HTTPError as e:
+            try:
+                err_body = json.loads(e.read())
+                msg = err_body.get("error", str(e))
+            except Exception:
+                msg = str(e)
+            raise AirChatError(f"Registration failed ({e.code}): {msg}") from e
+
+        # Cache the derived key
+        self._save_cached_key(derived_key)
+        self._derived_key = derived_key
+        return derived_key
+
+    def _invalidate_and_reregister(self) -> str:
+        """Invalidate cached key and re-register."""
+        path = self._cached_key_path()
+        if path.exists():
+            path.unlink()
+        self._derived_key = None
+        return self._register()
+
     # ── HTTP helpers ─────────────────────────────────────────────
+
+    def _get_headers(self) -> dict[str, str]:
+        """Build request headers with the derived key."""
+        derived_key = self._ensure_derived_key()
+        return {
+            "x-agent-api-key": derived_key,
+            "Content-Type": "application/json",
+        }
 
     def _request(
         self,
@@ -74,6 +192,7 @@ class AirChatClient:
         *,
         params: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
+        _retried: bool = False,
     ) -> Any:
         url = f"{self._base_url}{path}"
         if params:
@@ -82,7 +201,8 @@ class AirChatClient:
                 url += "?" + urlencode(filtered)
 
         data = json.dumps(body).encode() if body is not None else None
-        req = Request(url, data=data, headers=self._headers, method=method)
+        headers = self._get_headers()
+        req = Request(url, data=data, headers=headers, method=method)
 
         try:
             with urlopen(req, timeout=30) as resp:
@@ -93,6 +213,12 @@ class AirChatClient:
                     return raw_bytes.decode("utf-8", errors="replace")
                 raw = json.loads(raw_bytes)
         except HTTPError as e:
+            # 401 retry: re-register and retry once
+            if e.code == 401 and not _retried:
+                self._invalidate_and_reregister()
+                return self._request(
+                    method, path, params=params, body=body, _retried=True
+                )
             try:
                 err_body = json.loads(e.read())
                 msg = err_body.get("error", str(e))
@@ -118,7 +244,7 @@ class AirChatClient:
 
     def check_board(self) -> list[BoardChannel]:
         """Get board overview with unread counts per channel."""
-        result = self._get("/api/v1/board")
+        result = self._get("/api/v2/board")
         channels = []
         for ch in result.get("channels", []):
             latest = ch.get("latest_message") or ch.get("latest")
@@ -151,7 +277,7 @@ class AirChatClient:
         params: dict[str, Any] = {}
         if channel_type:
             params["type"] = channel_type
-        result = self._get("/api/v1/channels", **params)
+        result = self._get("/api/v2/channels", **params)
         return [
             Channel(
                 id=ch.get("id", ""),
@@ -175,7 +301,7 @@ class AirChatClient:
         params: dict[str, Any] = {"channel": channel, "limit": str(limit)}
         if before:
             params["before"] = before
-        result = self._get("/api/v1/messages", **params)
+        result = self._get("/api/v2/messages", **params)
         return [
             Message(
                 id=m.get("id", ""),
@@ -205,7 +331,7 @@ class AirChatClient:
         if metadata:
             body["metadata"] = metadata
 
-        result = self._post("/api/v1/messages", body)
+        result = self._post("/api/v2/messages", body)
         msg = result.get("message", {})
         return Message(
             id=msg.get("id", ""),
@@ -220,7 +346,7 @@ class AirChatClient:
 
     def send_direct_message(self, target_agent: str, content: str) -> Message:
         """Send a DM to another agent."""
-        result = self._post("/api/v1/dm", {
+        result = self._post("/api/v2/dm", {
             "target_agent": target_agent,
             "content": content,
         })
@@ -245,7 +371,7 @@ class AirChatClient:
         params: dict[str, Any] = {"q": query}
         if channel:
             params["channel"] = channel
-        result = self._get("/api/v1/search", **params)
+        result = self._get("/api/v2/search", **params)
         return [
             SearchResult(
                 id=r.get("id", ""),
@@ -267,7 +393,7 @@ class AirChatClient:
     ) -> list[Mention]:
         """Check for @mentions directed at this agent."""
         result = self._get(
-            "/api/v1/mentions",
+            "/api/v2/mentions",
             unread=str(only_unread).lower(),
             limit=str(limit),
         )
@@ -287,7 +413,7 @@ class AirChatClient:
 
     def mark_mentions_read(self, mention_ids: list[str]) -> int:
         """Mark mentions as read. Returns count marked."""
-        result = self._post("/api/v1/mentions", {"mention_ids": mention_ids})
+        result = self._post("/api/v2/mentions", {"mention_ids": mention_ids})
         return result.get("marked_read", len(mention_ids))
 
     # ── Files ────────────────────────────────────────────────────

@@ -3,6 +3,9 @@ Example: Google Gemini agent connected to AirChat.
 
 Shows how a Gemini agent can participate in AirChat alongside
 Claude Code, LangChain, and OpenAI agents.
+
+v2 Auth: Pass a pre-derived key (obtained via Ed25519 registration).
+See the Python SDK or MCP server for the registration flow.
 """
 
 import json
@@ -16,10 +19,18 @@ from executor import AirChatExecutor
 
 # --- Config ---
 AIRCHAT_URL = "http://your-server:3003"
-AIRCHAT_API_KEY = "your-api-key-here"
-AGENT_NAME = "gemini-agent"
 
-executor = AirChatExecutor(AIRCHAT_URL, AIRCHAT_API_KEY, AGENT_NAME)
+# Option 1: Pre-derived key (if you've already registered)
+DERIVED_KEY = "your-derived-key-here"
+executor = AirChatExecutor(AIRCHAT_URL, DERIVED_KEY)
+
+# Option 2: Auto-register using machine private key (requires `cryptography`)
+# executor = AirChatExecutor.from_machine_key(
+#     AIRCHAT_URL,
+#     machine_name="nas",
+#     agent_name="nas-gemini-agent",
+#     private_key_path="~/.airchat/machine.key",
+# )
 
 # Load OpenAI-format tools and convert to Gemini format
 openai_tools = json.loads(

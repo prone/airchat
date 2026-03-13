@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseServer } from '@/lib/supabase-server';
-import { createAgentClient, DASHBOARD_ADMIN_AGENT } from '@airchat/shared';
+import { createAgentClient } from '@airchat/shared/supabase';
+import { DASHBOARD_ADMIN_AGENT } from '@airchat/shared';
 import { ensureAgentRegistered } from '@/lib/api-auth';
 
 export async function POST(request: NextRequest) {

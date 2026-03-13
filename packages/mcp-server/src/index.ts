@@ -6,8 +6,8 @@ import { z } from 'zod';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { createAgentClient } from '@airchat/shared';
-import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, markMentionsRead, sendDirectMessage, getFileUrl, downloadFile, uploadFile, setFileApiConfig } from './handlers.js';
+import { AirChatRestClient } from '@airchat/shared';
+import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, markMentionsRead, sendDirectMessage, getFileUrl, downloadFile, uploadFile } from './handlers.js';
 import { sanitizeError, deriveAgentName } from './utils.js';
 
 /**
@@ -20,18 +20,13 @@ function wrapMessageContent(result: unknown): string {
 }
 
 interface AirChatConfig {
-  SUPABASE_URL: string;
-  SUPABASE_ANON_KEY: string;
-  AIRCHAT_API_KEY: string;
   MACHINE_NAME: string;
-  AIRCHAT_WEB_URL?: string;
+  AIRCHAT_WEB_URL: string;
+  privateKey: string;
 }
 
 // Load config: env vars take priority, then ~/.airchat/config
 function loadConfig(): AirChatConfig {
-  let url = process.env.SUPABASE_URL;
-  let anonKey = process.env.SUPABASE_ANON_KEY;
-  let apiKey = process.env.AIRCHAT_API_KEY;
   let machineName = process.env.MACHINE_NAME;
   let webUrl = process.env.AIRCHAT_WEB_URL;
 
@@ -45,9 +40,6 @@ function loadConfig(): AirChatConfig {
       if (eqIdx === -1) continue;
       const key = trimmed.slice(0, eqIdx).trim();
       const val = trimmed.slice(eqIdx + 1).trim();
-      if (key === 'SUPABASE_URL' && !url) url = val;
-      if (key === 'SUPABASE_ANON_KEY' && !anonKey) anonKey = val;
-      if (key === 'AIRCHAT_API_KEY' && !apiKey) apiKey = val;
       if (key === 'MACHINE_NAME' && !machineName) machineName = val;
       if (key === 'AIRCHAT_WEB_URL' && !webUrl) webUrl = val;
     }
@@ -55,39 +47,38 @@ function loadConfig(): AirChatConfig {
     // Config file not found
   }
 
-  if (!url || !anonKey || !apiKey) {
-    console.error('Missing AirChat credentials. Set env vars or create ~/.airchat/config');
-    process.exit(1);
-  }
-
   if (!machineName) {
     console.error('Missing MACHINE_NAME. Set env var or add to ~/.airchat/config');
     process.exit(1);
   }
 
-  return { SUPABASE_URL: url, SUPABASE_ANON_KEY: anonKey, AIRCHAT_API_KEY: apiKey, MACHINE_NAME: machineName, AIRCHAT_WEB_URL: webUrl };
+  if (!webUrl) {
+    console.error('Missing AIRCHAT_WEB_URL. Set env var or add to ~/.airchat/config');
+    process.exit(1);
+  }
+
+  // Read private key from ~/.airchat/machine.key
+  let privateKey: string;
+  try {
+    const keyPath = join(homedir(), '.airchat', 'machine.key');
+    privateKey = readFileSync(keyPath, 'utf-8').trim();
+  } catch {
+    console.error('Missing private key. Expected at ~/.airchat/machine.key — run "npx airchat" to set up.');
+    process.exit(1);
+  }
+
+  return { MACHINE_NAME: machineName, AIRCHAT_WEB_URL: webUrl, privateKey };
 }
 
 const config = loadConfig();
 const agentName = deriveAgentName(config.MACHINE_NAME);
-const client = createAgentClient(config.SUPABASE_URL, config.SUPABASE_ANON_KEY, config.AIRCHAT_API_KEY, agentName);
 
-// Pass config to file handlers (they call the web API with agent auth)
-setFileApiConfig({
-  webUrl: config.AIRCHAT_WEB_URL || '',
-  apiKey: config.AIRCHAT_API_KEY,
+const restClient = new AirChatRestClient({
+  webUrl: config.AIRCHAT_WEB_URL,
+  machineName: config.MACHINE_NAME,
+  privateKeyHex: config.privateKey,
   agentName: agentName,
 });
-
-// Auto-register agent on startup
-try {
-  const { error } = await client.rpc('ensure_agent_exists', { p_agent_name: agentName });
-  if (error) {
-    console.error(`Warning: failed to register agent "${agentName}": ${error.message}`);
-  }
-} catch {
-  // Non-fatal — legacy key auth may still work
-}
 
 const server = new McpServer({
   name: 'airchat',
@@ -122,7 +113,7 @@ server.tool('airchat_help', 'Get usage guidelines for AirChat — channel conven
 
 server.tool('check_board', 'Get an overview of recent activity and unread counts across all your channels', {}, async () => {
   try {
-    const result = await checkBoard(client);
+    const result = await checkBoard(restClient);
     return { content: [{ type: 'text' as const, text: wrapMessageContent(result) }] };
   } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
@@ -137,7 +128,7 @@ const listChannelsSchema = {
 };
 server.tool('list_channels', 'List your accessible channels, optionally filtered by type', listChannelsSchema as any, async (args: { type?: string }) => {
   try {
-    const result = await listChannels(client, args.type);
+    const result = await listChannels(restClient, args.type);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
@@ -151,7 +142,7 @@ const readMessagesSchema = {
 };
 server.tool('read_messages', 'Read recent messages from a channel', readMessagesSchema as any, async (args: { channel: string; limit?: number; before?: string }) => {
   try {
-    const result = await readMessages(client, args.channel, args.limit, args.before);
+    const result = await readMessages(restClient, args.channel, args.limit, args.before);
     return { content: [{ type: 'text' as const, text: wrapMessageContent(result) }] };
   } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
@@ -164,7 +155,7 @@ server.tool('send_message', 'Post a message to a channel', {
   parent_message_id: z.string().uuid().optional().describe('UUID of parent message for threading'),
 } as any, async (args: { channel: string; content: string; parent_message_id?: string }) => {
   try {
-    const result = await sendMessage(client, args.channel, args.content, args.parent_message_id);
+    const result = await sendMessage(restClient, args.channel, args.content, args.parent_message_id);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
@@ -176,7 +167,7 @@ server.tool('search_messages', 'Full-text search across messages in your accessi
   channel: z.string().max(100).optional().describe('Optional channel name to restrict search to'),
 } as any, async (args: { query: string; channel?: string }) => {
   try {
-    const result = await searchMessages(client, args.query, args.channel);
+    const result = await searchMessages(restClient, args.query, args.channel);
     return { content: [{ type: 'text' as const, text: wrapMessageContent(result) }] };
   } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
@@ -188,7 +179,7 @@ server.tool('check_mentions', 'Check for messages where other agents mentioned y
   limit: z.number().min(1).max(100).optional().describe('Number of mentions to fetch (default 20)'),
 } as any, async (args: { only_unread?: boolean; limit?: number }) => {
   try {
-    const result = await checkMentions(client, args.only_unread, args.limit);
+    const result = await checkMentions(restClient, args.only_unread, args.limit);
     return { content: [{ type: 'text' as const, text: wrapMessageContent(result) }] };
   } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
@@ -199,7 +190,7 @@ server.tool('mark_mentions_read', 'Mark specific mentions as read after you have
   mention_ids: z.array(z.string().uuid()).min(1).max(100).describe('Array of mention IDs to mark as read'),
 } as any, async (args: { mention_ids: string[] }) => {
   try {
-    const result = await markMentionsRead(client, args.mention_ids);
+    const result = await markMentionsRead(restClient, args.mention_ids);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
@@ -211,7 +202,7 @@ server.tool('send_direct_message', 'Send a message that mentions a specific agen
   content: z.string().min(1).max(32000).describe('Message content (the @mention is added automatically)'),
 } as any, async (args: { target_agent: string; content: string }) => {
   try {
-    const result = await sendDirectMessage(client, args.target_agent, args.content);
+    const result = await sendDirectMessage(restClient, args.target_agent, args.content);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
@@ -222,7 +213,7 @@ server.tool('get_file_url', 'Get a signed download URL for a file shared via Air
   file_path: z.string().min(1).max(500).describe('File path from the message metadata (e.g. "direct-messages/1234-file.png")'),
 } as any, async (args: { file_path: string }) => {
   try {
-    const result = await getFileUrl(client, args.file_path);
+    const result = await getFileUrl(restClient, args.file_path);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
@@ -233,13 +224,14 @@ server.tool('download_file', 'Download a file shared via AirChat. Returns file c
   file_path: z.string().min(1).max(500).describe('File path from the message metadata (e.g. "direct-messages/1234-file.png")'),
 } as any, async (args: { file_path: string }) => {
   try {
-    const result = await downloadFile(client, args.file_path);
+    const result = await downloadFile(restClient, args.file_path);
     // For images, return as an image content block
-    if ('content_base64' in result && result.content_base64) {
+    if (typeof result === 'object' && result !== null && 'content_base64' in result) {
+      const r = result as { content_base64: string; path: string; type: string; size: number };
       return {
         content: [
-          { type: 'text' as const, text: `File: ${result.path} (${'type' in result ? result.type : ''}, ${'size' in result ? result.size : 0} bytes)` },
-          { type: 'image' as const, data: result.content_base64, mimeType: 'type' in result ? result.type : 'application/octet-stream' },
+          { type: 'text' as const, text: `File: ${r.path} (${r.type}, ${r.size} bytes)` },
+          { type: 'image' as const, data: r.content_base64, mimeType: r.type },
         ],
       };
     }
@@ -258,7 +250,7 @@ server.tool('upload_file', 'Upload a file to AirChat. Provide text content direc
   post_message: z.boolean().optional().describe('Whether to post a message about the file in the channel (default true)'),
 } as any, async (args: { filename: string; content: string; channel: string; content_type?: string; encoding?: 'base64' | 'utf-8'; post_message?: boolean }) => {
   try {
-    const result = await uploadFile(client, args.filename, args.content, args.channel, args.content_type, args.encoding, args.post_message);
+    const result = await uploadFile(restClient, args.filename, args.content, args.channel, args.content_type, args.encoding, args.post_message);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
