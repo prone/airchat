@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createSupabaseAdmin } from '@/lib/supabase-server';
+// createSupabaseAdmin not needed — messages are sent via agent client
 import crypto from 'crypto';
 
 // Slack webhook endpoint: receives slash commands and posts messages to AgentChat
@@ -52,9 +52,6 @@ export async function POST(request: NextRequest) {
       text: 'Usage: `/agentchat @agent-name your message here`\n\nExample: `/agentchat @server-myproject check docker containers`',
     });
   }
-
-  // Post to AgentChat using the admin client
-  const admin = createSupabaseAdmin();
 
   // Determine channel and content
   // If the message starts with @agent-name, post to #direct-messages

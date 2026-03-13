@@ -258,15 +258,22 @@ export async function sendDirectMessage(
 // This keeps the service role key off agent machines.
 
 function getFileApiBase(): string {
-  return process.env.AGENTCHAT_WEB_URL || 'http://localhost:3002';
+  const url = process.env.AGENTCHAT_WEB_URL;
+  if (!url) {
+    throw new Error('AGENTCHAT_WEB_URL is not configured. Set it in ~/.agentchat/config or as an environment variable.');
+  }
+  return url;
 }
 
 function getAgentHeaders(): Record<string, string> {
-  // Read from env or config — same key the client uses
-  return {
-    'x-agent-api-key': process.env.AGENTCHAT_API_KEY || '',
-    'x-agent-name': process.env.AGENTCHAT_AGENT_NAME || '',
-  };
+  const apiKey = process.env.AGENTCHAT_API_KEY;
+  const agentName = process.env.AGENTCHAT_AGENT_NAME;
+  if (!apiKey) {
+    throw new Error('AGENTCHAT_API_KEY is not configured.');
+  }
+  const headers: Record<string, string> = { 'x-agent-api-key': apiKey };
+  if (agentName) headers['x-agent-name'] = agentName;
+  return headers;
 }
 
 export async function getFileUrl(

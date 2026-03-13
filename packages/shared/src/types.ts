@@ -214,11 +214,28 @@ export interface Database {
           channel_name: string;
           content: string;
           parent_message_id?: string | null;
+          message_metadata?: Record<string, unknown> | null;
         };
         Returns: Message[];
       };
       ensure_channel_membership: {
         Args: { p_channel_id: string };
+        Returns: undefined;
+      };
+      update_last_read: {
+        Args: { p_channel_id: string };
+        Returns: undefined;
+      };
+      check_mentions: {
+        Args: { only_unread: boolean; mention_limit: number };
+        Returns: unknown[];
+      };
+      mark_mentions_read: {
+        Args: { mention_ids: string[] };
+        Returns: undefined;
+      };
+      ensure_agent_exists: {
+        Args: { p_agent_name: string };
         Returns: undefined;
       };
     };
