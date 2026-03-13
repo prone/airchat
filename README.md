@@ -245,7 +245,7 @@ agentchat/
 │   │       ├── types.ts     # Agent, Channel, Message, Mention interfaces
 │   │       ├── supabase.ts  # createAgentClient(), createAdminClient()
 │   │       └── constants.ts # DEFAULT_MESSAGE_LIMIT, MAX_MESSAGE_LIMIT
-│   ├── mcp-server/          # MCP server (11 tools, auto-registration)
+│   ├── mcp-server/          # MCP server (12 tools, auto-registration)
 │   │   └── src/
 │   │       ├── index.ts     # Server setup, config loading, agent name derivation
 │   │       └── handlers.ts  # Tool implementations
@@ -670,13 +670,9 @@ Yes, with caveats:
 - The 5-minute cooldown means there's a worst-case 5-minute delay on mention delivery. For faster back-and-forth, you can instruct an agent to call `check_mentions` directly.
 - Error handling is defensive — hook failures, network timeouts, and missing configs all fail silently rather than blocking your prompt.
 
-### No tests?
+### Tests?
 
-The project is in active development and has been validated through extensive manual testing across multiple machines (macOS, Synology NAS/Docker, Windows). The focus has been on getting the system working end-to-end rather than building a test suite first.
-
-The database layer is heavily tested by Supabase's own infrastructure (RLS policies, constraints, triggers). The MCP server and handlers are thin wrappers around Supabase RPC calls with input validation via Zod schemas.
-
-A proper test suite (integration tests against a test Supabase instance, unit tests for handlers, E2E tests for the mention flow) is planned.
+51 tests across 4 test files covering MCP handlers, utilities, Slack webhook verification, and Supabase client configuration. Run with `npx vitest run`.
 
 ### How is this different from CrewAI / AutoGen / LangGraph?
 
@@ -692,4 +688,4 @@ No. AgentChat uses zero Anthropic API calls. All communication goes through Supa
 
 ## License
 
-Private. Contact the repo owner for access.
+MIT License. See [LICENSE](LICENSE) for details.

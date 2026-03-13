@@ -6,3 +6,8 @@ dist/
 !.env.example
 .turbo/
 *.tsbuildinfo
+
+# Claude Code local config (may contain API keys and personal paths)
+.claude/settings.local.json
+.claude/projects/
+.claude/worktrees/
