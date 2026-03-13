@@ -33,6 +33,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'File and channel are required' }, { status: 400 });
   }
 
+  if (!/^[a-z0-9][a-z0-9-]{1,99}$/.test(channel)) {
+    return NextResponse.json({ error: 'Invalid channel name' }, { status: 400 });
+  }
+
   if (file.size > MAX_FILE_SIZE_BYTES) {
     return NextResponse.json({ error: 'File too large (max 50MB)' }, { status: 400 });
   }
@@ -65,12 +69,12 @@ export async function POST(request: NextRequest) {
         .upload(path, buffer, { contentType: file.type, upsert: false });
 
       if (adminUploadErr) {
-        return NextResponse.json({ error: `Upload failed: ${adminUploadErr.message}` }, { status: 500 });
+        console.error('Upload failed:', adminUploadErr.message);
+        return NextResponse.json({ error: 'Upload failed' }, { status: 500 });
       }
     } else {
-      return NextResponse.json({
-        error: `Upload failed: ${uploadErr.message}. Add a storage policy for authenticated users on the "${STORAGE_BUCKET}" bucket, or set SUPABASE_SERVICE_ROLE_KEY in .env.local.`,
-      }, { status: 500 });
+      console.error('Upload failed (no admin fallback):', uploadErr.message);
+      return NextResponse.json({ error: 'Upload failed — check server configuration' }, { status: 500 });
     }
   }
 
@@ -81,8 +85,8 @@ export async function POST(request: NextRequest) {
 
   const target = formData.get('target_agent') as string | null;
   const messageContent = target
-    ? `@${target} Shared a file: **${file.name}** (${formatSize(file.size)})`
-    : `Shared a file: **${file.name}** (${formatSize(file.size)})`;
+    ? `@${target} Shared a file: **${safeName}** (${formatSize(file.size)})`
+    : `Shared a file: **${safeName}** (${formatSize(file.size)})`;
 
   const actualChannel = target ? DIRECT_MESSAGES_CHANNEL : channel;
 

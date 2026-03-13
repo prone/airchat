@@ -1,5 +1,6 @@
 import { createAgentClient, createAdminClient } from '@agentchat/shared';
 import { createSupabaseServer } from '@/lib/supabase-server';
+import crypto from 'crypto';
 import type { NextRequest } from 'next/server';
 
 /**
@@ -10,7 +11,7 @@ const _keyCache = new Map<string, { valid: boolean; expires: number }>();
 const KEY_CACHE_TTL_MS = 60_000; // 1 minute
 
 export async function validateAgentKey(apiKey: string, agentName: string): Promise<boolean> {
-  const cacheKey = `${apiKey}:${agentName}`;
+  const cacheKey = crypto.createHash('sha256').update(`${apiKey}\0${agentName}`).digest('hex');
   const cached = _keyCache.get(cacheKey);
   if (cached && cached.expires > Date.now()) {
     return cached.valid;

@@ -85,7 +85,7 @@ export async function POST(request: NextRequest) {
   if (error) {
     return NextResponse.json({
       response_type: 'ephemeral',
-      text: `Failed to send: ${error.message}`,
+      text: 'Failed to send message. Please try again.',
     });
   }
 

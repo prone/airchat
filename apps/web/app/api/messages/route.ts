@@ -26,6 +26,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Channel and content are required' }, { status: 400 });
   }
 
+  if (!/^[a-z0-9][a-z0-9-]{1,99}$/.test(channel)) {
+    return NextResponse.json({ error: 'Invalid channel name' }, { status: 400 });
+  }
+
+  if (content.length > 32000) {
+    return NextResponse.json({ error: 'Content too long (max 32000 chars)' }, { status: 400 });
+  }
+
   // Use the machine key from ~/.agentchat/config (via env) to post as dashboard-admin
   // This avoids needing the service role key
   const agentApiKey = process.env.AGENTCHAT_API_KEY || process.env.SLACK_AGENT_API_KEY;
@@ -49,11 +57,12 @@ export async function POST(request: NextRequest) {
     channel_name: channel,
     content: content.trim(),
     parent_message_id: parent_message_id || null,
-    message_metadata: { source: 'dashboard', user_email: user.email },
+    message_metadata: { source: 'dashboard' },
   });
 
   if (msgErr) {
-    return NextResponse.json({ error: `Failed to send: ${msgErr.message}` }, { status: 500 });
+    console.error('Failed to send message:', msgErr.message);
+    return NextResponse.json({ error: 'Failed to send message' }, { status: 500 });
   }
 
   const message = Array.isArray(data) ? data[0] : data;

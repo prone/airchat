@@ -7,6 +7,14 @@ function validateStoragePath(p: string): boolean {
   return true;
 }
 
+const CHANNEL_NAME_RE = /^[a-z0-9][a-z0-9-]{1,99}$/;
+
+/** MIME types that could execute scripts if served inline from the same origin. */
+const DANGEROUS_MIME_TYPES = new Set([
+  'text/html', 'application/xhtml+xml', 'application/javascript',
+  'text/javascript', 'image/svg+xml', 'application/xml',
+]);
+
 // GET /api/files?path=direct-messages/1234-file.png
 // Auth: x-agent-api-key header (same as AgentChat API key)
 // Returns: the file contents with appropriate content-type
@@ -46,7 +54,8 @@ export async function GET(request: NextRequest) {
       .createSignedUrl(filePath, 3600);
 
     if (error) {
-      return NextResponse.json({ error: `Failed to create URL: ${error.message}` }, { status: 500 });
+      console.error('Failed to create signed URL:', error.message);
+      return NextResponse.json({ error: 'Failed to create file URL' }, { status: 500 });
     }
 
     return NextResponse.json({ signed_url: data.signedUrl, expires_in: 3600 });
@@ -58,16 +67,20 @@ export async function GET(request: NextRequest) {
     .download(filePath);
 
   if (error) {
-    return NextResponse.json({ error: `File not found: ${error.message}` }, { status: 404 });
+    console.error('File download failed:', error.message);
+    return NextResponse.json({ error: 'File not found' }, { status: 404 });
   }
 
   const buffer = Buffer.from(await data.arrayBuffer());
 
+  const rawType = data.type || 'application/octet-stream';
+  const safeType = DANGEROUS_MIME_TYPES.has(rawType) ? 'application/octet-stream' : rawType;
+
   return new NextResponse(buffer, {
     headers: {
-      'Content-Type': data.type || 'application/octet-stream',
+      'Content-Type': safeType,
       'Content-Length': buffer.length.toString(),
-      'Content-Disposition': `inline; filename="${(filePath.split('/').pop() || 'download').replace(/[^a-zA-Z0-9._-]/g, '_')}"`,
+      'Content-Disposition': `attachment; filename="${(filePath.split('/').pop() || 'download').replace(/[^a-zA-Z0-9._-]/g, '_')}"`,
     },
   });
 }
@@ -107,6 +120,10 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ error: 'filename, content, and channel are required' }, { status: 400 });
   }
 
+  if (!CHANNEL_NAME_RE.test(channel)) {
+    return NextResponse.json({ error: 'Invalid channel name' }, { status: 400 });
+  }
+
   // Convert content to buffer
   const buffer = encoding === 'base64'
     ? Buffer.from(content, 'base64')
@@ -128,13 +145,15 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ error: 'Storage not configured (missing SUPABASE_SERVICE_ROLE_KEY)' }, { status: 500 });
   }
 
-  const mimeType = content_type || 'application/octet-stream';
+  const rawMime = content_type || 'application/octet-stream';
+  const mimeType = DANGEROUS_MIME_TYPES.has(rawMime) ? 'application/octet-stream' : rawMime;
   const { error: uploadErr } = await storageClient.storage
     .from(STORAGE_BUCKET)
     .upload(storagePath, buffer, { contentType: mimeType, upsert: false });
 
   if (uploadErr) {
-    return NextResponse.json({ error: `Upload failed: ${uploadErr.message}` }, { status: 500 });
+    console.error('Upload failed:', uploadErr.message);
+    return NextResponse.json({ error: 'Upload failed' }, { status: 500 });
   }
 
   // Post a message about the file if requested (default true)
@@ -150,12 +169,12 @@ export async function PUT(request: NextRequest) {
 
       await agentClient.rpc('send_message_with_auto_join', {
         channel_name: channel,
-        content: `Shared a file: **${filename}** (${formatSize(buffer.length)})`,
+        content: `Shared a file: **${safeName}** (${formatSize(buffer.length)})`,
         parent_message_id: null,
         message_metadata: {
           source: 'agent-upload',
           agent: agentName,
-          files: [{ name: filename, size: buffer.length, type: mimeType, path: storagePath, bucket: STORAGE_BUCKET }],
+          files: [{ name: safeName, size: buffer.length, type: mimeType, path: storagePath, bucket: STORAGE_BUCKET }],
         },
       });
     }
@@ -198,7 +217,8 @@ export async function POST(request: NextRequest) {
     .list(folder || '', { limit: 100, sortBy: { column: 'created_at', order: 'desc' } });
 
   if (error) {
-    return NextResponse.json({ error: `List failed: ${error.message}` }, { status: 500 });
+    console.error('File list failed:', error.message);
+    return NextResponse.json({ error: 'Failed to list files' }, { status: 500 });
   }
 
   return NextResponse.json({ files: data });

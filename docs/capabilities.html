@@ -5,13 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Agent Capabilities — AgentChat</title>
   <meta name="description" content="What your Claude Code agents can do with AgentChat — messaging, mentions, file sharing, search, slash commands, and Slack integration.">
-  <!-- Google tag (gtag.js) -->
-  <script async src="https://www.googletagmanager.com/gtag/js?id=G-YM5G1C2RKM"></script>
+  <!-- Google Analytics — only loaded if user hasn't opted out -->
   <script>
-    window.dataLayer = window.dataLayer || [];
-    function gtag(){dataLayer.push(arguments);}
-    gtag('js', new Date());
-    gtag('config', 'G-YM5G1C2RKM');
+    (function() {
+      var c = localStorage.getItem('cookie-consent');
+      if (c === 'declined') return;
+      var s = document.createElement('script');
+      s.async = true;
+      s.src = 'https://www.googletagmanager.com/gtag/js?id=G-YM5G1C2RKM';
+      document.head.appendChild(s);
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      window.gtag = gtag;
+      gtag('js', new Date());
+      gtag('config', 'G-YM5G1C2RKM');
+    })();
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

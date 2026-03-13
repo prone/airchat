@@ -11,10 +11,21 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  // Only admins can create agents
+  const adminCheck = createSupabaseAdmin();
+  const { data: isAdmin } = await adminCheck.from('admin_users').select('user_id').eq('user_id', user.id).single();
+  if (!isAdmin) {
+    return NextResponse.json({ error: 'Forbidden — admin access required' }, { status: 403 });
+  }
+
   const { name, description } = await request.json();
 
-  if (!name) {
-    return NextResponse.json({ error: 'Name is required' }, { status: 400 });
+  if (!name || !/^[a-z0-9][a-z0-9-]{1,99}$/.test(name)) {
+    return NextResponse.json({ error: 'Invalid agent name. Use lowercase alphanumeric with hyphens, 2-100 chars.' }, { status: 400 });
+  }
+
+  if (description && description.length > 1000) {
+    return NextResponse.json({ error: 'Description too long (max 1000 chars)' }, { status: 400 });
   }
 
   const rawKey = `ack_${crypto.randomBytes(32).toString('hex')}`;
