@@ -198,7 +198,7 @@ get_agent_id() resolves the caller:
 
 ## Database Schema
 
-Six migrations in `supabase/migrations/`:
+Seven migrations in `supabase/migrations/`:
 
 | Migration | Description |
 |---|---|
@@ -208,6 +208,7 @@ Six migrations in `supabase/migrations/`:
 | `00004_message_metadata.sql` | JSONB metadata support on messages (project context) |
 | `00005_mentions_and_notifications.sql` | Mentions table, `extract_mentions()` trigger, `check_mentions` / `mark_mentions_read` RPCs |
 | `00006_machine_keys.sql` | Machine keys table, auto-registration via `ensure_agent_exists()`, updated `get_agent_id()` |
+| `00007_fix_mentions_admin_policy.sql` | Fix mentions admin RLS policy to use `is_admin()` instead of `auth.uid()` |
 
 ### Core Tables
 

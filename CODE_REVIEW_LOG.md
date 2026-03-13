@@ -21,7 +21,7 @@ Tracks issues found, fixed, and verified across review passes to prevent regress
 ### Deferred to Pass 3
 | # | Type | Issue | Status |
 |---|------|-------|--------|
-| 7 | Security | Mentions admin RLS policy uses `auth.uid()` not `is_admin()` | **Open** — requires SQL migration |
+| 7 | Security | Mentions admin RLS policy uses `auth.uid()` not `is_admin()` | Fixed in pass 6 |
 | 8 | Quality | Duplicated auth pattern across API routes | Fixed in pass 3 |
 | 9 | Quality | `as any` casts in MCP server | Fixed in pass 3 |
 | 10 | Quality | Duplicated `checkBoard` logic MCP vs CLI | Fixed in pass 3 (parallelized both) |
@@ -125,13 +125,30 @@ Tracks issues found, fixed, and verified across review passes to prevent regress
 
 ---
 
+## Review Pass 6 — Resolve All Remaining Issues (2026-03-12)
+**Commit:** `aa6fba5` + next commit
+**Found:** 0 new | **Fixed:** 8 (from previous backlogs)
+
+### Fixed
+| # | Type | Issue | File(s) | Fix |
+|---|------|-------|---------|-----|
+| 1 | Security | Mentions admin RLS policy uses `auth.uid()` not `is_admin()` | `00007_fix_mentions_admin_policy.sql` | New migration: drop + recreate policy with `is_admin()` |
+| 2 | Reuse | CLI commands duplicate MCP handler logic | `packages/shared/src/queries.ts` | Extracted shared query functions; CLI and MCP both import from shared |
+| 3 | Quality | `validateAgentKey` uses `check_mentions` as auth probe | `api-auth.ts` | Replaced with lightweight `agents` table query |
+| 4 | Quality | MCP index.ts sets `process.env` to pass config | `handlers.ts`, `index.ts` | Replaced with `FileApiConfig` interface and `setFileApiConfig()` |
+| 5 | Efficiency | Realtime subscription unfiltered by channel_id | `dashboard/page.tsx` | Added `channel_id` filter to subscription |
+| 6 | Efficiency | DM view fetches all messages, filters client-side | `dashboard/page.tsx` | Added `.or()` server-side filter for agent ID and content |
+| 7 | Efficiency | `downloadFile` downloads body before checking type | `handlers.ts` | Check file extension first; binary extensions skip to signed URL |
+| 8 | Efficiency | Per-request client in `validateAgentKey` | `api-auth.ts` | Added 60-second TTL cache |
+
+---
+
 ## Open Issues
 
 | # | From | Type | Issue | Reason Deferred |
 |---|------|------|-------|-----------------|
-| 1 | Pass 1 | Security | Mentions admin RLS policy uses `auth.uid()` not `is_admin()` | Requires SQL migration — needs careful testing against Supabase |
-| 2 | Pass 3 | Readability | Complex DM filter logic in dashboard subscription callback | Low risk, React component, would need UI testing |
-| 3 | Pass 3 | Consistency | Mixed `.js` extension in imports | Cosmetic — `.js` extensions are correct for ESM |
+| 1 | Pass 3 | Readability | Complex DM filter logic in dashboard subscription callback | Low risk, partially addressed by pass 6 subscription refactor |
+| 2 | Pass 3 | Consistency | Mixed `.js` extension in imports | Cosmetic — `.js` extensions are correct for ESM |
 
 ---
 
@@ -140,7 +157,7 @@ Tracks issues found, fixed, and verified across review passes to prevent regress
 | Metric | Count |
 |--------|-------|
 | Total issues found | 56 |
-| Issues fixed | 46 |
-| Issues open | 10 (3 deferred + 7 skipped) |
+| Issues fixed | 54 |
+| Issues open | 2 (cosmetic/low-risk) |
 | Tests added | 51 |
-| Review passes | 5 |
+| Review passes | 6 |
