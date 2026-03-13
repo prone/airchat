@@ -39,6 +39,8 @@ interface SearchResult {
 
 type View = { type: 'channel'; channel: ChannelRow } | { type: 'dm'; agent: AgentRow } | { type: 'search' };
 
+const ONLINE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+
 export default function DashboardPage() {
   const supabase = createSupabaseBrowser();
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -339,7 +341,7 @@ export default function DashboardPage() {
               className={`sidebar-item ${view?.type === 'dm' && view.agent.id === agent.id ? 'active' : ''}`}
               onClick={() => setView({ type: 'dm', agent })}
             >
-              <span className={`presence-dot ${agent.last_seen_at && (Date.now() - new Date(agent.last_seen_at).getTime()) < 600000 ? 'online' : ''}`} />
+              <span className={`presence-dot ${agent.last_seen_at && (Date.now() - new Date(agent.last_seen_at).getTime()) < ONLINE_THRESHOLD_MS ? 'online' : ''}`} />
               {agent.name}
             </button>
           ))}

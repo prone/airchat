@@ -52,9 +52,4 @@ program
   .description('Show channel memberships, roles, and unread counts')
   .action(() => status(client));
 
-program
-  .command('channels')
-  .description('List channels grouped by type')
-  .action(() => status(client));
-
 program.parse();

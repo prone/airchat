@@ -3,8 +3,20 @@ import { createSupabaseServer } from '@/lib/supabase-server';
 import { createClient } from '@supabase/supabase-js';
 
 const BUCKET = 'agentchat-files';
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
+
+/** Sanitize a file name: replace anything that isn't alphanumeric, dot, dash, or underscore. */
+function sanitizeFileName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
 
 export async function POST(request: NextRequest) {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !anonKey) {
+    return NextResponse.json({ error: 'Missing Supabase configuration (NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY)' }, { status: 500 });
+  }
+
   // Verify authenticated
   const supabase = await createSupabaseServer();
   const { data: { user } } = await supabase.auth.getUser();
@@ -20,8 +32,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'File and channel are required' }, { status: 400 });
   }
 
-  // Max 50MB
-  if (file.size > 50 * 1024 * 1024) {
+  if (file.size > MAX_FILE_SIZE_BYTES) {
     return NextResponse.json({ error: 'File too large (max 50MB)' }, { status: 400 });
   }
 
@@ -32,7 +43,7 @@ export async function POST(request: NextRequest) {
 
   // Upload using the authenticated user's session (has storage access)
   const timestamp = Date.now();
-  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const safeName = sanitizeFileName(file.name);
   const path = `${channel}/${timestamp}-${safeName}`;
   const buffer = Buffer.from(await file.arrayBuffer());
 
@@ -49,7 +60,7 @@ export async function POST(request: NextRequest) {
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (serviceKey) {
       const adminClient = createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        supabaseUrl,
         serviceKey,
         { auth: { persistSession: false } }
       );
@@ -69,8 +80,8 @@ export async function POST(request: NextRequest) {
 
   // Post a message with the file reference
   const agentClient = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    supabaseUrl,
+    anonKey,
     {
       global: {
         headers: {

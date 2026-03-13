@@ -113,19 +113,22 @@ server.tool('check_board', 'Get an overview of recent activity and unread counts
   try {
     const result = await checkBoard(client);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-  } catch (e: any) {
+  } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
   }
 });
 
+// Schema objects use `as any` because the MCP SDK's server.tool() expects its own
+// internal schema type, but plain zod property bags are not assignable to it.
+// The SDK validates correctly at runtime regardless.
 const listChannelsSchema = {
   type: z.enum(['project', 'technology', 'environment', 'global']).optional().describe('Filter by channel type'),
 };
-server.tool('list_channels', 'List your accessible channels, optionally filtered by type', listChannelsSchema as any, async (args: any) => {
+server.tool('list_channels', 'List your accessible channels, optionally filtered by type', listChannelsSchema as any, async (args: { type?: string }) => {
   try {
     const result = await listChannels(client, args.type);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-  } catch (e: any) {
+  } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
   }
 });
@@ -135,11 +138,11 @@ const readMessagesSchema = {
   limit: z.number().min(1).max(200).optional().describe('Number of messages to fetch (default 20, max 200)'),
   before: z.string().max(50).optional().describe('ISO timestamp to fetch messages before'),
 };
-server.tool('read_messages', 'Read recent messages from a channel', readMessagesSchema as any, async (args: any) => {
+server.tool('read_messages', 'Read recent messages from a channel', readMessagesSchema as any, async (args: { channel: string; limit?: number; before?: string }) => {
   try {
     const result = await readMessages(client, args.channel, args.limit, args.before);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-  } catch (e: any) {
+  } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
   }
 });
@@ -148,11 +151,11 @@ server.tool('send_message', 'Post a message to a channel', {
   channel: z.string().max(100).regex(/^[a-z0-9][a-z0-9-]{1,99}$/, 'Channel name must be lowercase alphanumeric with hyphens').describe('Channel name (without #)'),
   content: z.string().min(1).max(32000).describe('Message content'),
   parent_message_id: z.string().uuid().optional().describe('UUID of parent message for threading'),
-} as any, async (args: any) => {
+} as any, async (args: { channel: string; content: string; parent_message_id?: string }) => {
   try {
     const result = await sendMessage(client, args.channel, args.content, args.parent_message_id);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-  } catch (e: any) {
+  } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
   }
 });
@@ -160,11 +163,11 @@ server.tool('send_message', 'Post a message to a channel', {
 server.tool('search_messages', 'Full-text search across messages in your accessible channels', {
   query: z.string().min(1).max(500).describe('Search query text'),
   channel: z.string().max(100).optional().describe('Optional channel name to restrict search to'),
-} as any, async (args: any) => {
+} as any, async (args: { query: string; channel?: string }) => {
   try {
     const result = await searchMessages(client, args.query, args.channel);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-  } catch (e: any) {
+  } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
   }
 });
@@ -172,22 +175,22 @@ server.tool('search_messages', 'Full-text search across messages in your accessi
 server.tool('check_mentions', 'Check for messages where other agents mentioned you with @your-name. Use this to see if anyone is trying to reach you.', {
   only_unread: z.boolean().optional().describe('Only show unread mentions (default true)'),
   limit: z.number().min(1).max(100).optional().describe('Number of mentions to fetch (default 20)'),
-} as any, async (args: any) => {
+} as any, async (args: { only_unread?: boolean; limit?: number }) => {
   try {
     const result = await checkMentions(client, args.only_unread, args.limit);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-  } catch (e: any) {
+  } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
   }
 });
 
 server.tool('mark_mentions_read', 'Mark specific mentions as read after you have processed them', {
   mention_ids: z.array(z.string().uuid()).min(1).max(100).describe('Array of mention IDs to mark as read'),
-} as any, async (args: any) => {
+} as any, async (args: { mention_ids: string[] }) => {
   try {
     const result = await markMentionsRead(client, args.mention_ids);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-  } catch (e: any) {
+  } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
   }
 });
@@ -195,29 +198,29 @@ server.tool('mark_mentions_read', 'Mark specific mentions as read after you have
 server.tool('send_direct_message', 'Send a message that mentions a specific agent by name, notifying them. The message is posted to #direct-messages.', {
   target_agent: z.string().min(1).max(100).describe('Name of the agent to mention/notify'),
   content: z.string().min(1).max(32000).describe('Message content (the @mention is added automatically)'),
-} as any, async (args: any) => {
+} as any, async (args: { target_agent: string; content: string }) => {
   try {
     const result = await sendDirectMessage(client, args.target_agent, args.content);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-  } catch (e: any) {
+  } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
   }
 });
 
 server.tool('get_file_url', 'Get a signed download URL for a file shared via AgentChat. The URL is valid for 1 hour.', {
   file_path: z.string().min(1).max(500).describe('File path from the message metadata (e.g. "direct-messages/1234-file.png")'),
-} as any, async (args: any) => {
+} as any, async (args: { file_path: string }) => {
   try {
     const result = await getFileUrl(client, args.file_path);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-  } catch (e: any) {
+  } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
   }
 });
 
 server.tool('download_file', 'Download a file shared via AgentChat. Returns file content for text/images, or a signed URL for binary files.', {
   file_path: z.string().min(1).max(500).describe('File path from the message metadata (e.g. "direct-messages/1234-file.png")'),
-} as any, async (args: any) => {
+} as any, async (args: { file_path: string }) => {
   try {
     const result = await downloadFile(client, args.file_path);
     // For images, return as an image content block
@@ -230,7 +233,7 @@ server.tool('download_file', 'Download a file shared via AgentChat. Returns file
       };
     }
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
-  } catch (e: any) {
+  } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
   }
 });

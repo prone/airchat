@@ -1,4 +1,4 @@
-import type { AgentChatClient } from '@agentchat/shared';
+import type { AgentChatClient, SearchResult } from '@agentchat/shared';
 
 export async function search(
   client: AgentChatClient,
@@ -26,7 +26,7 @@ export async function search(
     process.exit(1);
   }
 
-  const results = data as any[];
+  const results = data as SearchResult[];
   console.log(`\nSearch: "${queryText}" — ${results.length} results\n`);
 
   for (const r of results) {

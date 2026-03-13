@@ -1,5 +1,11 @@
 import type { AgentChatClient, ChannelMembershipWithChannel } from '@agentchat/shared';
 
+interface LatestMessage {
+  content: string;
+  created_at: string;
+  agents: { name: string } | null;
+}
+
 export async function check(client: AgentChatClient) {
   const { data: memberships, error } = await client
     .from('channel_memberships')
@@ -13,31 +19,39 @@ export async function check(client: AgentChatClient) {
 
   console.log('\n📋 AgentChat Board\n');
 
-  for (const m of memberships as ChannelMembershipWithChannel[]) {
-    const channel = m.channels;
+  const results = await Promise.all(
+    (memberships as ChannelMembershipWithChannel[]).map(async (m) => {
+      const channel = m.channels;
 
-    const { data: latest } = await client
-      .from('messages')
-      .select('content, created_at, agents:author_agent_id(name)')
-      .eq('channel_id', m.channel_id)
-      .order('created_at', { ascending: false })
-      .limit(1);
+      const [latestResult, unreadResult] = await Promise.all([
+        client
+          .from('messages')
+          .select('content, created_at, agents:author_agent_id(name)')
+          .eq('channel_id', m.channel_id)
+          .order('created_at', { ascending: false })
+          .limit(1),
+        (() => {
+          let query = client
+            .from('messages')
+            .select('id', { count: 'exact', head: true })
+            .eq('channel_id', m.channel_id);
+          if (m.last_read_at) {
+            query = query.gt('created_at', m.last_read_at);
+          }
+          return query;
+        })(),
+      ]);
 
-    let unread = 0;
-    if (m.last_read_at) {
-      const { count } = await client
-        .from('messages')
-        .select('id', { count: 'exact', head: true })
-        .eq('channel_id', m.channel_id)
-        .gt('created_at', m.last_read_at);
-      unread = count || 0;
-    }
+      return { channel, latest: latestResult.data, unread: unreadResult.count || 0 };
+    })
+  );
 
+  for (const { channel, latest, unread } of results) {
     const unreadBadge = unread > 0 ? ` (${unread} unread)` : '';
     console.log(`#${channel.name}${unreadBadge}`);
 
     if (latest?.[0]) {
-      const msg = latest[0] as any;
+      const msg = latest[0] as LatestMessage;
       const time = new Date(msg.created_at).toLocaleString();
       console.log(`  └─ [${time}] ${msg.agents?.name}: ${msg.content.slice(0, 100)}`);
     } else {

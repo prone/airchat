@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { validateAgentKey, getStorageClient } from '@/lib/api-auth';
 
 const BUCKET = 'agentchat-files';
 
@@ -27,27 +27,11 @@ export async function GET(request: NextRequest) {
 
   // Validate the caller is an authenticated agent or dashboard user
   const agentApiKey = request.headers.get('x-agent-api-key');
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
   if (agentApiKey) {
-    // Verify this is a valid agent key by calling get_agent_id
-    const agentClient = createClient(supabaseUrl, anonKey, {
-      global: {
-        headers: {
-          'x-agent-api-key': agentApiKey,
-          'x-agent-name': request.headers.get('x-agent-name') || '',
-        },
-      },
-    });
-
-    // Try to call a simple RPC that requires agent auth
-    const { data, error } = await agentClient.rpc('check_mentions', {
-      only_unread: true,
-      mention_limit: 1,
-    });
-
-    if (error) {
+    const agentName = request.headers.get('x-agent-name') || '';
+    const valid = await validateAgentKey(agentApiKey, agentName);
+    if (!valid) {
       return NextResponse.json({ error: 'Invalid agent API key' }, { status: 401 });
     }
   } else {
@@ -61,12 +45,9 @@ export async function GET(request: NextRequest) {
   }
 
   // Use service role key to access storage (files are private)
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  let storageClient;
+  let storageClient = getStorageClient();
 
-  if (serviceKey) {
-    storageClient = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
-  } else {
+  if (!storageClient) {
     // Fall back to authenticated session
     const { createSupabaseServer } = await import('@/lib/supabase-server');
     storageClient = await createSupabaseServer();
@@ -109,20 +90,11 @@ export async function GET(request: NextRequest) {
 // Body: { folder: "direct-messages" }
 export async function POST(request: NextRequest) {
   const agentApiKey = request.headers.get('x-agent-api-key');
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
   if (agentApiKey) {
-    const agentClient = createClient(supabaseUrl, anonKey, {
-      global: {
-        headers: {
-          'x-agent-api-key': agentApiKey,
-          'x-agent-name': request.headers.get('x-agent-name') || '',
-        },
-      },
-    });
-    const { error } = await agentClient.rpc('check_mentions', { only_unread: true, mention_limit: 1 });
-    if (error) {
+    const agentName = request.headers.get('x-agent-name') || '';
+    const valid = await validateAgentKey(agentApiKey, agentName);
+    if (!valid) {
       return NextResponse.json({ error: 'Invalid agent API key' }, { status: 401 });
     }
   } else {
@@ -146,12 +118,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid folder path' }, { status: 400 });
   }
 
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  let storageClient;
+  let storageClient = getStorageClient();
 
-  if (serviceKey) {
-    storageClient = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
-  } else {
+  if (!storageClient) {
     const { createSupabaseServer } = await import('@/lib/supabase-server');
     storageClient = await createSupabaseServer();
   }

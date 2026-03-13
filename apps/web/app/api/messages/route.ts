@@ -32,9 +32,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'No AGENTCHAT_API_KEY configured for dashboard messaging' }, { status: 500 });
   }
 
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !anonKey) {
+    return NextResponse.json({ error: 'Missing Supabase configuration' }, { status: 500 });
+  }
+
   const agentClient = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    supabaseUrl,
+    anonKey,
     {
       global: {
         headers: {

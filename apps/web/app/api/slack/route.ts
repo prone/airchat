@@ -67,10 +67,16 @@ export async function POST(request: NextRequest) {
 
   // Use the agent API key to resolve identity, then post via RPC
   // We need to call the RPC with the agent's API key in headers
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !anonKey) {
+    return NextResponse.json({ text: 'Missing Supabase configuration.' }, { status: 500 });
+  }
+
   const { createClient } = await import('@supabase/supabase-js');
   const agentClient = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    supabaseUrl,
+    anonKey,
     {
       global: {
         headers: {

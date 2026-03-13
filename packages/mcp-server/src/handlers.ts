@@ -1,16 +1,28 @@
-import type { AgentChatClient, ChannelMembershipWithChannel, MessageWithAuthor } from '@agentchat/shared';
-import { resolve } from 'path';
+import type { AgentChatClient, ChannelMembershipWithChannel, MessageWithAuthor, SearchResult } from '@agentchat/shared';
+import { sanitizeError } from './utils.js';
 
-function getProjectContext(): string | null {
-  // Try AGENTCHAT_PROJECT env var first, then derive from CWD
-  if (process.env.AGENTCHAT_PROJECT) return process.env.AGENTCHAT_PROJECT;
-  try {
-    const cwd = process.cwd();
-    // Use the last directory component as the project name
-    return resolve(cwd).split('/').pop() || null;
-  } catch {
-    return null;
+function getMessageMetadata(): Record<string, unknown> {
+  const project = process.env.AGENTCHAT_PROJECT
+    || process.cwd().split('/').pop()
+    || null;
+  return project ? { project } : {};
+}
+
+function formatMessage(m: MessageWithAuthor): Record<string, unknown> {
+  const msg: Record<string, unknown> = {
+    id: m.id,
+    author: m.agents?.name || 'unknown',
+    project: m.metadata?.project || null,
+    content: m.content,
+    timestamp: m.created_at,
+    parent_message_id: m.parent_message_id,
+    pinned: m.pinned,
+  };
+  const files = m.metadata?.files as Array<Record<string, unknown>> | undefined;
+  if (files?.length) {
+    msg.files = files;
   }
+  return msg;
 }
 
 export async function checkBoard(client: AgentChatClient) {
@@ -19,41 +31,39 @@ export async function checkBoard(client: AgentChatClient) {
     .select('*, channels(*)')
     .order('joined_at');
 
-  if (memErr) throw new Error(`Failed to fetch memberships: ${memErr.message}`);
+  if (memErr) throw new Error(`Failed to fetch memberships: ${sanitizeError(memErr)}`);
 
-  const results = [];
-  for (const m of memberships as ChannelMembershipWithChannel[]) {
-    const channel = m.channels;
-    const { data: latest } = await client
-      .from('messages')
-      .select('id, content, created_at, agents:author_agent_id(name)')
-      .eq('channel_id', m.channel_id)
-      .order('created_at', { ascending: false })
-      .limit(1);
+  const results = await Promise.all(
+    (memberships as ChannelMembershipWithChannel[]).map(async (m) => {
+      const channel = m.channels;
 
-    let unreadCount = 0;
-    if (m.last_read_at) {
-      const { count } = await client
-        .from('messages')
-        .select('id', { count: 'exact', head: true })
-        .eq('channel_id', m.channel_id)
-        .gt('created_at', m.last_read_at);
-      unreadCount = count || 0;
-    } else {
-      const { count } = await client
-        .from('messages')
-        .select('id', { count: 'exact', head: true })
-        .eq('channel_id', m.channel_id);
-      unreadCount = count || 0;
-    }
+      const [latestResult, unreadResult] = await Promise.all([
+        client
+          .from('messages')
+          .select('id, content, created_at, agents:author_agent_id(name)')
+          .eq('channel_id', m.channel_id)
+          .order('created_at', { ascending: false })
+          .limit(1),
+        (() => {
+          let query = client
+            .from('messages')
+            .select('id', { count: 'exact', head: true })
+            .eq('channel_id', m.channel_id);
+          if (m.last_read_at) {
+            query = query.gt('created_at', m.last_read_at);
+          }
+          return query;
+        })(),
+      ]);
 
-    results.push({
-      channel: channel.name,
-      type: channel.type,
-      unread: unreadCount,
-      latest: latest?.[0] || null,
-    });
-  }
+      return {
+        channel: channel.name,
+        type: channel.type,
+        unread: unreadResult.count || 0,
+        latest: latestResult.data?.[0] || null,
+      };
+    })
+  );
 
   return { channels: results };
 }
@@ -63,9 +73,9 @@ export async function listChannels(client: AgentChatClient, type?: string) {
     .from('channel_memberships')
     .select('role, channels(*)');
 
-  if (error) throw new Error(`Failed to list channels: ${error.message}`);
+  if (error) throw new Error(`Failed to list channels: ${sanitizeError(error)}`);
 
-  const channels = (data as any[]).map((m) => ({
+  const channels = (data as ChannelMembershipWithChannel[]).map((m) => ({
     ...m.channels,
     role: m.role,
   }));
@@ -102,7 +112,7 @@ export async function readMessages(
   }
 
   const { data, error } = await query;
-  if (error) throw new Error(`Failed to read messages: ${error.message}`);
+  if (error) throw new Error(`Failed to read messages: ${sanitizeError(error)}`);
 
   // Auto-join channel for unread tracking, then update last_read_at
   await client.rpc('ensure_channel_membership', { p_channel_id: channel.id });
@@ -110,22 +120,7 @@ export async function readMessages(
 
   return {
     channel: channelName,
-    messages: (data as MessageWithAuthor[]).reverse().map((m) => {
-      const msg: Record<string, unknown> = {
-        id: m.id,
-        author: m.agents?.name || 'unknown',
-        project: m.metadata?.project || null,
-        content: m.content,
-        timestamp: m.created_at,
-        parent_message_id: m.parent_message_id,
-        pinned: m.pinned,
-      };
-      const files = m.metadata?.files as Array<Record<string, unknown>> | undefined;
-      if (files?.length) {
-        msg.files = files;
-      }
-      return msg;
-    }),
+    messages: (data as MessageWithAuthor[]).reverse().map(formatMessage),
   };
 }
 
@@ -135,8 +130,7 @@ export async function sendMessage(
   content: string,
   parentMessageId?: string
 ) {
-  const project = getProjectContext();
-  const metadata = project ? { project } : {};
+  const metadata = getMessageMetadata();
 
   const { data, error } = await client.rpc('send_message_with_auto_join', {
     channel_name: channelName,
@@ -145,7 +139,7 @@ export async function sendMessage(
     message_metadata: metadata,
   });
 
-  if (error) throw new Error(`Failed to send message: ${error.message}`);
+  if (error) throw new Error(`Failed to send message: ${sanitizeError(error)}`);
 
   const message = Array.isArray(data) ? data[0] : data;
   return { message, channel: channelName };
@@ -173,11 +167,11 @@ export async function searchMessages(
       channel_filter: channelFilter,
     });
 
-  if (error) throw new Error(`Search failed: ${error.message}`);
+  if (error) throw new Error(`Search failed: ${sanitizeError(error)}`);
 
   return {
     query: queryText,
-    results: (data as any[]).map((r) => ({
+    results: (data as SearchResult[]).map((r) => ({
       channel: r.channel_name,
       author: r.author_name,
       content: r.content,
@@ -197,10 +191,21 @@ export async function checkMentions(
     mention_limit: Math.min(limit, 100),
   });
 
-  if (error) throw new Error(`Failed to check mentions: ${error.message}`);
+  if (error) throw new Error(`Failed to check mentions: ${sanitizeError(error)}`);
+
+  interface MentionResult {
+    mention_id: string;
+    message_id: string;
+    channel_name: string;
+    author_name: string;
+    author_project: string | null;
+    content: string;
+    created_at: string;
+    is_read: boolean;
+  }
 
   return {
-    mentions: (data as any[]).map((m) => ({
+    mentions: (data as MentionResult[]).map((m) => ({
       mention_id: m.mention_id,
       message_id: m.message_id,
       channel: m.channel_name,
@@ -221,7 +226,7 @@ export async function markMentionsRead(
     mention_ids: mentionIds,
   });
 
-  if (error) throw new Error(`Failed to mark mentions read: ${error.message}`);
+  if (error) throw new Error(`Failed to mark mentions read: ${sanitizeError(error)}`);
 
   return { marked_read: mentionIds.length };
 }
@@ -231,10 +236,9 @@ export async function sendDirectMessage(
   targetAgentName: string,
   content: string
 ) {
-  const project = getProjectContext();
+  const metadata = getMessageMetadata();
   // Prepend @mention so the trigger picks it up
   const fullContent = `@${targetAgentName} ${content}`;
-  const metadata = project ? { project } : {};
 
   // Use global channel for direct messages
   const { data, error } = await client.rpc('send_message_with_auto_join', {
@@ -244,7 +248,7 @@ export async function sendDirectMessage(
     message_metadata: metadata,
   });
 
-  if (error) throw new Error(`Failed to send direct message: ${error.message}`);
+  if (error) throw new Error(`Failed to send direct message: ${sanitizeError(error)}`);
 
   const message = Array.isArray(data) ? data[0] : data;
   return { message, target: targetAgentName, channel: 'direct-messages' };
