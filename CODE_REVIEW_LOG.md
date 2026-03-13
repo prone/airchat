@@ -89,6 +89,42 @@ Tracks issues found, fixed, and verified across review passes to prevent regress
 
 ---
 
+## Review Pass 5 — Simplify (Reuse, Quality, Efficiency) (2026-03-12)
+**Commit:** `132fcbd`
+**Found:** 22 issues (across 3 parallel agents) | **Fixed:** 15 | **Skipped:** 7
+
+### Fixed
+| # | Type | Issue | File(s) | Fix |
+|---|------|-------|---------|-----|
+| 1 | Reuse | `formatSize`/`formatFileSize` duplicated in upload route and dashboard | `upload/route.ts`, `dashboard/page.tsx` | Extracted to `packages/shared/src/format.ts`, imported from both |
+| 2 | Reuse | `BUCKET = 'agentchat-files'` defined in 2 files | `files/route.ts`, `upload/route.ts` | Added `STORAGE_BUCKET` to shared constants |
+| 3 | Reuse | `'direct-messages'` hardcoded in 5+ files | Multiple | Added `DIRECT_MESSAGES_CHANNEL` to shared constants |
+| 4 | Reuse | `'dashboard-admin'`/`'slack-bridge'` hardcoded in 3 routes | Messages, upload, slack routes | Added `DASHBOARD_ADMIN_AGENT`, `SLACK_BRIDGE_AGENT` constants |
+| 5 | Reuse | `process.cwd().split('/').pop()` project derivation duplicated | `utils.ts`, `handlers.ts` | Extracted `getProjectName()` in utils |
+| 6 | Reuse | API routes use inline `createClient()` instead of shared `createAgentClient` | Messages, upload, slack routes | Switched to `createAgentClient` from `@agentchat/shared` |
+| 7 | Reuse | API routes use inline admin client instead of shared `createAdminClient` | `api-auth.ts`, `upload/route.ts` | Switched to `createAdminClient` from `@agentchat/shared` |
+| 8 | Quality | Duplicated auth block in files/route.ts GET and POST | `files/route.ts` | Extracted `authenticateRequest()` in `api-auth.ts` |
+| 9 | Quality | Redundant `agents` state derived from `allAgents` | `dashboard/page.tsx` | Replaced with `useMemo` |
+| 10 | Quality | Dead `dmChannelName` variable | `dashboard/page.tsx` | Removed |
+| 11 | Quality | `createSupabaseBrowser()` called on every render | `dashboard/page.tsx` | Wrapped in `useMemo` |
+| 12 | Efficiency | `getStorageClient()` creates new client every call | `api-auth.ts` | Cached as module-level singleton |
+| 13 | Efficiency | `ensure_agent_exists` RPC on every request for known agents | Messages, upload, slack routes | Cached with `Set<string>` in `ensureAgentRegistered()` |
+| 14 | Efficiency | Sequential `ensure_channel_membership` + `update_last_read` RPCs | `handlers.ts`, `cli/read.ts` | Wrapped in `Promise.all()` |
+| 15 | Reuse | Filename sanitization duplicated inline | `files/route.ts` vs `upload/route.ts` | Now both use consistent `sanitizeFileName` pattern |
+
+### Skipped (larger refactor or low impact)
+| # | Type | Issue | Reason |
+|---|------|-------|--------|
+| 16 | Reuse | CLI commands duplicate MCP handler logic (check, search, read) | Would need to move handlers to `packages/shared`, large restructure |
+| 17 | Quality | `validateAgentKey` uses `check_mentions` as auth probe | Works correctly; dedicated RPC would be better but low risk |
+| 18 | Quality | MCP index.ts sets `process.env` to pass config to handlers | Would need config injection refactor, touches many call sites |
+| 19 | Efficiency | Dashboard realtime subscription unfiltered by channel_id | React component refactor, needs UI testing |
+| 20 | Efficiency | DM view fetches all messages then filters client-side | Would need new server-side RPC |
+| 21 | Efficiency | `downloadFile` still downloads body before checking content-type | Would need HEAD request or extension-based routing |
+| 22 | Efficiency | Per-request Supabase client in `validateAgentKey` | Could add TTL cache but low traffic, acceptable |
+
+---
+
 ## Open Issues
 
 | # | From | Type | Issue | Reason Deferred |
@@ -103,8 +139,8 @@ Tracks issues found, fixed, and verified across review passes to prevent regress
 
 | Metric | Count |
 |--------|-------|
-| Total issues found | 34 |
-| Issues fixed | 31 |
-| Issues open | 3 |
+| Total issues found | 56 |
+| Issues fixed | 46 |
+| Issues open | 10 (3 deferred + 7 skipped) |
 | Tests added | 51 |
-| Review passes | 4 |
+| Review passes | 5 |
