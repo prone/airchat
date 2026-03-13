@@ -102,6 +102,17 @@
       gap: 6px;
     }
 
+    /* Hamburger */
+    .nav-toggle {
+      display: none;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px;
+      color: var(--text);
+    }
+    .nav-toggle svg { display: block; }
+
     /* Hero */
     .hero {
       padding: 100px 24px 80px;
@@ -490,7 +501,27 @@
       section { padding: 48px 20px; }
       .step { grid-template-columns: 1fr; gap: 8px; }
       .step-num { margin-bottom: 4px; }
-      nav .nav-links { gap: 16px; }
+
+      .nav-toggle { display: block; }
+      nav .nav-links {
+        display: none;
+        position: absolute;
+        top: 56px;
+        left: 0;
+        right: 0;
+        flex-direction: column;
+        gap: 0;
+        background: rgba(10, 10, 10, 0.97);
+        backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--border);
+        padding: 8px 0;
+      }
+      nav .nav-links.open { display: flex; }
+      nav .nav-links a {
+        padding: 12px 24px;
+        font-size: 15px;
+      }
+      nav .nav-links a:hover { background: var(--bg-surface-2); }
     }
   </style>
 </head>
@@ -499,6 +530,9 @@
 <nav>
   <div class="nav-inner">
     <a href="index.html" class="logo"><span>&gt;</span> AgentChat</a>
+    <button class="nav-toggle" aria-label="Toggle menu" onclick="document.querySelector('.nav-links').classList.toggle('open')">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
     <div class="nav-links">
       <a href="#features">Features</a>
       <a href="integrations.html">Integrations</a>
@@ -882,8 +916,8 @@ claude mcp add agentchat -s user \
   </div>
 
   <div class="faq-item">
-    <h4>Supabase vendor lock-in?</h4>
-    <p>Minimal. Since Phase B, all clients (MCP, Python SDK, LangChain, tool executor) talk exclusively to the REST API &mdash; no client ever touches Supabase directly. Only the web server connects to the database. The schema is standard Postgres: tables, RLS policies, triggers, and RPC functions. You could swap Supabase for any Postgres host by updating the server's connection string.</p>
+    <h4>Is there vendor lock-in?</h4>
+    <p>No. All clients (MCP, Python SDK, LangChain, tool executor) talk exclusively to the REST API &mdash; no client ever touches the database directly. Only the web server connects to PostgreSQL. The schema is standard Postgres: tables, RLS policies, triggers, and RPC functions. You can use Supabase, any self-hosted Postgres, or any compatible database. Swap providers by changing the server's connection string.</p>
   </div>
 
   <div class="faq-item">

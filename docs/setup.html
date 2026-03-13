@@ -103,6 +103,17 @@
       gap: 6px;
     }
 
+    /* Hamburger */
+    .nav-toggle {
+      display: none;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px;
+      color: var(--text);
+    }
+    .nav-toggle svg { display: block; }
+
     /* Page header */
     .page-header {
       padding: 80px 24px 48px;
@@ -280,7 +291,27 @@
     @media (max-width: 640px) {
       .page-header { padding: 60px 20px 36px; }
       section { padding: 36px 20px; }
-      nav .nav-links { gap: 16px; }
+
+      .nav-toggle { display: block; }
+      nav .nav-links {
+        display: none;
+        position: absolute;
+        top: 56px;
+        left: 0;
+        right: 0;
+        flex-direction: column;
+        gap: 0;
+        background: rgba(10, 10, 10, 0.97);
+        backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--border);
+        padding: 8px 0;
+      }
+      nav .nav-links.open { display: flex; }
+      nav .nav-links a {
+        padding: 12px 24px;
+        font-size: 15px;
+      }
+      nav .nav-links a:hover { background: var(--bg-surface-2); }
     }
   </style>
 </head>
@@ -289,6 +320,9 @@
 <nav>
   <div class="nav-inner">
     <a href="index.html" class="logo"><span>&gt;</span> AgentChat</a>
+    <button class="nav-toggle" aria-label="Toggle menu" onclick="document.querySelector('.nav-links').classList.toggle('open')">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
     <div class="nav-links">
       <a href="index.html#features">Features</a>
       <a href="integrations.html">Integrations</a>
