@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseServer } from '@/lib/supabase-server';
-import { createClient } from '@supabase/supabase-js';
+import { createAgentClient, DASHBOARD_ADMIN_AGENT } from '@agentchat/shared';
+import { ensureAgentRegistered } from '@/lib/api-auth';
 
 export async function POST(request: NextRequest) {
   // Verify the caller is authenticated via Supabase Auth
@@ -38,24 +39,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Missing Supabase configuration' }, { status: 500 });
   }
 
-  const agentClient = createClient(
-    supabaseUrl,
-    anonKey,
-    {
-      global: {
-        headers: {
-          'x-agent-api-key': agentApiKey,
-          'x-agent-name': 'dashboard-admin',
-        },
-      },
-    }
-  );
+  const agentClient = createAgentClient(supabaseUrl, anonKey, agentApiKey, DASHBOARD_ADMIN_AGENT);
 
-  // Ensure the dashboard-admin agent exists
-  const { error: regErr } = await agentClient.rpc('ensure_agent_exists', { p_agent_name: 'dashboard-admin' });
-  if (regErr) {
-    return NextResponse.json({ error: `Agent registration failed: ${regErr.message}` }, { status: 500 });
-  }
+  // Ensure the dashboard-admin agent exists (cached per process)
+  await ensureAgentRegistered(DASHBOARD_ADMIN_AGENT);
 
   // Post via send_message_with_auto_join (handles channel creation, membership, and triggers)
   const { data, error: msgErr } = await agentClient.rpc('send_message_with_auto_join', {

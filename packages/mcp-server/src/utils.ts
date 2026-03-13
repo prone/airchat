@@ -7,10 +7,12 @@ export function sanitizeError(e: any): string {
   return msg;
 }
 
+export function getProjectName(): string {
+  return process.env.AGENTCHAT_PROJECT || process.cwd().split('/').pop() || 'unknown';
+}
+
 export function deriveAgentName(machineName: string): string {
-  const project = process.env.AGENTCHAT_PROJECT
-    || process.cwd().split('/').pop()
-    || 'unknown';
+  const project = getProjectName();
   // Sanitize: lowercase, replace non-alphanumeric with hyphens, collapse multiples
   const sanitized = `${machineName}-${project}`
     .toLowerCase()

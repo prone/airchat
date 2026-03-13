@@ -1,10 +1,9 @@
 import type { AgentChatClient, ChannelMembershipWithChannel, MessageWithAuthor, SearchResult } from '@agentchat/shared';
-import { sanitizeError } from './utils.js';
+import { DIRECT_MESSAGES_CHANNEL } from '@agentchat/shared';
+import { sanitizeError, getProjectName } from './utils.js';
 
 function getMessageMetadata(): Record<string, unknown> {
-  const project = process.env.AGENTCHAT_PROJECT
-    || process.cwd().split('/').pop()
-    || null;
+  const project = getProjectName();
   return project ? { project } : {};
 }
 
@@ -115,8 +114,10 @@ export async function readMessages(
   if (error) throw new Error(`Failed to read messages: ${sanitizeError(error)}`);
 
   // Auto-join channel for unread tracking, then update last_read_at
-  await client.rpc('ensure_channel_membership', { p_channel_id: channel.id });
-  await client.rpc('update_last_read', { p_channel_id: channel.id });
+  await Promise.all([
+    client.rpc('ensure_channel_membership', { p_channel_id: channel.id }),
+    client.rpc('update_last_read', { p_channel_id: channel.id }),
+  ]);
 
   return {
     channel: channelName,
@@ -242,7 +243,7 @@ export async function sendDirectMessage(
 
   // Use global channel for direct messages
   const { data, error } = await client.rpc('send_message_with_auto_join', {
-    channel_name: 'direct-messages',
+    channel_name: DIRECT_MESSAGES_CHANNEL,
     content: fullContent,
     parent_message_id: null,
     message_metadata: metadata,
@@ -251,7 +252,7 @@ export async function sendDirectMessage(
   if (error) throw new Error(`Failed to send direct message: ${sanitizeError(error)}`);
 
   const message = Array.isArray(data) ? data[0] : data;
-  return { message, target: targetAgentName, channel: 'direct-messages' };
+  return { message, target: targetAgentName, channel: DIRECT_MESSAGES_CHANNEL };
 }
 
 // File operations go through the web API (/api/files) which has the service role key.

@@ -25,8 +25,10 @@ export async function read(client: AgentChatClient, channelName: string, limit: 
   }
 
   // Update last_read_at via RPC (consistent with MCP handler)
-  await client.rpc('ensure_channel_membership', { p_channel_id: channel.id });
-  await client.rpc('update_last_read', { p_channel_id: channel.id });
+  await Promise.all([
+    client.rpc('ensure_channel_membership', { p_channel_id: channel.id }),
+    client.rpc('update_last_read', { p_channel_id: channel.id }),
+  ]);
 
   console.log(`\n#${channelName} — last ${messages.length} messages\n`);
 

@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { validateAgentKey, getStorageClient } from '@/lib/api-auth';
-
-const BUCKET = 'agentchat-files';
+import { authenticateRequest, getStorageClient } from '@/lib/api-auth';
+import { STORAGE_BUCKET } from '@agentchat/shared';
 
 function validateStoragePath(p: string): boolean {
   if (p.includes('..') || p.startsWith('/') || p.includes('\0')) return false;
@@ -26,22 +25,9 @@ export async function GET(request: NextRequest) {
   }
 
   // Validate the caller is an authenticated agent or dashboard user
-  const agentApiKey = request.headers.get('x-agent-api-key');
-
-  if (agentApiKey) {
-    const agentName = request.headers.get('x-agent-name') || '';
-    const valid = await validateAgentKey(agentApiKey, agentName);
-    if (!valid) {
-      return NextResponse.json({ error: 'Invalid agent API key' }, { status: 401 });
-    }
-  } else {
-    // Check for Supabase Auth session (dashboard user)
-    const { createSupabaseServer } = await import('@/lib/supabase-server');
-    const supabase = await createSupabaseServer();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized. Provide x-agent-api-key header or login via dashboard.' }, { status: 401 });
-    }
+  const authenticated = await authenticateRequest(request);
+  if (!authenticated) {
+    return NextResponse.json({ error: 'Unauthorized. Provide x-agent-api-key header or login via dashboard.' }, { status: 401 });
   }
 
   // Use service role key to access storage (files are private)
@@ -56,7 +42,7 @@ export async function GET(request: NextRequest) {
   if (urlOnly) {
     // Return a signed URL (valid 1 hour)
     const { data, error } = await storageClient.storage
-      .from(BUCKET)
+      .from(STORAGE_BUCKET)
       .createSignedUrl(filePath, 3600);
 
     if (error) {
@@ -68,7 +54,7 @@ export async function GET(request: NextRequest) {
 
   // Download and return the file
   const { data, error } = await storageClient.storage
-    .from(BUCKET)
+    .from(STORAGE_BUCKET)
     .download(filePath);
 
   if (error) {
@@ -89,21 +75,9 @@ export async function GET(request: NextRequest) {
 // POST /api/files - List files in a folder
 // Body: { folder: "direct-messages" }
 export async function POST(request: NextRequest) {
-  const agentApiKey = request.headers.get('x-agent-api-key');
-
-  if (agentApiKey) {
-    const agentName = request.headers.get('x-agent-name') || '';
-    const valid = await validateAgentKey(agentApiKey, agentName);
-    if (!valid) {
-      return NextResponse.json({ error: 'Invalid agent API key' }, { status: 401 });
-    }
-  } else {
-    const { createSupabaseServer } = await import('@/lib/supabase-server');
-    const supabase = await createSupabaseServer();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+  const authenticated = await authenticateRequest(request);
+  if (!authenticated) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   let folder: string;
@@ -126,7 +100,7 @@ export async function POST(request: NextRequest) {
   }
 
   const { data, error } = await storageClient.storage
-    .from(BUCKET)
+    .from(STORAGE_BUCKET)
     .list(folder || '', { limit: 100, sortBy: { column: 'created_at', order: 'desc' } });
 
   if (error) {

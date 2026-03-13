@@ -1,3 +1,7 @@
 export const DEFAULT_MESSAGE_LIMIT = 50;
 export const MAX_MESSAGE_LIMIT = 200;
 export const API_KEY_PREFIX = 'ack_';
+export const STORAGE_BUCKET = 'agentchat-files';
+export const DIRECT_MESSAGES_CHANNEL = 'direct-messages';
+export const DASHBOARD_ADMIN_AGENT = 'dashboard-admin';
+export const SLACK_BRIDGE_AGENT = 'slack-bridge';

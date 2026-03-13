@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { createSupabaseBrowser } from '@/lib/supabase-browser';
+import { formatSize, DIRECT_MESSAGES_CHANNEL } from '@agentchat/shared';
 
 interface ChannelRow {
   id: string;
@@ -42,13 +43,11 @@ type View = { type: 'channel'; channel: ChannelRow } | { type: 'dm'; agent: Agen
 const ONLINE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
 
 export default function DashboardPage() {
-  const supabase = createSupabaseBrowser();
+  const supabase = useMemo(() => createSupabaseBrowser(), []);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Sidebar data
   const [channels, setChannels] = useState<ChannelRow[]>([]);
-  const [agents, setAgents] = useState<AgentRow[]>([]);
-
   // Current view
   const [view, setView] = useState<View | null>(null);
 
@@ -64,6 +63,7 @@ export default function DashboardPage() {
   // Agent profile popover
   const [profileAgent, setProfileAgent] = useState<AgentRow | null>(null);
   const [allAgents, setAllAgents] = useState<AgentRow[]>([]);
+  const agents = useMemo(() => allAgents.filter(a => a.active), [allAgents]);
 
   // Search
   const [searchQuery, setSearchQuery] = useState('');
@@ -90,7 +90,6 @@ export default function DashboardPage() {
         .order('name');
       if (ags) {
         setAllAgents(ags);
-        setAgents(ags.filter((a) => a.active));
       }
     }
     load();
@@ -113,13 +112,9 @@ export default function DashboardPage() {
     }
 
     let channelId: string;
-    let dmChannelName: string | null = null;
 
     if (view.type === 'channel') {
       channelId = view.channel.id;
-    } else {
-      // DMs go through #direct-messages channel
-      dmChannelName = 'direct-messages';
     }
 
     async function loadMessages() {
@@ -128,7 +123,7 @@ export default function DashboardPage() {
         const { data: dmCh } = await supabase
           .from('channels')
           .select('id')
-          .eq('name', 'direct-messages')
+          .eq('name', DIRECT_MESSAGES_CHANNEL)
           .single();
         if (!dmCh) {
           setMessages([]);
@@ -193,7 +188,7 @@ export default function DashboardPage() {
     if (!draft.trim() || !view || view.type === 'search') return;
     setSending(true);
 
-    const channel = view.type === 'channel' ? view.channel.name : 'direct-messages';
+    const channel = view.type === 'channel' ? view.channel.name : DIRECT_MESSAGES_CHANNEL;
     const content = view.type === 'dm' ? `@${view.agent.name} ${draft}` : draft;
 
     const res = await fetch('/api/messages', {
@@ -219,7 +214,7 @@ export default function DashboardPage() {
 
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('channel', view.type === 'channel' ? view.channel.name : 'direct-messages');
+    formData.append('channel', view.type === 'channel' ? view.channel.name : DIRECT_MESSAGES_CHANNEL);
     if (view.type === 'dm') {
       formData.append('target_agent', view.agent.name);
     }
@@ -411,7 +406,7 @@ export default function DashboardPage() {
                         <div key={i} className="file-attachment">
                           <span className="file-icon">📎</span>
                           <span className="file-name">{f.name}</span>
-                          <span className="text-dim text-xs">{formatFileSize(f.size)}</span>
+                          <span className="text-dim text-xs">{formatSize(f.size)}</span>
                           <span className="text-dim text-xs">· {f.path}</span>
                         </div>
                       ))}
@@ -518,10 +513,4 @@ export default function DashboardPage() {
       )}
     </div>
   );
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

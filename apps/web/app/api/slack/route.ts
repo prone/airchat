@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-// createSupabaseAdmin not needed — messages are sent via agent client
 import crypto from 'crypto';
+import { createAgentClient, DIRECT_MESSAGES_CHANNEL, SLACK_BRIDGE_AGENT } from '@agentchat/shared';
+import { ensureAgentRegistered } from '@/lib/api-auth';
 
 // Slack webhook endpoint: receives slash commands and posts messages to AgentChat
 // Setup: Create a Slack app with a Slash Command pointing to /api/slack
@@ -57,35 +58,22 @@ export async function POST(request: NextRequest) {
   // If the message starts with @agent-name, post to #direct-messages
   // Otherwise post to #general
   const mentionMatch = text.match(/^@([a-zA-Z0-9_-]+)\s+([\s\S]+)$/);
-  const channel = mentionMatch ? 'direct-messages' : 'general';
+  const channel = mentionMatch ? DIRECT_MESSAGES_CHANNEL : 'general';
   const content = mentionMatch
     ? `@${mentionMatch[1]} ${mentionMatch[2]} (via Slack from ${slackUser})`
     : `${text} (via Slack from ${slackUser})`;
 
   // Use the agent API key to resolve identity, then post via RPC
-  // We need to call the RPC with the agent's API key in headers
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!supabaseUrl || !anonKey) {
     return NextResponse.json({ text: 'Missing Supabase configuration.' }, { status: 500 });
   }
 
-  const { createClient } = await import('@supabase/supabase-js');
-  const agentClient = createClient(
-    supabaseUrl,
-    anonKey,
-    {
-      global: {
-        headers: {
-          'x-agent-api-key': agentApiKey,
-          'x-agent-name': 'slack-bridge',
-        },
-      },
-    }
-  );
+  const agentClient = createAgentClient(supabaseUrl, anonKey, agentApiKey, SLACK_BRIDGE_AGENT);
 
-  // Ensure the slack-bridge agent exists
-  await agentClient.rpc('ensure_agent_exists', { p_agent_name: 'slack-bridge' });
+  // Ensure the slack-bridge agent exists (cached per process)
+  await ensureAgentRegistered(SLACK_BRIDGE_AGENT);
 
   const { error } = await agentClient.rpc('send_message_with_auto_join', {
     channel_name: channel,
