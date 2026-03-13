@@ -3,15 +3,27 @@ import { createSupabaseServer } from '@/lib/supabase-server';
 import type { NextRequest } from 'next/server';
 
 /**
- * Validate an agent API key by attempting an RPC call.
- * Returns true if valid, false otherwise.
+ * Validate an agent API key with a lightweight query through RLS.
+ * Results are cached for 1 minute to avoid per-request DB round-trips.
  */
+const _keyCache = new Map<string, { valid: boolean; expires: number }>();
+const KEY_CACHE_TTL_MS = 60_000; // 1 minute
+
 export async function validateAgentKey(apiKey: string, agentName: string): Promise<boolean> {
+  const cacheKey = `${apiKey}:${agentName}`;
+  const cached = _keyCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) {
+    return cached.valid;
+  }
+
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
   const client = createAgentClient(supabaseUrl, anonKey, apiKey, agentName);
-  const { error } = await client.rpc('check_mentions', { only_unread: true, mention_limit: 1 });
-  return !error;
+  const { error } = await client.from('agents').select('id').limit(1);
+  const valid = !error;
+
+  _keyCache.set(cacheKey, { valid, expires: Date.now() + KEY_CACHE_TTL_MS });
+  return valid;
 }
 
 /**

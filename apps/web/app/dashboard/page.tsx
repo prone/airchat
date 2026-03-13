@@ -111,70 +111,81 @@ export default function DashboardPage() {
       return;
     }
 
-    let channelId: string;
+    let cancelled = false;
+    let realtimeSub: ReturnType<typeof supabase.channel> | null = null;
 
-    if (view.type === 'channel') {
-      channelId = view.channel.id;
-    }
+    async function loadAndSubscribe() {
+      let channelId: string;
 
-    async function loadMessages() {
-      if (view!.type === 'dm') {
+      if (view!.type === 'channel') {
+        channelId = view!.type === 'channel' ? (view as { type: 'channel'; channel: ChannelRow }).channel.id : '';
+      } else {
         // Find the direct-messages channel
         const { data: dmCh } = await supabase
           .from('channels')
           .select('id')
           .eq('name', DIRECT_MESSAGES_CHANNEL)
           .single();
-        if (!dmCh) {
-          setMessages([]);
+        if (!dmCh || cancelled) {
+          if (!cancelled) setMessages([]);
           return;
         }
         channelId = dmCh.id;
       }
 
-      const { data } = await supabase
+      // Build the messages query with server-side filtering
+      let query = supabase
         .from('messages')
         .select('id, content, created_at, parent_message_id, pinned, metadata, agents:author_agent_id(name)')
         .eq('channel_id', channelId)
         .order('created_at', { ascending: true })
         .limit(200);
 
-      let msgs = (data || []) as unknown as MessageRow[];
-
-      // For DM view, filter to messages involving the selected agent
+      // For DM view, add server-side filter for messages involving the selected agent
       if (view!.type === 'dm') {
         const agentName = (view as { type: 'dm'; agent: AgentRow }).agent.name;
-        msgs = msgs.filter((m) =>
-          m.agents?.name === agentName ||
-          m.content.includes(`@${agentName}`)
-        );
+        const agentId = (view as { type: 'dm'; agent: AgentRow }).agent.id;
+        query = query.or(`author_agent_id.eq.${agentId},content.ilike.%@${agentName}%`);
       }
 
+      const { data } = await query;
+      if (cancelled) return;
+
+      const msgs = (data || []) as unknown as MessageRow[];
       setMessages(msgs);
-    }
-    loadMessages();
 
-    // Real-time subscription
-    const realtimeSub = supabase
-      .channel(`view-${view.type === 'channel' ? view.channel.id : 'dm'}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (payload) => {
-        const { data } = await supabase
-          .from('messages')
-          .select('id, content, created_at, parent_message_id, pinned, metadata, agents:author_agent_id(name)')
-          .eq('id', payload.new.id)
-          .single();
-        if (data) {
-          const msg = data as unknown as MessageRow;
-          if (view!.type === 'dm') {
-            const agentName = (view as { type: 'dm'; agent: AgentRow }).agent.name;
-            if (msg.agents?.name !== agentName && !msg.content.includes(`@${agentName}`)) return;
+      // Set up real-time subscription filtered by channel_id
+      realtimeSub = supabase
+        .channel(`view-${channelId}`)
+        .on('postgres_changes', {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `channel_id=eq.${channelId}`,
+        }, async (payload) => {
+          const { data } = await supabase
+            .from('messages')
+            .select('id, content, created_at, parent_message_id, pinned, metadata, agents:author_agent_id(name)')
+            .eq('id', payload.new.id)
+            .single();
+          if (data && !cancelled) {
+            const msg = data as unknown as MessageRow;
+            if (view!.type === 'dm') {
+              const agentName = (view as { type: 'dm'; agent: AgentRow }).agent.name;
+              if (msg.agents?.name !== agentName && !msg.content.includes(`@${agentName}`)) return;
+            }
+            setMessages((prev) => [...prev, msg]);
           }
-          setMessages((prev) => [...prev, msg]);
-        }
-      })
-      .subscribe();
+        })
+        .subscribe();
+    }
 
-    return () => { supabase.removeChannel(realtimeSub); };
+    loadAndSubscribe();
+
+    return () => {
+      cancelled = true;
+      if (realtimeSub) supabase.removeChannel(realtimeSub);
+    };
   }, [view]);
 
   // Auto-scroll to bottom on new messages

@@ -7,7 +7,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { createAgentClient } from '@agentchat/shared';
-import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, markMentionsRead, sendDirectMessage, getFileUrl, downloadFile } from './handlers.js';
+import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, markMentionsRead, sendDirectMessage, getFileUrl, downloadFile, setFileApiConfig } from './handlers.js';
 import { sanitizeError, deriveAgentName } from './utils.js';
 
 interface AgentChatConfig {
@@ -63,10 +63,12 @@ const config = loadConfig();
 const agentName = deriveAgentName(config.MACHINE_NAME);
 const client = createAgentClient(config.SUPABASE_URL, config.SUPABASE_ANON_KEY, config.AGENTCHAT_API_KEY, agentName);
 
-// Expose config for file handlers (they call the web API with agent auth)
-process.env.AGENTCHAT_API_KEY = config.AGENTCHAT_API_KEY;
-process.env.AGENTCHAT_AGENT_NAME = agentName;
-if (config.AGENTCHAT_WEB_URL) process.env.AGENTCHAT_WEB_URL = config.AGENTCHAT_WEB_URL;
+// Pass config to file handlers (they call the web API with agent auth)
+setFileApiConfig({
+  webUrl: config.AGENTCHAT_WEB_URL || '',
+  apiKey: config.AGENTCHAT_API_KEY,
+  agentName: agentName,
+});
 
 // Auto-register agent on startup
 try {

@@ -1,5 +1,5 @@
-import type { AgentChatClient, ChannelMembershipWithChannel, MessageWithAuthor, SearchResult } from '@agentchat/shared';
-import { DIRECT_MESSAGES_CHANNEL } from '@agentchat/shared';
+import type { AgentChatClient, ChannelMembershipWithChannel } from '@agentchat/shared';
+import { DIRECT_MESSAGES_CHANNEL, fetchBoardSummary, fetchChannelMessages, markChannelRead, searchChannelMessages } from '@agentchat/shared';
 import { sanitizeError, getProjectName } from './utils.js';
 
 function getMessageMetadata(): Record<string, unknown> {
@@ -7,64 +7,13 @@ function getMessageMetadata(): Record<string, unknown> {
   return project ? { project } : {};
 }
 
-function formatMessage(m: MessageWithAuthor): Record<string, unknown> {
-  const msg: Record<string, unknown> = {
-    id: m.id,
-    author: m.agents?.name || 'unknown',
-    project: m.metadata?.project || null,
-    content: m.content,
-    timestamp: m.created_at,
-    parent_message_id: m.parent_message_id,
-    pinned: m.pinned,
-  };
-  const files = m.metadata?.files as Array<Record<string, unknown>> | undefined;
-  if (files?.length) {
-    msg.files = files;
-  }
-  return msg;
-}
-
 export async function checkBoard(client: AgentChatClient) {
-  const { data: memberships, error: memErr } = await client
-    .from('channel_memberships')
-    .select('*, channels(*)')
-    .order('joined_at');
-
-  if (memErr) throw new Error(`Failed to fetch memberships: ${sanitizeError(memErr)}`);
-
-  const results = await Promise.all(
-    (memberships as ChannelMembershipWithChannel[]).map(async (m) => {
-      const channel = m.channels;
-
-      const [latestResult, unreadResult] = await Promise.all([
-        client
-          .from('messages')
-          .select('id, content, created_at, agents:author_agent_id(name)')
-          .eq('channel_id', m.channel_id)
-          .order('created_at', { ascending: false })
-          .limit(1),
-        (() => {
-          let query = client
-            .from('messages')
-            .select('id', { count: 'exact', head: true })
-            .eq('channel_id', m.channel_id);
-          if (m.last_read_at) {
-            query = query.gt('created_at', m.last_read_at);
-          }
-          return query;
-        })(),
-      ]);
-
-      return {
-        channel: channel.name,
-        type: channel.type,
-        unread: unreadResult.count || 0,
-        latest: latestResult.data?.[0] || null,
-      };
-    })
-  );
-
-  return { channels: results };
+  try {
+    const channels = await fetchBoardSummary(client);
+    return { channels };
+  } catch (e: any) {
+    throw new Error(sanitizeError(e));
+  }
 }
 
 export async function listChannels(client: AgentChatClient, type?: string) {
@@ -91,37 +40,14 @@ export async function readMessages(
   limit: number = 20,
   before?: string
 ) {
-  const { data: channel, error: chErr } = await client
-    .from('channels')
-    .select('id')
-    .eq('name', channelName)
-    .single();
-
-  if (chErr || !channel) throw new Error(`Channel #${channelName} not found or not accessible`);
-
-  let query = client
-    .from('messages')
-    .select('*, agents:author_agent_id(id, name)')
-    .eq('channel_id', channel.id)
-    .order('created_at', { ascending: false })
-    .limit(Math.min(limit, 200));
-
-  if (before) {
-    query = query.lt('created_at', before);
-  }
-
-  const { data, error } = await query;
-  if (error) throw new Error(`Failed to read messages: ${sanitizeError(error)}`);
+  const { channelId, messages } = await fetchChannelMessages(client, channelName, limit, before);
 
   // Auto-join channel for unread tracking, then update last_read_at
-  await Promise.all([
-    client.rpc('ensure_channel_membership', { p_channel_id: channel.id }),
-    client.rpc('update_last_read', { p_channel_id: channel.id }),
-  ]);
+  await markChannelRead(client, channelId);
 
   return {
     channel: channelName,
-    messages: (data as MessageWithAuthor[]).reverse().map(formatMessage),
+    messages,
   };
 }
 
@@ -151,35 +77,8 @@ export async function searchMessages(
   queryText: string,
   channelName?: string
 ) {
-  let channelFilter: string | undefined;
-
-  if (channelName) {
-    const { data: channel } = await client
-      .from('channels')
-      .select('id')
-      .eq('name', channelName)
-      .single();
-    if (channel) channelFilter = channel.id;
-  }
-
-  const { data, error } = await client
-    .rpc('search_messages', {
-      query_text: queryText,
-      channel_filter: channelFilter,
-    });
-
-  if (error) throw new Error(`Search failed: ${sanitizeError(error)}`);
-
-  return {
-    query: queryText,
-    results: (data as SearchResult[]).map((r) => ({
-      channel: r.channel_name,
-      author: r.author_name,
-      content: r.content,
-      timestamp: r.created_at,
-      id: r.id,
-    })),
-  };
+  const results = await searchChannelMessages(client, queryText, channelName);
+  return { query: queryText, results };
 }
 
 export async function checkMentions(
@@ -258,22 +157,31 @@ export async function sendDirectMessage(
 // File operations go through the web API (/api/files) which has the service role key.
 // This keeps the service role key off agent machines.
 
+export interface FileApiConfig {
+  webUrl: string;
+  apiKey: string;
+  agentName: string;
+}
+
+let _fileApiConfig: FileApiConfig | null = null;
+
+export function setFileApiConfig(config: FileApiConfig): void {
+  _fileApiConfig = config;
+}
+
 function getFileApiBase(): string {
-  const url = process.env.AGENTCHAT_WEB_URL;
-  if (!url) {
+  if (!_fileApiConfig?.webUrl) {
     throw new Error('AGENTCHAT_WEB_URL is not configured. Set it in ~/.agentchat/config or as an environment variable.');
   }
-  return url;
+  return _fileApiConfig.webUrl;
 }
 
 function getAgentHeaders(): Record<string, string> {
-  const apiKey = process.env.AGENTCHAT_API_KEY;
-  const agentName = process.env.AGENTCHAT_AGENT_NAME;
-  if (!apiKey) {
+  if (!_fileApiConfig?.apiKey) {
     throw new Error('AGENTCHAT_API_KEY is not configured.');
   }
-  const headers: Record<string, string> = { 'x-agent-api-key': apiKey };
-  if (agentName) headers['x-agent-name'] = agentName;
+  const headers: Record<string, string> = { 'x-agent-api-key': _fileApiConfig.apiKey };
+  if (_fileApiConfig.agentName) headers['x-agent-name'] = _fileApiConfig.agentName;
   return headers;
 }
 
@@ -300,10 +208,20 @@ export async function getFileUrl(
   };
 }
 
+const TEXT_EXTENSIONS = new Set(['txt', 'md', 'json', 'csv', 'xml', 'html', 'css', 'js', 'ts', 'py', 'sh', 'yml', 'yaml', 'toml', 'ini', 'cfg', 'log', 'env', 'sql']);
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
+
 export async function downloadFile(
   _client: AgentChatClient,
   filePath: string
 ) {
+  const ext = filePath.split('.').pop()?.toLowerCase() || '';
+
+  // For unknown/binary extensions, skip download and return signed URL directly
+  if (!TEXT_EXTENSIONS.has(ext) && !IMAGE_EXTENSIONS.has(ext)) {
+    return getFileUrl(_client, filePath);
+  }
+
   const base = getFileApiBase();
   const res = await fetch(`${base}/api/files?path=${encodeURIComponent(filePath)}`, {
     headers: getAgentHeaders(),
@@ -316,19 +234,18 @@ export async function downloadFile(
   }
 
   const contentType = res.headers.get('content-type') || 'application/octet-stream';
-  const isText = contentType.startsWith('text/') || contentType === 'application/json';
-  const isImage = contentType.startsWith('image/');
+  const buffer = Buffer.from(await res.arrayBuffer());
 
-  if (isText || isImage) {
-    const buffer = Buffer.from(await res.arrayBuffer());
-    if (isText) {
-      return {
-        path: filePath,
-        type: contentType,
-        size: buffer.length,
-        content: buffer.toString('utf-8'),
-      };
-    }
+  if (contentType.startsWith('text/') || contentType === 'application/json') {
+    return {
+      path: filePath,
+      type: contentType,
+      size: buffer.length,
+      content: buffer.toString('utf-8'),
+    };
+  }
+
+  if (contentType.startsWith('image/')) {
     return {
       path: filePath,
       type: contentType,
@@ -337,8 +254,6 @@ export async function downloadFile(
     };
   }
 
-  // For binary files, don't consume the body — get a signed URL instead
-  await res.body?.cancel();
-
+  // Unexpected content-type for a known extension — fall back to signed URL
   return getFileUrl(_client, filePath);
 }

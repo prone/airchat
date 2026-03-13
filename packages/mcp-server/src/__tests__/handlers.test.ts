@@ -9,6 +9,7 @@ import {
   markMentionsRead,
   getFileUrl,
   downloadFile,
+  setFileApiConfig,
 } from '../handlers.js';
 
 function createMockQuery(overrides: any = {}) {
@@ -465,17 +466,12 @@ describe('markMentionsRead', () => {
 });
 
 describe('getFileUrl', () => {
-  let originalEnv: NodeJS.ProcessEnv;
-
   beforeEach(() => {
-    originalEnv = { ...process.env };
-    process.env.AGENTCHAT_WEB_URL = 'http://test-server:3000';
-    process.env.AGENTCHAT_API_KEY = 'test-key';
-    process.env.AGENTCHAT_AGENT_NAME = 'test-agent';
+    setFileApiConfig({ webUrl: 'http://test-server:3000', apiKey: 'test-key', agentName: 'test-agent' });
   });
 
   afterEach(() => {
-    process.env = originalEnv;
+    setFileApiConfig({ webUrl: '', apiKey: '', agentName: '' });
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -516,17 +512,12 @@ describe('getFileUrl', () => {
 });
 
 describe('downloadFile', () => {
-  let originalEnv: NodeJS.ProcessEnv;
-
   beforeEach(() => {
-    originalEnv = { ...process.env };
-    process.env.AGENTCHAT_WEB_URL = 'http://test-server:3000';
-    process.env.AGENTCHAT_API_KEY = 'test-key';
-    process.env.AGENTCHAT_AGENT_NAME = 'test-agent';
+    setFileApiConfig({ webUrl: 'http://test-server:3000', apiKey: 'test-key', agentName: 'test-agent' });
   });
 
   afterEach(() => {
-    process.env = originalEnv;
+    setFileApiConfig({ webUrl: '', apiKey: '', agentName: '' });
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -571,23 +562,10 @@ describe('downloadFile', () => {
   });
 
   it('returns signed URL for binary files via getFileUrl', async () => {
-    // The current implementation cancels the response body and delegates to getFileUrl
-    // for binary (non-text, non-image) content types.
-    const fetchMock = vi.fn().mockImplementation((url: string) => {
-      if (!url.includes('url=true')) {
-        // First call: download attempt (content-type is binary)
-        return Promise.resolve({
-          ok: true,
-          headers: { get: (name: string) => name === 'content-type' ? 'application/octet-stream' : null },
-          body: { cancel: vi.fn().mockResolvedValue(undefined) },
-        });
-      } else {
-        // Second call: getFileUrl fetches signed URL
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ signed_url: 'https://storage.example.com/signed/data.bin' }),
-        });
-      }
+    // Binary extensions skip the download entirely and go straight to getFileUrl
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ signed_url: 'https://storage.example.com/signed/data.bin' }),
     });
 
     vi.stubGlobal('fetch', fetchMock);
@@ -595,8 +573,12 @@ describe('downloadFile', () => {
     const client: any = {};
     const result = await downloadFile(client, 'general/data.bin');
 
-    // Binary files delegate to getFileUrl, which returns path + signed_url + expires_in
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Only one fetch call (getFileUrl), no download attempt
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('url=true'),
+      expect.anything(),
+    );
     expect(result.path).toBe('general/data.bin');
     expect((result as any).signed_url).toBe('https://storage.example.com/signed/data.bin');
     expect((result as any).expires_in).toBe('1 hour');
