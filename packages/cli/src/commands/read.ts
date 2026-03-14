@@ -1,4 +1,4 @@
-import type { AirChatRestClient } from '@airchat/shared';
+import type { AirChatRestClient } from '@airchat/shared/rest-client';
 
 export async function read(client: AirChatRestClient, channelName: string, limit: number = 20) {
   const data = await client.readMessages(channelName, limit) as {

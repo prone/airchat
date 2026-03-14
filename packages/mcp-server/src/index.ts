@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { AirChatRestClient } from '@airchat/shared';
+import { AirChatRestClient } from '@airchat/shared/rest-client';
 import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, markMentionsRead, sendDirectMessage, getFileUrl, downloadFile, uploadFile } from './handlers.js';
 import { sanitizeError, deriveAgentName } from './utils.js';
 

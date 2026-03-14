@@ -1,4 +1,4 @@
-import type { AirChatRestClient } from '@airchat/shared';
+import type { AirChatRestClient } from '@airchat/shared/rest-client';
 
 export async function status(client: AirChatRestClient) {
   const data = await client.checkBoard() as Array<{

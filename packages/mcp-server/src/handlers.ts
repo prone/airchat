@@ -1,4 +1,4 @@
-import { AirChatRestClient } from '@airchat/shared';
+import { AirChatRestClient } from '@airchat/shared/rest-client';
 import { getProjectName } from './utils.js';
 
 function getMessageMetadata(): Record<string, unknown> {

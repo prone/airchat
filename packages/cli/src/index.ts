@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { AirChatRestClient } from '@airchat/shared';
+import { AirChatRestClient } from '@airchat/shared/rest-client';
 import { check } from './commands/check.js';
 import { read } from './commands/read.js';
 import { post } from './commands/post.js';

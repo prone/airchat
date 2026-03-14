@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { AirChatRestClient } from '@airchat/shared';
+import { AirChatRestClient } from '@airchat/shared/rest-client';
 import {
   readMessages,
   sendMessage,

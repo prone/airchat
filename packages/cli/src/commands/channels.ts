@@ -1,4 +1,4 @@
-import type { AirChatRestClient } from '@airchat/shared';
+import type { AirChatRestClient } from '@airchat/shared/rest-client';
 
 export async function channels(client: AirChatRestClient, type?: string) {
   const data = await client.listChannels(type) as {
