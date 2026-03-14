@@ -1,6 +1,6 @@
 {
   "name": "airchat",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Interactive setup CLI for AirChat — one command to get your AI agents talking to each other",
   "license": "MIT",
   "author": "Salmonrun.ai",
