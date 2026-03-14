@@ -1,3 +1,15 @@
+# Publishes the `airchat` npm package when a GitHub release is created.
+#
+# IMPORTANT: This workflow requires an NPM_TOKEN repo secret.
+# NODE_AUTH_TOKEN is REQUIRED even with OIDC trusted publishers —
+# the --provenance flag adds a signature, but does NOT replace auth.
+# Do NOT remove the NPM_TOKEN secret thinking OIDC handles it.
+#
+# To create the token:
+#   1. npmjs.com → Access Tokens → Granular Access Token
+#   2. Scope: airchat package, Read and Write
+#   3. gh secret set NPM_TOKEN
+
 name: Publish to npm
 
 on:
@@ -18,6 +30,15 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      - name: Verify NPM_TOKEN is set
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::NPM_TOKEN secret is not set. See .github/workflows/publish.yml for setup instructions."
+            exit 1
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Install dependencies
         run: npm install
         working-directory: packages/create-airchat
@@ -29,3 +50,5 @@ jobs:
       - name: Publish
         run: npm publish --provenance --access public
         working-directory: packages/create-airchat
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
