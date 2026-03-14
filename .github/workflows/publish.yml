@@ -9,7 +9,9 @@
 # Package publishing access must be set to:
 #   "Require two-factor authentication and disallow tokens (recommended)"
 #
-# No NPM_TOKEN secret needed — OIDC handles auth via --provenance.
+# IMPORTANT: Do NOT set an NPM_TOKEN secret — it overrides OIDC and breaks
+# publishing. The actions/setup-node registry-url config auto-injects
+# NODE_AUTH_TOKEN from secrets, which conflicts with provenance-based auth.
 
 name: Publish to npm
 
@@ -30,13 +32,6 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-
-      - name: Debug npm config
-        run: |
-          npm --version
-          node --version
-          cat ~/.npmrc || true
-          cat packages/create-airchat/.npmrc || true
 
       - name: Install dependencies
         run: npm install
