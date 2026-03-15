@@ -285,27 +285,46 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
   }
 
   async updateMessageLabels(messageId: string, labels: string[], quarantine: boolean, classification: Record<string, unknown>): Promise<void> {
-    await this.client
-      .from('messages')
-      .update({
-        safety_labels: labels,
-        quarantined: quarantine,
-        classification,
-      })
-      .eq('id', messageId);
+    // Fix #49: Only escalate quarantine — never set quarantined from true to false.
+    // If quarantine=true, set it. If quarantine=false, leave the existing value unchanged.
+    if (quarantine) {
+      await this.client
+        .from('messages')
+        .update({ safety_labels: labels, quarantined: true, classification })
+        .eq('id', messageId);
+    } else {
+      // Only update labels and classification, preserve existing quarantine state
+      await this.client
+        .from('messages')
+        .update({ safety_labels: labels, classification })
+        .eq('id', messageId);
+    }
   }
 
   async quarantineMessage(messageId: string): Promise<void> {
+    // Fix #55: Append 'quarantined' to existing labels instead of overwriting
+    // First get existing labels, then merge
+    const { data: existing } = await this.client
+      .from('messages')
+      .select('safety_labels')
+      .eq('id', messageId)
+      .single();
+
+    const currentLabels = (existing?.safety_labels as string[]) ?? [];
+    const mergedLabels = [...new Set([...currentLabels, 'quarantined'])];
+
     await this.client
       .from('messages')
-      .update({ quarantined: true, safety_labels: ['quarantined'] })
+      .update({ quarantined: true, safety_labels: mergedLabels })
       .eq('id', messageId);
   }
 
   async quarantineMessagesBySuffix(idSuffix: string): Promise<void> {
+    // For suffix-based quarantine, we can't easily merge per-message,
+    // so we set quarantined=true but leave existing labels intact
     await this.client
       .from('messages')
-      .update({ quarantined: true, safety_labels: ['quarantined'] })
+      .update({ quarantined: true })
       .like('id', `%-${idSuffix}`);
   }
 
@@ -349,9 +368,10 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
   }
 
   async approveMessages(messageIds: string[]): Promise<number> {
+    // Fix #54: Clear quarantined label from safety_labels when approving
     const { data, error } = await this.client
       .from('messages')
-      .update({ quarantined: false })
+      .update({ quarantined: false, safety_labels: [] })
       .in('id', messageIds)
       .eq('quarantined', true)
       .select('id');

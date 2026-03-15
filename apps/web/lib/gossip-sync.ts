@@ -17,6 +17,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // ── Guardrails sidecar config ────────────────────────────────────────────────
 
 const GUARDRAILS_URL = process.env.GUARDRAILS_URL ?? null; // e.g., 'http://127.0.0.1:8484'
+const GUARDRAILS_SECRET = process.env.GUARDRAILS_SECRET ?? ''; // shared secret for sidecar auth
 
 interface GuardrailsResult {
   labels: string[];
@@ -38,9 +39,13 @@ async function classifyWithGuardrails(
   if (!GUARDRAILS_URL) return null;
 
   try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (GUARDRAILS_SECRET) {
+      headers['Authorization'] = `Bearer ${GUARDRAILS_SECRET}`;
+    }
     const res = await fetch(`${GUARDRAILS_URL}/classify`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ content, metadata }),
       signal: AbortSignal.timeout(5000), // 5s timeout
     });
@@ -192,6 +197,14 @@ async function processInboundMessage(
 
   if (!remoteMessageId || !channelName || !content) return 'rejected';
 
+  // Fix #56: Validate remoteMessageId is a UUID
+  if (!UUID_RE.test(remoteMessageId)) return 'rejected';
+
+  // Fix #52: Validate content and metadata size on inbound federated messages
+  const maxContent = channelName.startsWith('gossip-') ? 500 : 2000;
+  if (content.length > maxContent) return 'rejected';
+  if (metadata && JSON.stringify(metadata).length > 1024) return 'rejected';
+
   // Validate hop_count
   if (typeof rawHopCount !== 'number' || !Number.isInteger(rawHopCount) || rawHopCount < 0) {
     return 'rejected';
@@ -287,27 +300,37 @@ async function processInboundMessage(
 
   // Phase 2: Async Guardrails classification (runs after message is stored)
   // Does not block the sync — enhances labels post-hoc
+  // Fix #48: Flag tracking is skipped here if already tracked in Phase 1 above
+  // Fix #49: updateMessageLabels only escalates quarantine, never de-escalates
+  const alreadyFlagged = classification.labels.some(l => safetyConcernLabels.has(l));
+
   if (GUARDRAILS_URL && !isQuarantined) {
     classifyWithGuardrails(content, metadata).then(async (grResult) => {
       if (!grResult || grResult.labels.length === 0 || (grResult.labels.length === 1 && grResult.labels[0] === 'clean')) {
-        return; // Nothing new found
+        return;
       }
 
-      // Merge Guardrails labels with existing heuristic labels
-      const mergedLabels = [...new Set([...classification.labels, ...grResult.labels.filter(l => l !== 'clean')])];
-      const shouldQuarantine = grResult.quarantine;
+      // Merge labels (append only)
+      const newLabels = grResult.labels.filter(l => l !== 'clean');
+      const mergedLabels = [...new Set([...classification.labels, ...newLabels])];
 
-      // Update the stored message with enhanced labels
-      await gossip.updateMessageLabels(localMessageId, mergedLabels, shouldQuarantine, {
-        ...classification as unknown as Record<string, unknown>,
+      // Only ESCALATE quarantine — never de-escalate (fix #49)
+      const escalateQuarantine = grResult.quarantine; // true = escalate, false = leave as-is
+
+      await gossip.updateMessageLabels(localMessageId, mergedLabels, escalateQuarantine, {
+        matched_patterns: classification.matched_patterns,
+        route_to_sandbox: classification.route_to_sandbox,
+        sandbox_priority: classification.sandbox_priority,
         guardrails: grResult.details,
         guardrails_latency_ms: grResult.latency_ms,
       });
 
-      // Track flag if Guardrails found safety concerns
-      const grSafety = new Set(['toxic', 'profanity', 'contains-pii', 'contains-secrets']);
-      if (grResult.labels.some(l => grSafety.has(l))) {
-        await trackAgentFlag(agentKey, gossip);
+      // Fix #48: Only track flag if Phase 1 didn't already track one for this message
+      if (!alreadyFlagged) {
+        const grSafety = new Set(['toxic', 'profanity', 'contains-pii', 'contains-secrets']);
+        if (newLabels.some(l => grSafety.has(l))) {
+          await trackAgentFlag(agentKey, gossip);
+        }
       }
     }).catch(() => {
       // Guardrails failure doesn't affect message processing

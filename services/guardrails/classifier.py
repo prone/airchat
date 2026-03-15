@@ -15,6 +15,13 @@ from guardrails import Guard, OnFailAction
 from guardrails.hub import ToxicLanguage, ProfanityFree, SecretsPresent
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 64 * 1024  # 64KB max request body
+
+# Optional shared secret for sidecar auth (set GUARDRAILS_SECRET env var)
+import os
+SIDECAR_SECRET = os.environ.get('GUARDRAILS_SECRET', '')
+
+MAX_CLASSIFY_TEXT = 8192  # Max chars sent to validators
 
 # ── Build Guard chains ────────────────────────────────────────────────────────
 
@@ -71,18 +78,28 @@ def classify():
         "latency_ms": 123
     }
     """
+    # Auth check (if GUARDRAILS_SECRET is set)
+    if SIDECAR_SECRET:
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header != f'Bearer {SIDECAR_SECRET}':
+            return jsonify({'error': 'unauthorized'}), 401
+
     data = request.get_json()
     if not data or 'content' not in data:
         return jsonify({'error': 'content field required'}), 400
 
     content = data['content']
 
-    # Flatten metadata into text for classification
+    # Flatten metadata into text for classification (capped to prevent huge inputs)
     meta_text = ''
     if data.get('metadata'):
         meta_text = ' '.join(str(v) for v in _flatten_values(data['metadata']))
+        if len(meta_text) > 2048:
+            meta_text = meta_text[:2048]
 
     text = f"{content} {meta_text}".strip()
+    if len(text) > MAX_CLASSIFY_TEXT:
+        text = text[:MAX_CLASSIFY_TEXT]
 
     start = time.time()
     labels = []

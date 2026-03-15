@@ -1,8 +1,7 @@
-guardrails-ai>=0.6.0
-flask>=3.0.0
+guardrails-ai>=0.6.0,<1.0.0
+flask>=3.0.0,<4.0.0
 # Validators (installed via guardrails hub install):
 # hub://guardrails/toxic_language
 # hub://guardrails/profanity_free
 # hub://guardrails/secrets_present
-# hub://guardrails/gibberish_text
 # hub://guardrails/detect_pii (optional, requires presidio)
