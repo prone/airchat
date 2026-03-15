@@ -20,9 +20,8 @@ let syncInterval: ReturnType<typeof setInterval> | null = null;
 let patternSet: PatternSet | null = null;
 let cachedPrivateKey: string | null = null;
 
-// In-memory agent quarantine tracker
+// In-memory agent flag counter (tracking window only — quarantine state persisted to DB)
 const agentFlags = new Map<string, { count: number; firstFlagAt: number }>();
-const quarantinedAgents = new Map<string, number>();
 
 const SYNC_INTERVAL_MS = 30_000;
 const AGENT_FLAG_WINDOW_MS = 60 * 60 * 1000;
@@ -197,9 +196,9 @@ async function processInboundMessage(
     if (!verifyEnvelope(originPublicKey, envelope)) return 'rejected';
   }
 
-  // Agent quarantine check
+  // Agent quarantine check (persistent — survives restarts)
   const agentKey = `${authorDisplay}@${originInstance ?? peer.fingerprint}`;
-  if (isAgentQuarantined(agentKey)) return 'rejected';
+  if (await gossip.isAgentQuarantined(agentKey)) return 'rejected';
 
   // Classify
   const classification = classifyMessage(content, metadata, patterns);
@@ -244,9 +243,9 @@ async function processInboundMessage(
   await gossip.trackMessageOrigin(localMessageId, peer.id, originInstance ?? peer.fingerprint);
 
   // Only track flags for labels indicating actual safety concerns
-  const safetyLabels = new Set(['contains-instructions', 'requests-data', 'references-tools', 'high-entropy', 'quarantined']);
-  if (classification.labels.some(l => safetyLabels.has(l))) {
-    trackAgentFlag(agentKey);
+  const safetyConcernLabels = new Set(['contains-instructions', 'requests-data', 'references-tools', 'high-entropy', 'quarantined']);
+  if (classification.labels.some(l => safetyConcernLabels.has(l))) {
+    await trackAgentFlag(agentKey, gossip);
   }
 
   return isQuarantined ? 'quarantined' : 'stored';
@@ -280,9 +279,9 @@ async function processRetraction(retraction: RetractionEnvelope, gossip: GossipS
   await gossip.quarantineMessagesBySuffix(idSuffix);
 }
 
-// ── Agent circuit breakers ──────────────────────────────────────────────────
+// ── Agent circuit breakers (flag counter in-memory, quarantine persisted to DB) ──
 
-function trackAgentFlag(agentKey: string): void {
+async function trackAgentFlag(agentKey: string, gossip: GossipStorageAdapter): Promise<void> {
   const now = Date.now();
   const entry = agentFlags.get(agentKey);
   if (!entry || now - entry.firstFlagAt > AGENT_FLAG_WINDOW_MS) {
@@ -291,16 +290,11 @@ function trackAgentFlag(agentKey: string): void {
   }
   entry.count++;
   if (entry.count >= AGENT_FLAG_THRESHOLD) {
-    quarantinedAgents.set(agentKey, now + AGENT_QUARANTINE_MS);
+    const until = new Date(now + AGENT_QUARANTINE_MS).toISOString();
+    await gossip.quarantineAgent(agentKey, until);
     agentFlags.delete(agentKey);
+    console.log(`[gossip] Agent quarantined: ${agentKey} (${AGENT_FLAG_THRESHOLD}+ flags in 1 hour, until ${until})`);
   }
-}
-
-function isAgentQuarantined(agentKey: string): boolean {
-  const until = quarantinedAgents.get(agentKey);
-  if (!until) return false;
-  if (Date.now() > until) { quarantinedAgents.delete(agentKey); return false; }
-  return true;
 }
 
 // ── Peer circuit breakers ───────────────────────────────────────────────────
@@ -328,6 +322,9 @@ async function syncLoop(): Promise<void> {
   const gossip = getGossipAdapter();
   const config = await gossip.getInstanceConfig();
   if (!config?.gossip_enabled) return;
+
+  // Periodic cleanup of expired agent quarantines
+  await gossip.clearExpiredAgentQuarantines();
 
   const peers = await gossip.listPeers();
   const activePeers = peers.filter((p: { active: boolean; suspended: boolean }) => p.active && !p.suspended);

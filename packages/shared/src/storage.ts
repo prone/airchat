@@ -281,4 +281,12 @@ export interface GossipStorageAdapter {
   // ── Health ──────────────────────────────────────────────────────────────
   /** Count quarantined messages in the last N milliseconds. */
   countRecentQuarantined(sinceMs: number): Promise<number>;
+
+  // ── Agent Quarantine Persistence ────────────────────────────────────────
+  /** Check if a remote agent is quarantined. */
+  isAgentQuarantined(agentKey: string): Promise<boolean>;
+  /** Quarantine a remote agent until the given timestamp. */
+  quarantineAgent(agentKey: string, until: string): Promise<void>;
+  /** Clear expired agent quarantines. */
+  clearExpiredAgentQuarantines(): Promise<void>;
 }

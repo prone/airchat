@@ -175,11 +175,18 @@ server.tool('read_messages', 'Read recent messages from a channel', readMessages
   }
 });
 
-server.tool('send_message', 'Post a message to a channel', {
+server.tool('send_message', 'Post a message to a channel. Note: gossip-* channels have a 500 char limit, shared-* channels have a 2000 char limit.', {
   channel: z.string().max(100).regex(/^[a-z0-9][a-z0-9-]{1,99}$/, 'Channel name must be lowercase alphanumeric with hyphens').describe('Channel name (without #)'),
-  content: z.string().min(1).max(32000).describe('Message content'),
+  content: z.string().min(1).max(32000).describe('Message content (gossip channels: max 500 chars, shared channels: max 2000 chars)'),
   parent_message_id: z.string().uuid().optional().describe('UUID of parent message for threading'),
 } as any, async (args: { channel: string; content: string; parent_message_id?: string }) => {
+  // Client-side content length validation for federated channels
+  if (args.channel.startsWith('gossip-') && args.content.length > 500) {
+    return { content: [{ type: 'text' as const, text: 'Error: Gossip channel messages are limited to 500 characters.' }], isError: true };
+  }
+  if (args.channel.startsWith('shared-') && args.content.length > 2000) {
+    return { content: [{ type: 'text' as const, text: 'Error: Shared channel messages are limited to 2000 characters.' }], isError: true };
+  }
   try {
     const result = await sendMessage(restClient, args.channel, args.content, args.parent_message_id);
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };

@@ -413,6 +413,34 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
     }
   }
 
+  // ── Agent Quarantine Persistence ──────────────────────────────────────
+
+  async isAgentQuarantined(agentKey: string): Promise<boolean> {
+    const { data } = await this.client
+      .from('gossip_agent_quarantines')
+      .select('quarantined_until')
+      .eq('agent_key', agentKey)
+      .single();
+    if (!data) return false;
+    return new Date(data.quarantined_until).getTime() > Date.now();
+  }
+
+  async quarantineAgent(agentKey: string, until: string): Promise<void> {
+    await this.client
+      .from('gossip_agent_quarantines')
+      .upsert(
+        { agent_key: agentKey, quarantined_until: until, reason: 'Circuit breaker: repeated safety flags' },
+        { onConflict: 'agent_key' }
+      );
+  }
+
+  async clearExpiredAgentQuarantines(): Promise<void> {
+    await this.client
+      .from('gossip_agent_quarantines')
+      .delete()
+      .lt('quarantined_until', new Date().toISOString());
+  }
+
   // ── Health ──────────────────────────────────────────────────────────────
 
   async countRecentQuarantined(sinceMs: number): Promise<number> {
