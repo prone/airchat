@@ -12,6 +12,8 @@ import type { GossipEnvelope, RetractionEnvelope } from '@airchat/shared/gossip'
 import type { PatternSet } from '@airchat/shared/safety';
 import type { GossipStorageAdapter, GossipPeer } from '@airchat/shared';
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // ── State ────────────────────────────────────────────────────────────────────
 
 let syncInterval: ReturnType<typeof setInterval> | null = null;
@@ -65,9 +67,15 @@ async function syncFromPeer(peerId: string): Promise<void> {
   const since = peer.last_sync_at ?? new Date(0).toISOString();
   const privateKey = await getPrivateKey();
 
+  // M10: Cannot authenticate without a private key — skip this peer
+  if (!privateKey) {
+    await gossip.updatePeer(peerId, { last_sync_error: 'Instance private key not found' } as Partial<GossipPeer>);
+    return;
+  }
+
   try {
     const timestamp = new Date().toISOString();
-    const signature = privateKey ? signData(privateKey, timestamp) : '';
+    const signature = signData(privateKey, timestamp);
 
     const res = await fetch(
       `${peer.endpoint}/api/v2/gossip/sync?since=${encodeURIComponent(since)}&limit=100&scope=${peer.federation_scope}`,
@@ -235,7 +243,9 @@ async function processInboundMessage(
 
   await gossip.trackMessageOrigin(localMessageId, peer.id, originInstance ?? peer.fingerprint);
 
-  if (classification.labels.some(l => l !== 'clean')) {
+  // Only track flags for labels indicating actual safety concerns
+  const safetyLabels = new Set(['contains-instructions', 'requests-data', 'references-tools', 'high-entropy', 'quarantined']);
+  if (classification.labels.some(l => safetyLabels.has(l))) {
     trackAgentFlag(agentKey);
   }
 
@@ -246,6 +256,9 @@ async function processInboundMessage(
 
 async function processRetraction(retraction: RetractionEnvelope, gossip: GossipStorageAdapter): Promise<void> {
   if (!retraction.retracted_by || !retraction.signature) return;
+
+  // H5: Validate retracted_message_id is a valid UUID
+  if (!UUID_RE.test(retraction.retracted_message_id)) return;
 
   const peer = await gossip.getPeerByFingerprint(retraction.retracted_by);
   if (!peer?.public_key) return;
@@ -261,6 +274,7 @@ async function processRetraction(retraction: RetractionEnvelope, gossip: GossipS
   });
 
   // Quarantine using both original ID and namespaced variants
+  // H2: UUID is validated above, so suffix is safe (no LIKE wildcards possible in a valid UUID)
   const idSuffix = retraction.retracted_message_id.replace(/^[0-9a-f]{8}-/, '');
   await gossip.quarantineMessage(retraction.retracted_message_id);
   await gossip.quarantineMessagesBySuffix(idSuffix);

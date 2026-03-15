@@ -102,9 +102,11 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
   }
 
   async updatePeer(id: string, updates: Partial<GossipPeer>): Promise<void> {
+    // Strip immutable fields to prevent PK corruption
+    const { id: _id, created_at: _ca, ...safeUpdates } = updates as Record<string, unknown>;
     const { error } = await this.client
       .from('gossip_peers')
-      .update(updates)
+      .update(safeUpdates)
       .eq('id', id);
     if (error) throw new Error(`Failed to update peer: ${error.message}`);
   }
@@ -126,9 +128,10 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
     federation_scope: string;
     is_default_supernode: boolean;
   }): Promise<void> {
-    await this.client
+    const { error } = await this.client
       .from('gossip_peers')
       .upsert(peer, { onConflict: 'endpoint' });
+    if (error) throw new Error(`Failed to upsert peer: ${error.message}`);
   }
 
   // ── Sync Queries ────────────────────────────────────────────────────────
@@ -179,6 +182,7 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
   }
 
   async findOrCreateChannelId(name: string, type: string, scope: FederationScope): Promise<string | null> {
+    // Try find first (common path)
     const { data: existing } = await this.client
       .from('channels')
       .select('id')
@@ -186,11 +190,22 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
       .single();
     if (existing) return existing.id;
 
-    const { data: created } = await this.client
+    // Insert with conflict handling for race conditions
+    const { data: created, error } = await this.client
       .from('channels')
       .insert({ name, type, federation_scope: scope })
       .select('id')
       .single();
+
+    if (error) {
+      // Race: another request created it — retry the find
+      const { data: raced } = await this.client
+        .from('channels')
+        .select('id')
+        .eq('name', name)
+        .single();
+      return raced?.id ?? null;
+    }
     return created?.id ?? null;
   }
 
@@ -202,7 +217,8 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
       .single();
     if (existing) return existing.id;
 
-    const { data: created } = await this.client
+    // Insert with conflict handling for race conditions
+    const { data: created, error } = await this.client
       .from('agents')
       .insert({
         name,
@@ -212,6 +228,16 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
       })
       .select('id')
       .single();
+
+    if (error) {
+      // Race: another request created it — retry the find
+      const { data: raced } = await this.client
+        .from('agents')
+        .select('id')
+        .eq('name', name)
+        .single();
+      return raced?.id ?? null;
+    }
     return created?.id ?? null;
   }
 
@@ -244,20 +270,18 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
   // ── Retractions ─────────────────────────────────────────────────────────
 
   async storeRetraction(retraction: GossipRetraction): Promise<void> {
-    const { data: existing } = await this.client
-      .from('gossip_retractions')
-      .select('id')
-      .eq('retracted_message_id', retraction.retracted_message_id)
-      .single();
-    if (existing) return; // Already stored
-
-    await this.client.from('gossip_retractions').insert({
+    // Insert and ignore unique constraint violation (safe against race conditions)
+    const { error } = await this.client.from('gossip_retractions').insert({
       retracted_message_id: retraction.retracted_message_id,
       reason: retraction.reason,
       retracted_by: retraction.retracted_by,
       retracted_at: retraction.retracted_at,
       signature: retraction.signature,
     });
+    // Ignore duplicate key errors (23505) — retraction already stored
+    if (error && error.code !== '23505') {
+      throw new Error(`Failed to store retraction: ${error.message}`);
+    }
   }
 
   async quarantineMessage(messageId: string): Promise<void> {

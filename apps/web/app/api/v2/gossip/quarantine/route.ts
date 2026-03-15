@@ -10,7 +10,7 @@ export async function GET(request: NextRequest) {
   if (isAuthError(auth)) return auth;
 
   const limit = Math.min(parseInt(request.nextUrl.searchParams.get('limit') || '50', 10) || 50, 100);
-  const offset = parseInt(request.nextUrl.searchParams.get('offset') || '0', 10) || 0;
+  const offset = Math.max(0, parseInt(request.nextUrl.searchParams.get('offset') || '0', 10) || 0);
 
   try {
     const gossip = getGossipAdapter();
