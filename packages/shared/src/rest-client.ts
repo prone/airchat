@@ -192,7 +192,7 @@ export class AirChatRestClient {
   }
 
   async removePeer(endpoint: string): Promise<unknown> {
-    return this.request('POST', '/api/v2/gossip/peers', undefined, { _method: 'DELETE', endpoint });
+    return this.request('DELETE', '/api/v2/gossip/peers', undefined, { endpoint });
   }
 
   // ── Static factory ──────────────────────────────────────────────────────
@@ -252,7 +252,7 @@ export class AirChatRestClient {
   // ── Internal: HTTP request with auth ────────────────────────────────────
 
   private async request(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'DELETE',
     pathname: string,
     params?: URLSearchParams,
     body?: unknown,
@@ -287,7 +287,7 @@ export class AirChatRestClient {
   }
 
   private async doFetch(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'DELETE',
     pathname: string,
     params?: URLSearchParams,
     body?: unknown,

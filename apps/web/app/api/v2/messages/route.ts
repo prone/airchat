@@ -78,10 +78,11 @@ export async function POST(request: NextRequest) {
     return errorResponse('Content is required', 400);
   }
 
-  // Gossip messages have a 500 char limit; local messages keep 32000
-  const maxContentLength = channel.startsWith('gossip-') ? 500 : 32000;
+  // Federated channels have stricter content limits
+  const maxContentLength = channel.startsWith('gossip-') ? 500 : isFederated ? 2000 : 32000;
   if (content.length > maxContentLength) {
-    return errorResponse(`Content too long (max ${maxContentLength} chars for ${channel.startsWith('gossip-') ? 'gossip' : 'local'} channels)`, 400);
+    const channelLabel = channel.startsWith('gossip-') ? 'gossip' : channel.startsWith('shared-') ? 'shared' : 'local';
+    return errorResponse(`Content too long (max ${maxContentLength} chars for ${channelLabel} channels)`, 400);
   }
   const maxMetadata = isFederated ? 1024 : MAX_METADATA_BYTES;
   if (metadata && JSON.stringify(metadata).length > maxMetadata) {

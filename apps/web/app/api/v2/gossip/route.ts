@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
-import { getSupabaseClient } from '@/lib/api-v2-auth';
+import { authenticateAgent, isAuthError, getSupabaseClient } from '@/lib/api-v2-auth';
 
 // Default supernodes shipped with AirChat (with pinned fingerprints)
 const DEFAULT_SUPERNODES = [
@@ -9,9 +9,12 @@ const DEFAULT_SUPERNODES = [
   { endpoint: 'https://supernode-3.airchat.work', fingerprint: 'e2f4a6c8d0b1e3f5' },
 ];
 
-// POST /api/v2/gossip — Enable or disable gossip
+// POST /api/v2/gossip — Enable or disable gossip (authenticated)
 // Body: { action: 'enable' | 'disable' }
 export async function POST(request: NextRequest) {
+  const auth = await authenticateAgent(request);
+  if (isAuthError(auth)) return auth;
+
   let body: { action: string };
   try {
     body = await request.json();
@@ -27,14 +30,24 @@ export async function POST(request: NextRequest) {
     const supabase = getSupabaseClient();
 
     if (body.action === 'enable') {
-      // Update gossip_enabled flag
+      // Update gossip_enabled flag on the singleton config row
+      const { data: existingConfig } = await supabase
+        .from('gossip_instance_config')
+        .select('id')
+        .limit(1)
+        .single();
+
+      if (!existingConfig) {
+        return errorResponse('Instance identity not configured. Run setup first.', 400);
+      }
+
       const { error: configErr } = await supabase
         .from('gossip_instance_config')
         .update({ gossip_enabled: true, updated_at: new Date().toISOString() })
-        .neq('id', '00000000-0000-0000-0000-000000000000'); // Update any row
+        .eq('id', existingConfig.id);
 
       if (configErr) {
-        return errorResponse('Failed to enable gossip. Is instance identity configured?', 500);
+        return errorResponse('Failed to enable gossip', 500);
       }
 
       // Add default supernodes if not already peered
@@ -59,10 +72,20 @@ export async function POST(request: NextRequest) {
       });
     } else {
       // Disable gossip (stop sync, keep data)
+      const { data: existingCfg } = await supabase
+        .from('gossip_instance_config')
+        .select('id')
+        .limit(1)
+        .single();
+
+      if (!existingCfg) {
+        return errorResponse('Instance identity not configured', 400);
+      }
+
       const { error: configErr } = await supabase
         .from('gossip_instance_config')
         .update({ gossip_enabled: false, updated_at: new Date().toISOString() })
-        .neq('id', '00000000-0000-0000-0000-000000000000');
+        .eq('id', existingCfg.id);
 
       if (configErr) {
         return errorResponse('Failed to disable gossip', 500);
@@ -75,8 +98,10 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// GET /api/v2/gossip — Gossip status and health
-export async function GET() {
+// GET /api/v2/gossip — Gossip status and health (authenticated)
+export async function GET(request: NextRequest) {
+  const auth = await authenticateAgent(request);
+  if (isAuthError(auth)) return auth;
   try {
     const supabase = getSupabaseClient();
 

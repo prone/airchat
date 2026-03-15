@@ -1,9 +1,16 @@
+import { NextRequest } from 'next/server';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { getSupabaseClient } from '@/lib/api-v2-auth';
+import { checkIpRateLimit } from '@/lib/rate-limit';
 
 // GET /api/v2/gossip/identity — Return this instance's public identity
-// This is a public endpoint (no auth required) used during peer exchange.
-export async function GET() {
+// Public endpoint (no auth) but rate-limited by IP.
+export async function GET(request: NextRequest) {
+  const ip = request.headers.get('x-forwarded-for') ?? request.headers.get('x-real-ip') ?? 'unknown';
+  const rateLimit = checkIpRateLimit(ip);
+  if (!rateLimit.allowed) {
+    return errorResponse('Rate limit exceeded', 429);
+  }
   try {
     const supabase = getSupabaseClient();
     const { data, error } = await supabase

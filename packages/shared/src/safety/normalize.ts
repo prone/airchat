@@ -195,21 +195,24 @@ export function normalize(text: string): { normalized: string; decoded_segments:
 
 /**
  * Extract all string values from a metadata object for classification.
+ * Fix #16: Depth-limited to prevent stack overflow on deeply nested objects.
  */
 export function extractMetadataStrings(metadata: Record<string, unknown> | null): string[] {
   if (!metadata) return [];
   const strings: string[] = [];
+  const MAX_DEPTH = 10;
 
-  function walk(obj: unknown): void {
+  function walk(obj: unknown, depth: number): void {
+    if (depth > MAX_DEPTH) return;
     if (typeof obj === 'string') {
       strings.push(obj);
     } else if (Array.isArray(obj)) {
-      obj.forEach(walk);
+      obj.forEach(item => walk(item, depth + 1));
     } else if (obj && typeof obj === 'object') {
-      Object.values(obj).forEach(walk);
+      Object.values(obj).forEach(val => walk(val, depth + 1));
     }
   }
 
-  walk(metadata);
+  walk(metadata, 0);
   return strings;
 }

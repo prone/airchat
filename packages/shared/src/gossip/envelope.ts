@@ -102,5 +102,5 @@ export function verifyRetraction(
   retraction: RetractionEnvelope
 ): boolean {
   const payload = buildRetractionSignPayload(retraction);
-  return verifySignature(publicKeyHex, retraction.signature, payload);
+  return verifySignature(publicKeyHex, payload, retraction.signature);
 }

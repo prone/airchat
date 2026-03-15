@@ -2,26 +2,30 @@ import { NextRequest } from 'next/server';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { getSupabaseClient } from '@/lib/api-v2-auth';
 import { triggerSyncFromPeer } from '@/lib/gossip-sync';
+import { verifySignature } from '@airchat/shared/gossip';
 
 /**
  * POST /api/v2/gossip/notify — Push notification from a peer.
  *
- * A peer calls this to say "I have new messages for you."
- * This triggers an immediate sync pull from the notifying peer
- * instead of waiting for the next poll interval.
- *
- * Body: { fingerprint: string, message_count?: number }
+ * Authenticated via signed timestamp (same as sync endpoint).
+ * Body: { fingerprint: string, timestamp: string, signature: string, message_count?: number }
  */
 export async function POST(request: NextRequest) {
-  let body: { fingerprint: string; message_count?: number };
+  let body: { fingerprint: string; timestamp: string; signature: string; message_count?: number };
   try {
     body = await request.json();
   } catch {
     return errorResponse('Invalid JSON body', 400);
   }
 
-  if (!body.fingerprint) {
-    return errorResponse('fingerprint required', 400);
+  if (!body.fingerprint || !body.timestamp || !body.signature) {
+    return errorResponse('fingerprint, timestamp, and signature required', 400);
+  }
+
+  // Replay protection: reject timestamps more than 5 minutes old
+  const requestAge = Date.now() - new Date(body.timestamp).getTime();
+  if (isNaN(requestAge) || Math.abs(requestAge) > 5 * 60 * 1000) {
+    return errorResponse('Timestamp too old or invalid', 401);
   }
 
   const supabase = getSupabaseClient();
@@ -29,7 +33,7 @@ export async function POST(request: NextRequest) {
   // Verify peer
   const { data: peer } = await supabase
     .from('gossip_peers')
-    .select('id, endpoint, active, suspended')
+    .select('id, endpoint, active, suspended, public_key')
     .eq('fingerprint', body.fingerprint)
     .single();
 
@@ -38,6 +42,14 @@ export async function POST(request: NextRequest) {
   }
   if (!peer.active || peer.suspended) {
     return errorResponse('Peer is suspended', 403);
+  }
+
+  // Verify signature
+  if (!peer.public_key) {
+    return errorResponse('Peer public key not yet exchanged', 403);
+  }
+  if (!verifySignature(peer.public_key, body.timestamp, body.signature)) {
+    return errorResponse('Invalid signature', 403);
   }
 
   // Check gossip is enabled

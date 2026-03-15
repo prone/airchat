@@ -9,7 +9,7 @@
 import { getSupabaseClient } from '@/lib/api-v2-auth';
 import { classifyMessage } from '@airchat/shared/safety';
 import { loadPatternSet } from '@airchat/shared/safety';
-import { verifyEnvelope } from '@airchat/shared/gossip';
+import { verifyEnvelope, verifyRetraction, signData } from '@airchat/shared/gossip';
 import type { GossipEnvelope, RetractionEnvelope } from '@airchat/shared/gossip';
 import type { PatternSet } from '@airchat/shared/safety';
 
@@ -17,6 +17,7 @@ import type { PatternSet } from '@airchat/shared/safety';
 
 let syncInterval: ReturnType<typeof setInterval> | null = null;
 let patternSet: PatternSet | null = null;
+let cachedPrivateKey: string | null = null;
 
 // In-memory agent quarantine tracker (resets on restart, DB is source of truth for peers)
 const agentFlags = new Map<string, { count: number; firstFlagAt: number }>();
@@ -66,11 +67,39 @@ async function syncFromPeer(peerId: string): Promise<void> {
 
   const since = peer.last_sync_at ?? new Date(0).toISOString();
 
+  // Load instance private key for signing sync requests
+  const { data: instanceConfig } = await supabase
+    .from('gossip_instance_config')
+    .select('public_key')
+    .limit(1)
+    .single();
+
+  // Read private key (cached after first read)
+  if (!cachedPrivateKey) {
+    try {
+      const { readFileSync } = await import('fs');
+      const { join } = await import('path');
+      const { homedir } = await import('os');
+      cachedPrivateKey = readFileSync(join(homedir(), '.airchat', 'instance.key'), 'utf-8').trim();
+    } catch {
+      // Private key not available — sync requests will fail auth
+    }
+  }
+  const privateKey = cachedPrivateKey;
+
   try {
+    // Sign the request timestamp (challenge-response auth)
+    const timestamp = new Date().toISOString();
+    const signature = privateKey ? signData(privateKey, timestamp) : '';
+
     const res = await fetch(
       `${peer.endpoint}/api/v2/gossip/sync?since=${encodeURIComponent(since)}&limit=100&scope=${peer.federation_scope}`,
       {
-        headers: { 'x-gossip-fingerprint': config.fingerprint },
+        headers: {
+          'x-gossip-fingerprint': config.fingerprint,
+          'x-gossip-timestamp': timestamp,
+          'x-gossip-signature': signature,
+        },
         signal: AbortSignal.timeout(15000),
       }
     );
@@ -150,22 +179,38 @@ async function processInboundMessage(
 ): Promise<InboundResult> {
   const supabase = getSupabaseClient();
 
-  const messageId = raw.id as string;
+  const remoteMessageId = raw.id as string;
   const channelName = (raw.channels as Record<string, string>)?.name;
   const content = raw.content as string;
   const metadata = raw.metadata as Record<string, unknown> | null;
   const originInstance = raw.origin_instance as string | null;
   const authorDisplay = raw.author_display as string ?? (raw.agents as Record<string, string>)?.name;
-  const hopCount = (raw.hop_count as number | null) ?? 0;
+  const rawHopCount = raw.hop_count;
   const createdAt = raw.created_at as string;
 
-  if (!messageId || !channelName || !content) return 'rejected';
+  if (!remoteMessageId || !channelName || !content) return 'rejected';
 
-  // Dedup: skip if message already exists
+  // Fix #25: Reject null/non-integer hop_count (prevents reset-to-zero bypass)
+  if (typeof rawHopCount !== 'number' || !Number.isInteger(rawHopCount) || rawHopCount < 0) {
+    return 'rejected';
+  }
+  const hopCount = rawHopCount;
+
+  // Fix #7: Validate created_at is within a reasonable window
+  const messageAge = Date.now() - new Date(createdAt).getTime();
+  if (isNaN(messageAge) || messageAge < -5 * 60 * 1000 || messageAge > 7 * 24 * 60 * 60 * 1000) {
+    return 'rejected'; // Not more than 5 min in future, not more than 7 days old
+  }
+
+  // Fix #8: Namespace remote IDs with origin fingerprint to prevent collision attacks
+  const peerFingerprint = peer.fingerprint as string;
+  const localMessageId = `${peerFingerprint.slice(0, 8)}-${remoteMessageId.replace(/^[0-9a-f]{8}-/, '')}`;
+
+  // Dedup: skip if message already exists (using namespaced ID)
   const { data: existing } = await supabase
     .from('messages')
     .select('id')
-    .eq('id', messageId)
+    .eq('id', localMessageId)
     .single();
 
   if (existing) return 'duplicate';
@@ -174,8 +219,31 @@ async function processInboundMessage(
   const maxHops = channelName.startsWith('gossip-') ? 3 : 1;
   if (hopCount > maxHops) return 'rejected';
 
+  // Fix C1: Verify envelope signature against origin instance's public key
+  const envelopeSignature = raw.signature as string | undefined;
+  const originPublicKey = raw.origin_public_key as string | undefined;
+  if (envelopeSignature && originPublicKey) {
+    const envelope: GossipEnvelope = {
+      message_id: remoteMessageId,
+      channel_name: channelName,
+      origin_instance: originInstance ?? peerFingerprint,
+      author_agent: authorDisplay ?? '',
+      content,
+      metadata,
+      created_at: createdAt,
+      signature: envelopeSignature,
+      hop_count: hopCount,
+      safety_labels: (raw.safety_labels as string[]) ?? [],
+      federation_scope: channelName.startsWith('gossip-') ? 'global' : 'peers',
+    };
+    const valid = verifyEnvelope(originPublicKey, envelope);
+    if (!valid) return 'rejected'; // Invalid signature — message forged
+  }
+  // If no signature present (e.g., message originated on the peer itself),
+  // we accept it — the peer is authenticated via the sync endpoint's challenge-response.
+
   // Check if agent is quarantined
-  const agentKey = `${authorDisplay}@${originInstance ?? peer.fingerprint}`;
+  const agentKey = `${authorDisplay}@${originInstance ?? peerFingerprint}`;
   if (isAgentQuarantined(agentKey)) return 'rejected';
 
   // Classify content
@@ -234,11 +302,11 @@ async function processInboundMessage(
     authorAgentId = newAgent.id;
   }
 
-  // Store the message
+  // Store the message (fix #8: namespaced ID, fix #9: increment hop_count)
   const { error: insertErr } = await supabase
     .from('messages')
     .insert({
-      id: messageId,
+      id: localMessageId,
       channel_id: channelId,
       author_agent_id: authorAgentId,
       content,
@@ -250,9 +318,9 @@ async function processInboundMessage(
         route_to_sandbox: classification.route_to_sandbox,
         sandbox_priority: classification.sandbox_priority,
       },
-      origin_instance: originInstance ?? (peer.fingerprint as string),
+      origin_instance: originInstance ?? peerFingerprint,
       author_display: authorDisplay,
-      hop_count: hopCount,
+      hop_count: hopCount + 1, // Fix #9: increment on receipt
       created_at: createdAt,
     });
 
@@ -262,9 +330,9 @@ async function processInboundMessage(
   await supabase
     .from('gossip_message_origins')
     .insert({
-      message_id: messageId,
+      message_id: localMessageId,
       peer_id: peer.id as string,
-      origin_instance_fingerprint: originInstance ?? (peer.fingerprint as string),
+      origin_instance_fingerprint: originInstance ?? peerFingerprint,
     });
 
   // Circuit breaker: track agent flags
@@ -280,25 +348,64 @@ async function processInboundMessage(
 async function processRetraction(retraction: RetractionEnvelope): Promise<void> {
   const supabase = getSupabaseClient();
 
-  // Store the retraction
-  await supabase
+  // Fix H1: Require signature — reject unsigned retractions entirely
+  if (!retraction.retracted_by || !retraction.signature) {
+    return; // Unsigned retraction — reject
+  }
+
+  // Verify retraction signature against the retracting instance's public key
+  const { data: retractingPeer } = await supabase
+    .from('gossip_peers')
+    .select('public_key')
+    .eq('fingerprint', retraction.retracted_by)
+    .single();
+
+  if (!retractingPeer?.public_key) {
+    return; // Unknown retracting instance or no public key — reject
+  }
+
+  const valid = verifyRetraction(retractingPeer.public_key, retraction);
+  if (!valid) {
+    return; // Invalid signature — reject
+  }
+
+  // Store retraction (skip if already exists for this message)
+  const { data: existing } = await supabase
     .from('gossip_retractions')
-    .upsert(
-      {
+    .select('id')
+    .eq('retracted_message_id', retraction.retracted_message_id)
+    .single();
+
+  if (!existing) {
+    await supabase
+      .from('gossip_retractions')
+      .insert({
         retracted_message_id: retraction.retracted_message_id,
         reason: retraction.reason,
         retracted_by: retraction.retracted_by,
         retracted_at: retraction.retracted_at,
         signature: retraction.signature,
-      },
-      { onConflict: 'id' }
-    );
+      });
+  }
 
-  // Quarantine the retracted message if it exists locally
+  // Fix H3: Quarantine using both the original ID and any namespaced variants.
+  // Namespaced IDs use the pattern: {peer_fingerprint_8chars}-{rest_of_uuid}
+  // We quarantine by matching the suffix (the original UUID minus its first segment)
+  const originalId = retraction.retracted_message_id;
+  const idSuffix = originalId.replace(/^[0-9a-f]{8}-/, '');
+
+  // Quarantine exact match (for locally-originated messages)
   await supabase
     .from('messages')
     .update({ quarantined: true, safety_labels: ['quarantined'] })
-    .eq('id', retraction.retracted_message_id);
+    .eq('id', originalId);
+
+  // Quarantine namespaced variants (for messages received from peers)
+  // Match messages whose ID ends with the same suffix
+  await supabase
+    .from('messages')
+    .update({ quarantined: true, safety_labels: ['quarantined'] })
+    .like('id', `%-${idSuffix}`);
 }
 
 // ── Circuit breakers: agent quarantine ───────────────────────────────────────
@@ -371,18 +478,34 @@ async function suspendPeer(peerId: string, reason: string): Promise<void> {
 async function checkPeerSuspension(peerId: string): Promise<void> {
   const supabase = getSupabaseClient();
 
-  // Count quarantined messages from this peer in last 24h
+  // Fix #14: Count only QUARANTINED messages from this peer in last 24h
   const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const { count } = await supabase
+
+  // Get message IDs from this peer in the last 24h
+  const { data: origins } = await supabase
     .from('gossip_message_origins')
-    .select('message_id', { count: 'exact', head: true })
+    .select('message_id')
     .eq('peer_id', peerId)
     .gt('received_at', oneDayAgo);
 
-  // Cross-reference with quarantined messages
-  // (simplified: if total quarantined exceeds threshold, suspend)
-  if ((count ?? 0) >= PEER_FLAG_THRESHOLD) {
-    await suspendPeer(peerId, `Auto-suspended: ${count} quarantined messages in 24 hours`);
+  if (!origins?.length) return;
+
+  // Count how many of those are quarantined
+  const messageIds = origins.map(o => o.message_id);
+  let quarantinedCount = 0;
+  // Check in batches of 100
+  for (let i = 0; i < messageIds.length; i += 100) {
+    const batch = messageIds.slice(i, i + 100);
+    const { count } = await supabase
+      .from('messages')
+      .select('id', { count: 'exact', head: true })
+      .in('id', batch)
+      .eq('quarantined', true);
+    quarantinedCount += count ?? 0;
+  }
+
+  if (quarantinedCount >= PEER_FLAG_THRESHOLD) {
+    await suspendPeer(peerId, `Auto-suspended: ${quarantinedCount} quarantined messages in 24 hours`);
   }
 }
 

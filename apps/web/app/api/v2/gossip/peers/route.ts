@@ -1,9 +1,11 @@
 import { NextRequest } from 'next/server';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
-import { getSupabaseClient } from '@/lib/api-v2-auth';
+import { authenticateAgent, isAuthError, getSupabaseClient } from '@/lib/api-v2-auth';
 
-// GET /api/v2/gossip/peers — List all peers with status
-export async function GET() {
+// GET /api/v2/gossip/peers — List all peers with status (authenticated)
+export async function GET(request: NextRequest) {
+  const auth = await authenticateAgent(request);
+  if (isAuthError(auth)) return auth;
   try {
     const supabase = getSupabaseClient();
     const { data, error } = await supabase
@@ -21,9 +23,12 @@ export async function GET() {
   }
 }
 
-// POST /api/v2/gossip/peers — Add a new peer
+// POST /api/v2/gossip/peers — Add a new peer (authenticated)
 // Body: { endpoint, fingerprint, peer_type?, federation_scope?, display_name? }
 export async function POST(request: NextRequest) {
+  const auth = await authenticateAgent(request);
+  if (isAuthError(auth)) return auth;
+
   let body: {
     endpoint: string;
     fingerprint: string;
@@ -112,9 +117,12 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// DELETE /api/v2/gossip/peers — Remove a peer
+// DELETE /api/v2/gossip/peers — Remove a peer (authenticated)
 // Body: { endpoint }
 export async function DELETE(request: NextRequest) {
+  const auth = await authenticateAgent(request);
+  if (isAuthError(auth)) return auth;
+
   let body: { endpoint?: string; id?: string };
   try {
     body = await request.json();
