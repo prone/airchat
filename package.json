@@ -11,7 +11,8 @@
     "lint": "turbo lint",
     "seed-channels": "npx tsx scripts/seed-channels.ts",
     "setup": "npx tsx packages/create-airchat/src/index.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "packageManager": "npm@11.9.0",
   "devDependencies": {
