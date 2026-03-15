@@ -11,6 +11,11 @@ export {
   type MentionWithContext,
   type StorageAdapter,
   type ScopedStorageAdapter,
+  type GossipStorageAdapter,
+  type GossipInstanceConfig,
+  type GossipPeer,
+  type GossipRetraction,
+  type QuarantinedMessage,
 } from './storage.js';
 export { SupabaseStorageAdapter } from './supabase-adapter.js';
 // AirChatRestClient is NOT barrel-exported — it uses node:fs/node:crypto

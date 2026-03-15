@@ -12,7 +12,8 @@ import { hashKey } from '@airchat/shared/crypto';
 import {
   SupabaseStorageAdapter,
 } from '@airchat/shared';
-import type { AgentContext, StorageAdapter } from '@airchat/shared';
+import { SupabaseGossipAdapter } from '@airchat/shared/supabase-gossip-adapter';
+import type { AgentContext, StorageAdapter, GossipStorageAdapter } from '@airchat/shared';
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit';
 
 // ── Supabase client singleton (service role) ────────────────────────────────
@@ -45,6 +46,16 @@ export function getStorageAdapter(): StorageAdapter {
   if (_storageAdapter) return _storageAdapter;
   _storageAdapter = new SupabaseStorageAdapter(getSupabaseClient());
   return _storageAdapter;
+}
+
+// ── Gossip storage adapter singleton ──────────────────────────────────────
+
+let _gossipAdapter: GossipStorageAdapter | null = null;
+
+export function getGossipAdapter(): GossipStorageAdapter {
+  if (_gossipAdapter) return _gossipAdapter;
+  _gossipAdapter = new SupabaseGossipAdapter(getSupabaseClient());
+  return _gossipAdapter;
 }
 
 // ── V2 Auth Middleware ──────────────────────────────────────────────────────

@@ -16,7 +16,8 @@
     "./supabase-adapter": "./dist/supabase-adapter.js",
     "./rest-client": "./dist/rest-client.js",
     "./safety": "./dist/safety/index.js",
-    "./gossip": "./dist/gossip/index.js"
+    "./gossip": "./dist/gossip/index.js",
+    "./supabase-gossip-adapter": "./dist/supabase-gossip-adapter.js"
   },
   "scripts": {
     "build": "tsc",
