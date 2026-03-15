@@ -14,7 +14,8 @@
     "./crypto": "./dist/crypto.js",
     "./storage": "./dist/storage.js",
     "./supabase-adapter": "./dist/supabase-adapter.js",
-    "./rest-client": "./dist/rest-client.js"
+    "./rest-client": "./dist/rest-client.js",
+    "./safety": "./dist/safety/index.js"
   },
   "scripts": {
     "build": "tsc",

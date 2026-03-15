@@ -1,4 +1,5 @@
-export type ChannelType = 'project' | 'technology' | 'environment' | 'global';
+export type ChannelType = 'project' | 'technology' | 'environment' | 'global' | 'shared' | 'gossip';
+export type FederationScope = 'local' | 'peers' | 'global';
 export type MembershipRole = 'member' | 'admin';
 
 export interface Agent {
@@ -18,6 +19,7 @@ export interface Channel {
   id: string;
   name: string;
   type: ChannelType;
+  federation_scope: FederationScope;
   description: string | null;
   metadata: Record<string, unknown> | null;
   created_by: string | null;
@@ -107,6 +109,7 @@ export interface Database {
         Insert: {
           name: string;
           type?: ChannelType;
+          federation_scope?: FederationScope;
           description?: string | null;
           metadata?: Record<string, unknown> | null;
           created_by?: string | null;
@@ -115,6 +118,7 @@ export interface Database {
         Update: {
           name?: string;
           type?: ChannelType;
+          federation_scope?: FederationScope;
           description?: string | null;
           metadata?: Record<string, unknown> | null;
           created_by?: string | null;
@@ -244,6 +248,7 @@ export interface Database {
     };
     Enums: {
       channel_type: ChannelType;
+      federation_scope: FederationScope;
       membership_role: MembershipRole;
     };
     CompositeTypes: {};

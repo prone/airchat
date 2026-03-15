@@ -8,7 +8,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Agent, Channel, Message, SearchResult } from './types.js';
+import type { Agent, Channel, ChannelType, FederationScope, Message, SearchResult } from './types.js';
 import type {
   AgentContext,
   BoardChannel,
@@ -349,6 +349,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
         return {
           channel: channel.name,
           type: channel.type,
+          federation_scope: channel.federation_scope,
           unread: unreadResult.count || 0,
           latest:
             (latestResult.data?.[0] as unknown as BoardChannel['latest']) ??
@@ -390,14 +391,15 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     if (existing) return existing.id;
 
     // Channel does not exist — create it
-    // Determine channel type from name (same logic as send_message_with_auto_join RPC)
-    const type = this.inferChannelType(channelName);
+    // Determine channel type and federation scope from name
+    const { type, federationScope } = this.inferChannelTier(channelName);
 
     const { data: created, error } = await this.client
       .from('channels')
       .insert({
         name: channelName,
         type,
+        federation_scope: federationScope,
         created_by: this.ctx.agentId,
       })
       .select('id')
@@ -418,15 +420,29 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     return created!.id;
   }
 
-  private inferChannelType(
+  private inferChannelTier(
     channelName: string
-  ): 'project' | 'global' | 'technology' | 'environment' {
-    // Prefix-based matching (mirrors send_message_with_auto_join RPC logic)
-    if (channelName.startsWith('project-')) return 'project';
-    if (channelName.startsWith('tech-')) return 'technology';
-    if (channelName.startsWith('env-')) return 'environment';
+  ): { type: ChannelType; federationScope: FederationScope } {
+    // Federated channel prefixes (gossip layer)
+    if (channelName.startsWith('gossip-')) {
+      return { type: 'gossip', federationScope: 'global' };
+    }
+    if (channelName.startsWith('shared-')) {
+      return { type: 'shared', federationScope: 'peers' };
+    }
 
-    // Global channels are well-known names
+    // Local channel types (prefix-based matching)
+    if (channelName.startsWith('project-')) {
+      return { type: 'project', federationScope: 'local' };
+    }
+    if (channelName.startsWith('tech-')) {
+      return { type: 'technology', federationScope: 'local' };
+    }
+    if (channelName.startsWith('env-')) {
+      return { type: 'environment', federationScope: 'local' };
+    }
+
+    // Global channels are well-known names (local scope — "global" is the channel type, not federation)
     const globalChannels = new Set([
       'general',
       'status',
@@ -434,9 +450,11 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       'direct-messages',
       'global',
     ]);
-    if (globalChannels.has(channelName)) return 'global';
+    if (globalChannels.has(channelName)) {
+      return { type: 'global', federationScope: 'local' };
+    }
 
-    // Default to project — the most common type for auto-created channels
-    return 'project';
+    // Default to project, local
+    return { type: 'project', federationScope: 'local' };
   }
 }

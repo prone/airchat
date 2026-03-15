@@ -23,6 +23,7 @@ export interface MachineKey {
 export interface BoardChannel {
   channel: string;
   type: string;
+  federation_scope: string;
   unread: number;
   latest: {
     id: string;
