@@ -155,11 +155,13 @@ async function syncFromPeer(peerId: string): Promise<void> {
 
     for (const msg of data.messages ?? []) {
       const result = await processInboundMessage(msg, peer, gossip, patternSet);
-      console.log(`[gossip] processInboundMessage: ${(msg as any).id?.slice(0, 8)} → ${result}`);
       if (result === 'stored') received++;
       if (result === 'quarantined') { received++; quarantined++; }
     }
-    console.log(`[gossip] Sync from ${peer.display_name || peer.fingerprint}: ${data.messages?.length ?? 0} msgs, ${received} stored, ${quarantined} quarantined`);
+
+    if (received > 0 || quarantined > 0) {
+      console.log(`[gossip] Sync from ${peer.display_name || peer.fingerprint}: ${received} stored, ${quarantined} quarantined`);
+    }
 
     for (const retraction of data.retractions ?? []) {
       await processRetraction(retraction, gossip);
@@ -204,27 +206,24 @@ async function processInboundMessage(
   const rawHopCount = raw.hop_count;
   const createdAt = raw.created_at as string;
 
-  console.log(`[gossip] inbound: id=${remoteMessageId?.slice(0,8)} ch=${channelName} content=${!!content} hop=${rawHopCount} sig=${!!raw.signature} opk=${!!raw.origin_public_key}`);
-  if (!remoteMessageId || !channelName || !content) { console.log(`[gossip] REJECT ${remoteMessageId?.slice(0,8)}: missing id/channel/content (ch=${channelName})`); return 'rejected'; }
+  if (!remoteMessageId || !channelName || !content) return 'rejected';
 
   // Fix #56: Validate remoteMessageId is a UUID
-  if (!UUID_RE.test(remoteMessageId)) { console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: invalid UUID`); return 'rejected'; }
+  if (!UUID_RE.test(remoteMessageId)) return 'rejected';
 
   // Fix #52: Validate content and metadata size on inbound federated messages
   const maxContent = channelName.startsWith('gossip-') ? 500 : 2000;
-  if (content.length > maxContent) { console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: content too long (${content.length}>${maxContent})`); return 'rejected'; }
-  if (metadata && JSON.stringify(metadata).length > 1024) { console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: metadata too large`); return 'rejected'; }
+  if (content.length > maxContent) return 'rejected';
+  if (metadata && JSON.stringify(metadata).length > 1024) return 'rejected';
 
   // Validate hop_count
   if (typeof rawHopCount !== 'number' || !Number.isInteger(rawHopCount) || rawHopCount < 0) {
-    console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: bad hop_count (${typeof rawHopCount}: ${rawHopCount})`);
     return 'rejected';
   }
 
   // Validate timestamp
   const messageAge = Date.now() - new Date(createdAt).getTime();
   if (isNaN(messageAge) || messageAge < -5 * 60 * 1000 || messageAge > 7 * 24 * 60 * 60 * 1000) {
-    console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: bad timestamp (age=${messageAge}ms)`);
     return 'rejected';
   }
 
@@ -236,13 +235,12 @@ async function processInboundMessage(
 
   // Hop limit
   const maxHops = channelName.startsWith('gossip-') ? 3 : 1;
-  if (rawHopCount > maxHops) { console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: hop limit (${rawHopCount}>${maxHops})`); return 'rejected'; }
+  if (rawHopCount > maxHops) return 'rejected';
 
   // Red team #1: Envelope signatures are MANDATORY. Reject unsigned messages.
   const envelopeSignature = raw.signature as string | undefined;
   const originPublicKey = raw.origin_public_key as string | undefined;
   if (!envelopeSignature || !originPublicKey) {
-    console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: no signature (sig=${!!envelopeSignature}, key=${!!originPublicKey})`);
     return 'rejected'; // No signature = no trust
   }
   const envelope: GossipEnvelope = {
@@ -258,16 +256,16 @@ async function processInboundMessage(
     safety_labels: (raw.safety_labels as string[]) ?? [],
     federation_scope: channelName.startsWith('gossip-') ? 'global' : 'peers',
   };
-  if (!verifyEnvelope(originPublicKey, envelope)) { console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: signature verification failed (author=${authorDisplay} origin=${originInstance})`); return 'rejected'; }
+  if (!verifyEnvelope(originPublicKey, envelope)) return 'rejected';
 
   // Agent quarantine check (persistent — survives restarts)
   const agentKey = `${authorDisplay}@${originInstance ?? peer.fingerprint}`;
-  if (await gossip.isAgentQuarantined(agentKey)) { console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: agent quarantined (${agentKey})`); return 'rejected'; }
+  if (await gossip.isAgentQuarantined(agentKey)) return 'rejected';
 
   // Red team #8: Enforce channel namespace — federated messages can ONLY target
   // gossip-* or shared-* channels. Reject any attempt to inject into local channels.
   if (!channelName.startsWith('gossip-') && !channelName.startsWith('shared-')) {
-    console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: channel namespace (${channelName})`); return 'rejected';
+    return 'rejected';
   }
 
   // Classify
@@ -278,7 +276,7 @@ async function processInboundMessage(
   const type = channelName.startsWith('gossip-') ? 'gossip' : 'shared';
   const scope = channelName.startsWith('gossip-') ? 'global' : 'peers';
   const channelId = await gossip.findOrCreateChannelId(channelName, type, scope);
-  if (!channelId) { console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: channel creation failed (${channelName})`); return 'rejected'; }
+  if (!channelId) return 'rejected';
 
   // Find or create remote agent
   const agentId = await gossip.findOrCreateRemoteAgent(
@@ -286,7 +284,7 @@ async function processInboundMessage(
     peer.fingerprint,
     originInstance
   );
-  if (!agentId) { console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: agent creation failed`); return 'rejected'; }
+  if (!agentId) return 'rejected';
 
   // Store
   const stored = await gossip.insertFederatedMessage({
@@ -308,7 +306,7 @@ async function processInboundMessage(
     created_at: createdAt,
   });
 
-  if (!stored) { console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: storage failed`); return 'rejected'; }
+  if (!stored) return 'rejected';
 
   await gossip.trackMessageOrigin(localMessageId, peer.id, originInstance ?? peer.fingerprint);
 
