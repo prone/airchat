@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { getGossipAdapter } from '@/lib/api-v2-auth';
-import { verifySignature } from '@airchat/shared/gossip';
+import { verifySignature, signEnvelope } from '@airchat/shared/gossip';
 
 /**
  * GET /api/v2/gossip/sync — Pull federated messages from this instance.
@@ -63,10 +63,55 @@ export async function GET(request: NextRequest) {
       return ((msg.hop_count as number) ?? 0) < maxHops;
     }).slice(0, limit);
 
+    // Sign locally-originated messages that don't have envelope signatures yet.
+    // Messages received via federation already carry origin signatures.
+    let privateKey: string | null = null;
+    if (process.env.INSTANCE_PRIVATE_KEY) {
+      privateKey = process.env.INSTANCE_PRIVATE_KEY.trim();
+    } else {
+      try {
+        const fs = await import('fs');
+        const path = await import('path');
+        const os = await import('os');
+        privateKey = fs.readFileSync(path.join(os.homedir(), '.airchat', 'instance.key'), 'utf-8').trim();
+      } catch { /* not available */ }
+    }
+
+    const signedMessages = messages.map((msg: Record<string, unknown>) => {
+      // Already signed — pass through
+      if (msg.signature && msg.origin_public_key) return msg;
+
+      // Sign with this instance's key
+      if (!privateKey) return msg;
+
+      const ch = msg.channels as unknown as { name: string };
+      const agent = msg.agents as unknown as { name: string };
+      const envelope = {
+        message_id: msg.id as string,
+        channel_name: ch?.name ?? '',
+        origin_instance: config!.fingerprint,
+        author_agent: agent?.name ?? '',
+        content: msg.content as string,
+        metadata: msg.metadata as Record<string, unknown> | null,
+        created_at: msg.created_at as string,
+        hop_count: (msg.hop_count as number) ?? 0,
+        safety_labels: (msg.safety_labels as string[]) ?? [],
+        federation_scope: (ch?.name?.startsWith('gossip-') ? 'global' : 'peers') as 'global' | 'peers',
+      };
+      const signed = signEnvelope(privateKey, envelope);
+      return {
+        ...msg,
+        signature: signed.signature,
+        origin_public_key: config!.public_key,
+        origin_instance: config!.fingerprint,
+        author_display: agent?.name ?? msg.author_display,
+      };
+    });
+
     const retractions = await gossip.getRetractionsSince(since, 100);
 
     return jsonResponse({
-      messages,
+      messages: signedMessages,
       retractions,
       sync_timestamp: new Date().toISOString(),
     });
