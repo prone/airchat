@@ -264,4 +264,40 @@ describe('valid registration', () => {
     expect(data.agent_id).toBeDefined();
     expect(data.agent_name).toBe(body.agent_name);
   });
+
+  it('allows re-registration of the same agent (key rotation)', async () => {
+    const agentName = `reregister-test-${Date.now()}`;
+
+    // First registration
+    const body1 = buildValidPayload({ agent_name: agentName });
+    const res1 = await registerFetch(body1);
+    if (res1.status === 429) return;
+    expect(res1.status).toBe(200);
+    const data1 = await res1.json();
+
+    // Re-register same agent with a new derived key
+    const newDerivedKey = generateDerivedKey();
+    const payload2: RegistrationPayload = {
+      machine_name: machineName,
+      agent_name: agentName,
+      derived_key_hash: hashKey(newDerivedKey),
+      timestamp: new Date().toISOString(),
+      nonce: generateNonce(),
+    };
+    const sig2 = signRegistration(machinePrivateKey, payload2);
+    const res2 = await registerFetch({ ...payload2, signature: sig2 });
+    if (res2.status === 429) return;
+
+    expect(res2.status).toBe(200);
+    const data2 = await res2.json();
+    expect(data2.agent_id).toBe(data1.agent_id); // Same agent, updated key
+    expect(data2.agent_name).toBe(agentName);
+  });
 });
+
+// ── Agent cap (50 per machine) ────────────────────────────────────────────
+// NOTE: The 50-agent-per-machine cap cannot be tested without creating 50+
+// real agents, which is destructive to the database. The cap is enforced in
+// apps/web/app/api/v2/register/route.ts (MAX_AGENTS_PER_MACHINE = 50) and
+// returns { error: 'Agent limit exceeded for this machine' } with status 429.
+// Re-registration of existing agents is exempt from the cap.
