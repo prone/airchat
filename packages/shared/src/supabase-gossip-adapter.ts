@@ -210,10 +210,19 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
   }
 
   async findOrCreateRemoteAgent(name: string, peerFingerprint: string, originInstance: string | null): Promise<string | null> {
+    // Sanitize agent name to match the check constraint: ^[a-z0-9][a-z0-9-]{1,99}$
+    const sanitizedName = name
+      .toLowerCase()
+      .replace(/@/g, '-at-')
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 100) || `remote-${peerFingerprint.slice(0, 8)}`;
+
     const { data: existing } = await this.client
       .from('agents')
       .select('id')
-      .eq('name', name)
+      .eq('name', sanitizedName)
       .single();
     if (existing) return existing.id;
 
@@ -221,10 +230,10 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
     const { data: created, error } = await this.client
       .from('agents')
       .insert({
-        name,
+        name: sanitizedName,
         api_key_hash: `remote:${peerFingerprint}:${Date.now()}`,
         active: true,
-        metadata: { remote: true, origin_instance: originInstance },
+        metadata: { remote: true, origin_instance: originInstance, original_name: name },
       })
       .select('id')
       .single();
