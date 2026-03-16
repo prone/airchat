@@ -101,6 +101,7 @@ export async function GET(request: NextRequest) {
       const signed = signEnvelope(privateKey, envelope);
       return {
         ...msg,
+        hop_count: (msg.hop_count as number) ?? 0,
         signature: signed.signature,
         origin_public_key: config!.public_key,
         origin_instance: config!.fingerprint,
