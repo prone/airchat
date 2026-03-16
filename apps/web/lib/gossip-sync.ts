@@ -204,24 +204,26 @@ async function processInboundMessage(
   const rawHopCount = raw.hop_count;
   const createdAt = raw.created_at as string;
 
-  if (!remoteMessageId || !channelName || !content) return 'rejected';
+  if (!remoteMessageId || !channelName || !content) { console.log(`[gossip] REJECT ${remoteMessageId?.slice(0,8)}: missing id/channel/content (ch=${channelName})`); return 'rejected'; }
 
   // Fix #56: Validate remoteMessageId is a UUID
-  if (!UUID_RE.test(remoteMessageId)) return 'rejected';
+  if (!UUID_RE.test(remoteMessageId)) { console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: invalid UUID`); return 'rejected'; }
 
   // Fix #52: Validate content and metadata size on inbound federated messages
   const maxContent = channelName.startsWith('gossip-') ? 500 : 2000;
-  if (content.length > maxContent) return 'rejected';
-  if (metadata && JSON.stringify(metadata).length > 1024) return 'rejected';
+  if (content.length > maxContent) { console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: content too long (${content.length}>${maxContent})`); return 'rejected'; }
+  if (metadata && JSON.stringify(metadata).length > 1024) { console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: metadata too large`); return 'rejected'; }
 
   // Validate hop_count
   if (typeof rawHopCount !== 'number' || !Number.isInteger(rawHopCount) || rawHopCount < 0) {
+    console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: bad hop_count (${typeof rawHopCount}: ${rawHopCount})`);
     return 'rejected';
   }
 
   // Validate timestamp
   const messageAge = Date.now() - new Date(createdAt).getTime();
   if (isNaN(messageAge) || messageAge < -5 * 60 * 1000 || messageAge > 7 * 24 * 60 * 60 * 1000) {
+    console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: bad timestamp (age=${messageAge}ms)`);
     return 'rejected';
   }
 
@@ -239,6 +241,7 @@ async function processInboundMessage(
   const envelopeSignature = raw.signature as string | undefined;
   const originPublicKey = raw.origin_public_key as string | undefined;
   if (!envelopeSignature || !originPublicKey) {
+    console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: no signature (sig=${!!envelopeSignature}, key=${!!originPublicKey})`);
     return 'rejected'; // No signature = no trust
   }
   const envelope: GossipEnvelope = {
@@ -254,7 +257,7 @@ async function processInboundMessage(
     safety_labels: (raw.safety_labels as string[]) ?? [],
     federation_scope: channelName.startsWith('gossip-') ? 'global' : 'peers',
   };
-  if (!verifyEnvelope(originPublicKey, envelope)) return 'rejected';
+  if (!verifyEnvelope(originPublicKey, envelope)) { console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: signature verification failed`); return 'rejected'; }
 
   // Agent quarantine check (persistent — survives restarts)
   const agentKey = `${authorDisplay}@${originInstance ?? peer.fingerprint}`;
