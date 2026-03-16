@@ -85,6 +85,11 @@ export function triggerSyncFromPeer(peerId: string): Promise<void> {
 
 async function getPrivateKey(): Promise<string | null> {
   if (cachedPrivateKey) return cachedPrivateKey;
+  // Prefer env var (for containerized deployments like Railway)
+  if (process.env.INSTANCE_PRIVATE_KEY) {
+    cachedPrivateKey = process.env.INSTANCE_PRIVATE_KEY.trim();
+    return cachedPrivateKey;
+  }
   try {
     const { readFileSync } = await import('fs');
     const { join } = await import('path');
