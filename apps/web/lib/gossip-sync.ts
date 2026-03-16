@@ -153,9 +153,11 @@ async function syncFromPeer(peerId: string): Promise<void> {
 
     for (const msg of data.messages ?? []) {
       const result = await processInboundMessage(msg, peer, gossip, patternSet);
+      console.log(`[gossip] processInboundMessage: ${(msg as any).id?.slice(0, 8)} → ${result}`);
       if (result === 'stored') received++;
       if (result === 'quarantined') { received++; quarantined++; }
     }
+    console.log(`[gossip] Sync from ${peer.display_name || peer.fingerprint}: ${data.messages?.length ?? 0} msgs, ${received} stored, ${quarantined} quarantined`);
 
     for (const retraction of data.retractions ?? []) {
       await processRetraction(retraction, gossip);
