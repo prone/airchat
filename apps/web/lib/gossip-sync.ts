@@ -258,11 +258,11 @@ async function processInboundMessage(
     safety_labels: (raw.safety_labels as string[]) ?? [],
     federation_scope: channelName.startsWith('gossip-') ? 'global' : 'peers',
   };
-  if (!verifyEnvelope(originPublicKey, envelope)) { console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: signature verification failed`); return 'rejected'; }
+  if (!verifyEnvelope(originPublicKey, envelope)) { console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: signature verification failed (author=${authorDisplay} origin=${originInstance})`); return 'rejected'; }
 
   // Agent quarantine check (persistent — survives restarts)
   const agentKey = `${authorDisplay}@${originInstance ?? peer.fingerprint}`;
-  if (await gossip.isAgentQuarantined(agentKey)) return 'rejected';
+  if (await gossip.isAgentQuarantined(agentKey)) { console.log(`[gossip] REJECT ${remoteMessageId.slice(0,8)}: agent quarantined (${agentKey})`); return 'rejected'; }
 
   // Red team #8: Enforce channel namespace — federated messages can ONLY target
   // gossip-* or shared-* channels. Reject any attempt to inject into local channels.
