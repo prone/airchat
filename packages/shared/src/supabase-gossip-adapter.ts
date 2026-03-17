@@ -334,7 +334,7 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
     await this.client
       .from('messages')
       .update({ quarantined: true })
-      .like('id', `%-${idSuffix}`);
+      .like('id', `%-${idSuffix.replace(/%/g, '\\%').replace(/_/g, '\\_')}`);
   }
 
   // ── Quarantine Admin ────────────────────────────────────────────────────

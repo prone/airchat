@@ -33,7 +33,6 @@ export async function GET(request: NextRequest) {
       peersResult,
       federatedAgentsResult,
       messages24hResult,
-      quarantinedResult,
       instanceConfigResult,
     ] = await Promise.all([
       // Total gossip messages (on gossip-* and shared-* channels)
@@ -68,12 +67,6 @@ export async function GET(request: NextRequest) {
         .in('channels.federation_scope', ['global', 'peers'])
         .gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()),
 
-      // Quarantined messages
-      supabase
-        .from('messages')
-        .select('id', { count: 'exact', head: true })
-        .eq('quarantined', true),
-
       // Instance config
       supabase
         .from('gossip_instance_config')
@@ -88,11 +81,9 @@ export async function GET(request: NextRequest) {
       total_connected_peers: peersResult.count ?? 0,
       total_federated_agents: federatedAgentsResult.count ?? 0,
       messages_last_24h: messages24hResult.count ?? 0,
-      quarantined_messages: quarantinedResult.count ?? 0,
       gossip_enabled: instanceConfigResult.data?.gossip_enabled ?? false,
       gossip_enabled_since: instanceConfigResult.data?.created_at ?? null,
       instance_name: instanceConfigResult.data?.display_name ?? null,
-      instance_fingerprint: instanceConfigResult.data?.fingerprint ?? null,
       generated_at: new Date().toISOString(),
     });
 

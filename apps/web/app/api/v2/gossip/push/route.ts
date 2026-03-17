@@ -3,6 +3,8 @@ import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { getGossipAdapter } from '@/lib/api-v2-auth';
 import { verifySignature } from '@airchat/shared/gossip';
 import { processInboundMessages } from '@/lib/gossip-sync';
+import { checkRateLimit } from '@/lib/rate-limit';
+import { checkGossipNonce } from '@/lib/gossip-nonce';
 
 /**
  * POST /api/v2/gossip/push — Receive pushed messages from a peer.
@@ -12,6 +14,7 @@ import { processInboundMessages } from '@/lib/gossip-sync';
  * This enables federation when the sender is behind NAT.
  *
  * Authenticated via signed timestamp (same as /sync and /notify).
+ * Max 10 messages per push request.
  */
 export async function POST(request: NextRequest) {
   const fingerprint = request.headers.get('x-gossip-fingerprint');
@@ -22,10 +25,15 @@ export async function POST(request: NextRequest) {
     return errorResponse('x-gossip-fingerprint, x-gossip-timestamp, and x-gossip-signature headers required', 401);
   }
 
-  // Replay protection
+  // Replay protection: timestamp window
   const requestAge = Date.now() - new Date(timestamp).getTime();
   if (isNaN(requestAge) || Math.abs(requestAge) > 5 * 60 * 1000) {
     return errorResponse('Request timestamp too old or invalid', 401);
+  }
+
+  // Replay protection: nonce dedup
+  if (checkGossipNonce(fingerprint, timestamp)) {
+    return errorResponse('Duplicate request', 401);
   }
 
   const gossip = getGossipAdapter();
@@ -33,6 +41,12 @@ export async function POST(request: NextRequest) {
   const peer = await gossip.getPeerByFingerprint(fingerprint);
   if (!peer) return errorResponse('Unknown peer', 403);
   if (!peer.active || peer.suspended) return errorResponse('Peer is suspended', 403);
+
+  // Per-peer rate limiting (30 pushes/min)
+  const rateLimit = checkRateLimit(`gossip-push:${fingerprint}`, 60_000, 30);
+  if (!rateLimit.allowed) {
+    return errorResponse('Rate limit exceeded', 429);
+  }
 
   if (!peer.public_key) return errorResponse('Peer public key not yet exchanged', 403);
   if (!verifySignature(peer.public_key, timestamp, signature)) {
@@ -55,18 +69,15 @@ export async function POST(request: NextRequest) {
 
   // Limit to 10 messages per push to prevent abuse
   // Normalize envelope format to match what processInboundMessage expects (sync format)
+  // Note: author_display is derived from signed author_agent only (not from raw input)
   const messages = body.messages.slice(0, 10).map((msg: Record<string, unknown>) => ({
     ...msg,
-    // processInboundMessage reads 'id', not 'message_id'
     id: msg.id ?? msg.message_id,
-    // processInboundMessage reads channels.name, not channel_name
     channels: msg.channels ?? { name: msg.channel_name },
-    // processInboundMessage reads agents.name, not author_agent
     agents: msg.agents ?? { name: msg.author_agent },
-    // Ensure hop_count is a number
     hop_count: (msg.hop_count as number) ?? 0,
-    // Map author_agent to author_display
-    author_display: msg.author_display ?? msg.author_agent,
+    // Security: derive author_display from signed author_agent only
+    author_display: msg.author_agent,
   }));
 
   const { stored, quarantined } = await processInboundMessages(messages, peer, gossip);

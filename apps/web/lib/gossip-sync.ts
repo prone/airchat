@@ -7,7 +7,7 @@
 import { getGossipAdapter } from '@/lib/api-v2-auth';
 import { classifyMessage } from '@airchat/shared/safety';
 import { loadPatternSet } from '@airchat/shared/safety';
-import { verifyEnvelope, verifyRetraction, signData } from '@airchat/shared/gossip';
+import { verifyEnvelope, verifyRetraction, signData, signEnvelope } from '@airchat/shared/gossip';
 import type { GossipEnvelope, RetractionEnvelope } from '@airchat/shared/gossip';
 import type { PatternSet } from '@airchat/shared/safety';
 import type { GossipStorageAdapter, GossipPeer } from '@airchat/shared';
@@ -83,7 +83,7 @@ export function triggerSyncFromPeer(peerId: string): Promise<void> {
 
 // ── Private key loading (cached) ─────────────────────────────────────────────
 
-async function getPrivateKey(): Promise<string | null> {
+export async function getPrivateKey(): Promise<string | null> {
   if (cachedPrivateKey) return cachedPrivateKey;
   // Prefer env var (for containerized deployments like Railway)
   if (process.env.INSTANCE_PRIVATE_KEY) {
@@ -199,7 +199,9 @@ async function processInboundMessage(
 ): Promise<InboundResult> {
   const remoteMessageId = raw.id as string;
   const channelName = (raw.channels as Record<string, string>)?.name;
-  const content = raw.content as string;
+  // Defense-in-depth: strip HTML tags from federated content to prevent stored XSS
+  const rawContent = raw.content as string;
+  const content = rawContent?.replace(/<[^>]*>/g, '') ?? rawContent;
   const metadata = raw.metadata as Record<string, unknown> | null;
   const originInstance = raw.origin_instance as string | null;
   const authorDisplay = raw.author_display as string ?? (raw.agents as Record<string, string>)?.name;
@@ -230,8 +232,12 @@ async function processInboundMessage(
   // Namespace remote ID
   const localMessageId = `${peer.fingerprint.slice(0, 8)}-${remoteMessageId.replace(/^[0-9a-f]{8}-/, '')}`;
 
-  // Dedup
+  // Dedup: check both namespaced ID and origin-based dedup
   if (await gossip.messageExists(localMessageId)) return 'duplicate';
+  // Cross-peer dedup: reject if same origin message was already received from another peer
+  const originFingerprint = (originInstance ?? peer.fingerprint).slice(0, 8);
+  const originLocalId = `${originFingerprint}-${remoteMessageId.replace(/^[0-9a-f]{8}-/, '')}`;
+  if (originLocalId !== localMessageId && await gossip.messageExists(originLocalId)) return 'duplicate';
 
   // Hop limit
   const maxHops = channelName.startsWith('gossip-') ? 3 : 1;
@@ -505,7 +511,6 @@ export async function pushMessageToSupernodes(message: {
   if (supernodes.length === 0) return;
 
   // Build and sign the envelope
-  const { signEnvelope } = await import('@airchat/shared/gossip');
   const envelope = signEnvelope(privateKey, {
     message_id: message.id,
     channel_name: message.channel_name,
@@ -520,7 +525,6 @@ export async function pushMessageToSupernodes(message: {
   });
 
   // Sign a timestamp for auth
-  const { signData } = await import('@airchat/shared/gossip');
   const timestamp = new Date().toISOString();
   const authSignature = signData(privateKey, timestamp);
 

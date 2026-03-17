@@ -2,6 +2,9 @@ import { NextRequest } from 'next/server';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { getGossipAdapter } from '@/lib/api-v2-auth';
 import { verifySignature, signEnvelope } from '@airchat/shared/gossip';
+import { checkRateLimit } from '@/lib/rate-limit';
+import { checkGossipNonce } from '@/lib/gossip-nonce';
+import { getPrivateKey } from '@/lib/gossip-sync';
 
 /**
  * GET /api/v2/gossip/sync — Pull federated messages from this instance.
@@ -17,10 +20,15 @@ export async function GET(request: NextRequest) {
     return errorResponse('x-gossip-fingerprint, x-gossip-timestamp, and x-gossip-signature headers required', 401);
   }
 
-  // Replay protection
+  // Replay protection: timestamp window
   const requestAge = Date.now() - new Date(timestamp).getTime();
   if (isNaN(requestAge) || Math.abs(requestAge) > 5 * 60 * 1000) {
     return errorResponse('Request timestamp too old or invalid', 401);
+  }
+
+  // Replay protection: nonce dedup
+  if (checkGossipNonce(fingerprint, timestamp)) {
+    return errorResponse('Duplicate request', 401);
   }
 
   const gossip = getGossipAdapter();
@@ -29,6 +37,12 @@ export async function GET(request: NextRequest) {
   const peer = await gossip.getPeerByFingerprint(fingerprint);
   if (!peer) return errorResponse('Unknown peer', 403);
   if (!peer.active || peer.suspended) return errorResponse('Peer is suspended', 403);
+
+  // Per-peer rate limiting (60 syncs/min)
+  const rateLimit = checkRateLimit(`gossip-sync:${fingerprint}`, 60_000, 60);
+  if (!rateLimit.allowed) {
+    return errorResponse('Rate limit exceeded', 429);
+  }
 
   // Verify signature
   if (!peer.public_key) return errorResponse('Peer public key not yet exchanged', 403);
@@ -52,7 +66,6 @@ export async function GET(request: NextRequest) {
   try {
     // Red team #9: Global peers only get gossip-* messages (scope 'global').
     // Shared-* messages (scope 'peers') are only served to direct peers.
-    // This prevents supernodes/global peers from accessing shared channel content.
     const scopeFilter = scope === 'global' ? ['global'] : ['peers'];
     const allMessages = await gossip.getFederatedMessages({ since, limit, scopeFilter });
 
@@ -64,18 +77,7 @@ export async function GET(request: NextRequest) {
     }).slice(0, limit);
 
     // Sign locally-originated messages that don't have envelope signatures yet.
-    // Messages received via federation already carry origin signatures.
-    let privateKey: string | null = null;
-    if (process.env.INSTANCE_PRIVATE_KEY) {
-      privateKey = process.env.INSTANCE_PRIVATE_KEY.trim();
-    } else {
-      try {
-        const fs = await import('fs');
-        const path = await import('path');
-        const os = await import('os');
-        privateKey = fs.readFileSync(path.join(os.homedir(), '.airchat', 'instance.key'), 'utf-8').trim();
-      } catch { /* not available */ }
-    }
+    const privateKey = await getPrivateKey();
 
     const signedMessages = messages.map((msg: Record<string, unknown>) => {
       // Already signed — pass through

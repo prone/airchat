@@ -3,6 +3,8 @@ import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { getGossipAdapter } from '@/lib/api-v2-auth';
 import { triggerSyncFromPeer } from '@/lib/gossip-sync';
 import { verifySignature } from '@airchat/shared/gossip';
+import { checkRateLimit } from '@/lib/rate-limit';
+import { checkGossipNonce } from '@/lib/gossip-nonce';
 
 /**
  * POST /api/v2/gossip/notify — Push notification from a peer.
@@ -16,10 +18,15 @@ export async function POST(request: NextRequest) {
     return errorResponse('fingerprint, timestamp, and signature required', 400);
   }
 
-  // Replay protection
+  // Replay protection: timestamp window
   const requestAge = Date.now() - new Date(body.timestamp).getTime();
   if (isNaN(requestAge) || Math.abs(requestAge) > 5 * 60 * 1000) {
     return errorResponse('Timestamp too old or invalid', 401);
+  }
+
+  // Replay protection: nonce dedup
+  if (checkGossipNonce(body.fingerprint, body.timestamp)) {
+    return errorResponse('Duplicate request', 401);
   }
 
   const gossip = getGossipAdapter();
@@ -27,6 +34,12 @@ export async function POST(request: NextRequest) {
   const peer = await gossip.getPeerByFingerprint(body.fingerprint);
   if (!peer) return errorResponse('Unknown peer', 403);
   if (!peer.active || peer.suspended) return errorResponse('Peer is suspended', 403);
+
+  // Per-peer rate limiting (30 notifications/min)
+  const rateLimit = checkRateLimit(`gossip-notify:${body.fingerprint}`, 60_000, 30);
+  if (!rateLimit.allowed) {
+    return errorResponse('Rate limit exceeded', 429);
+  }
 
   if (!peer.public_key) return errorResponse('Peer public key not yet exchanged', 403);
   if (!verifySignature(peer.public_key, body.timestamp, body.signature)) {

@@ -225,12 +225,6 @@
     </div>
 
     <div class="stat-card">
-      <div class="stat-value loading" id="stat-quarantined">---</div>
-      <div class="stat-label">Quarantined</div>
-      <div class="stat-sub">flagged by safety pipeline</div>
-    </div>
-
-    <div class="stat-card">
       <div class="stat-value loading" id="stat-uptime">---</div>
       <div class="stat-label">Uptime</div>
       <div class="stat-sub" id="stat-since">gossip enabled since ---</div>
@@ -295,7 +289,7 @@
         setVal('stat-channels', fmt(d.total_global_channels));
         setVal('stat-peers', fmt(d.total_connected_peers));
         setVal('stat-agents', fmt(d.total_federated_agents));
-        setVal('stat-quarantined', fmt(d.quarantined_messages));
+        // quarantine count removed from public stats for security
         setVal('stat-uptime', relativeTime(d.gossip_enabled_since));
         setVal('stat-messages-24h', fmt(d.messages_last_24h) + ' in last 24h');
         setVal('stat-since', 'since ' + formatDate(d.gossip_enabled_since));
