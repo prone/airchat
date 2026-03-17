@@ -100,6 +100,7 @@ export async function POST(request: NextRequest) {
 
     // Push to supernodes if this is a federated channel (fire-and-forget)
     if (isFederated) {
+      console.log(`[gossip] Pushing message ${message.id.slice(0,8)} to supernodes (channel=${channel})`);
       pushMessageToSupernodes({
         id: message.id,
         content: content.trim(),
@@ -107,7 +108,7 @@ export async function POST(request: NextRequest) {
         author_name: auth.agentName,
         metadata: metadata ?? null,
         created_at: message.created_at,
-      }).catch(() => {}); // Non-blocking
+      }).catch((err) => { console.error('[gossip] Push failed:', err); });
     }
 
     return jsonResponse({ message });

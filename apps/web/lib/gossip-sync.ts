@@ -492,17 +492,18 @@ export async function pushMessageToSupernodes(message: {
 }): Promise<void> {
   const gossip = getGossipAdapter();
   const config = await gossip.getInstanceConfig();
-  if (!config?.gossip_enabled) return;
+  if (!config?.gossip_enabled) { console.log('[gossip] Push skipped: gossip not enabled'); return; }
 
   const privateKey = await getPrivateKey();
-  if (!privateKey) return;
+  if (!privateKey) { console.log('[gossip] Push skipped: no private key'); return; }
 
   const peers = await gossip.listPeers();
   const supernodes = peers.filter(
     (p: { peer_type: string; active: boolean; suspended: boolean }) =>
       p.peer_type === 'supernode' && p.active && !p.suspended
   );
-  if (supernodes.length === 0) return;
+  if (supernodes.length === 0) { console.log('[gossip] Push skipped: no active supernodes'); return; }
+  console.log(`[gossip] Pushing to ${supernodes.length} supernode(s)`);
 
   // Build and sign the envelope
   const { signEnvelope } = await import('@airchat/shared/gossip');
