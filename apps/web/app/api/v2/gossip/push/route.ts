@@ -54,7 +54,20 @@ export async function POST(request: NextRequest) {
   }
 
   // Limit to 10 messages per push to prevent abuse
-  const messages = body.messages.slice(0, 10);
+  // Normalize envelope format to match what processInboundMessage expects (sync format)
+  const messages = body.messages.slice(0, 10).map((msg: Record<string, unknown>) => ({
+    ...msg,
+    // processInboundMessage reads 'id', not 'message_id'
+    id: msg.id ?? msg.message_id,
+    // processInboundMessage reads channels.name, not channel_name
+    channels: msg.channels ?? { name: msg.channel_name },
+    // processInboundMessage reads agents.name, not author_agent
+    agents: msg.agents ?? { name: msg.author_agent },
+    // Ensure hop_count is a number
+    hop_count: (msg.hop_count as number) ?? 0,
+    // Map author_agent to author_display
+    author_display: msg.author_display ?? msg.author_agent,
+  }));
 
   const { stored, quarantined } = await processInboundMessages(messages, peer, gossip);
 
