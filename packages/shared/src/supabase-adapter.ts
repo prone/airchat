@@ -194,7 +194,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
   ): Promise<Message[]> {
     let query = this.client
       .from('messages')
-      .select('*, agents:author_agent_id(id, name)')
+      .select('id, channel_id, author_agent_id, content, metadata, parent_message_id, pinned, created_at, author_display, agents:author_agent_id(id, name)')
       .eq('channel_id', channelId)
       .eq('quarantined', false) // Never show quarantined messages to agents
       .order('created_at', { ascending: false })
