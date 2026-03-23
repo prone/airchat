@@ -31,6 +31,9 @@ interface SetupConfig {
   nodePath: string;
   webUrl?: string;
   keypair?: Keypair;
+  slackBotToken?: string;
+  slackAppToken?: string;
+  slackWebhookUrl?: string;
 }
 
 interface StepResult {
@@ -202,6 +205,27 @@ async function collectConfig(rl: readline.Interface, reconfigure: boolean): Prom
   }
   console.log('');
 
+  // Slack integration (optional)
+  const setupSlack = await askYesNo(rl, 'Set up Slack integration? (talk to agents from Slack)', false);
+  let slackBotToken: string | undefined;
+  let slackAppToken: string | undefined;
+  let slackWebhookUrl: string | undefined;
+
+  if (setupSlack) {
+    console.log('');
+    console.log(`  ${dim('Create a Slack app at https://api.slack.com/apps')}`);
+    console.log(`  ${dim('Enable Socket Mode and add a /airchat slash command.')}`);
+    console.log(`  ${dim('Required scopes: commands, chat:write')}`);
+    console.log('');
+    slackBotToken = await askSecret(rl, 'Slack Bot Token (xoxb-...)');
+    slackAppToken = await askSecret(rl, 'Slack App Token (xapp-...)');
+    const wantWebhook = await askYesNo(rl, 'Set up AirChat → Slack forwarding? (optional)', false);
+    if (wantWebhook) {
+      slackWebhookUrl = await ask(rl, 'Slack Incoming Webhook URL');
+    }
+  }
+  console.log('');
+
   // Repo location
   let airchatDir = '';
   if (detectedRepo) {
@@ -236,6 +260,9 @@ async function collectConfig(rl: readline.Interface, reconfigure: boolean): Prom
     airchatDir,
     nodePath,
     webUrl,
+    slackBotToken,
+    slackAppToken,
+    slackWebhookUrl,
   };
 }
 
@@ -429,12 +456,15 @@ function writeAirchatConfig(config: SetupConfig): StepResult {
     const configDir = path.join(os.homedir(), '.airchat');
     fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
 
-    // v2 config: only MACHINE_NAME and AIRCHAT_WEB_URL
+    // v2 config: MACHINE_NAME, AIRCHAT_WEB_URL, and optional Slack tokens
     const lines: string[] = [
       `MACHINE_NAME=${config.machineName}`,
     ];
 
     if (config.webUrl) lines.push(`AIRCHAT_WEB_URL=${config.webUrl}`);
+    if (config.slackBotToken) lines.push(`SLACK_BOT_TOKEN=${config.slackBotToken}`);
+    if (config.slackAppToken) lines.push(`SLACK_APP_TOKEN=${config.slackAppToken}`);
+    if (config.slackWebhookUrl) lines.push(`SLACK_WEBHOOK_URL=${config.slackWebhookUrl}`);
 
     fs.writeFileSync(path.join(configDir, 'config'), lines.join('\n') + '\n', { mode: 0o600 });
 
@@ -622,6 +652,9 @@ async function main() {
   if (config.deployDashboard) {
     console.log(`    Dashboard:   port ${config.dashboardPort}`);
   }
+  if (config.slackBotToken) {
+    console.log(`    Slack:       enabled (Socket Mode)`);
+  }
   console.log('');
 
   // Execute steps
@@ -723,9 +756,14 @@ async function main() {
 
   console.log('');
   console.log(`  ${dim('Next steps:')}`);
-  console.log(`  1. Restart Claude Code`);
+  let step = 1;
+  console.log(`  ${step++}. Restart Claude Code`);
   if (config.deployDashboard) {
-    console.log(`  2. Start the dashboard: cd ${config.airchatDir} && docker compose up -d --build`);
+    console.log(`  ${step++}. Start the dashboard: cd ${config.airchatDir} && docker compose up -d --build`);
+  }
+  if (config.slackBotToken) {
+    console.log(`  ${step++}. Start the Slack bridge: node ${path.join(config.airchatDir, 'packages', 'slack-bridge', 'dist', 'index.js')}`);
+    console.log(`     ${dim('Or: cd ' + config.airchatDir + ' && npx tsx packages/slack-bridge/src/index.ts')}`);
   }
   console.log(`  ${dim('Run with --reconfigure to regenerate keypair and update settings.')}`);
   console.log('');
