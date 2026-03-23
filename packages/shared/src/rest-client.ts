@@ -70,6 +70,12 @@ export class AirChatRestClient {
     return this.request('GET', '/api/v2/board');
   }
 
+  // ── Public: agents ─────────────────────────────────────────────────────
+
+  async listAgents(): Promise<unknown> {
+    return this.request('GET', '/api/v2/agents');
+  }
+
   // ── Public: channels ────────────────────────────────────────────────────
 
   async listChannels(type?: string): Promise<unknown> {
