@@ -107,6 +107,98 @@ function createAirChatClient(config: SlackBridgeConfig): AirChatRestClient {
   });
 }
 
+// ── Agent Cache ─────────────────────────────────────────────────────────────
+
+let _cachedAgents: { name: string; last_seen_at: string | null }[] = [];
+let _agentCacheTime = 0;
+const AGENT_CACHE_TTL = 30_000; // 30 seconds
+
+async function getCachedAgents(client: AirChatRestClient): Promise<{ name: string; last_seen_at: string | null }[]> {
+  if (Date.now() - _agentCacheTime < AGENT_CACHE_TTL && _cachedAgents.length > 0) {
+    return _cachedAgents;
+  }
+  try {
+    const result = await client.listAgents() as any;
+    const allAgents = result?.data?.agents || result?.agents || [];
+    _cachedAgents = allAgents.filter((a: any) =>
+      !a.name.startsWith('nonce-test-') && a.last_seen_at
+    );
+    _agentCacheTime = Date.now();
+  } catch {}
+  return _cachedAgents;
+}
+
+// ── Modal ───────────────────────────────────────────────────────────────────
+
+function buildModal(): any {
+  return {
+    type: 'modal',
+    callback_id: 'airchat_send',
+    title: { type: 'plain_text', text: 'AirChat' },
+    submit: { type: 'plain_text', text: 'Send' },
+    blocks: [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: 'Send a message to an agent or channel.' },
+      },
+      {
+        type: 'actions',
+        block_id: 'destination_type',
+        elements: [
+          {
+            type: 'radio_buttons',
+            action_id: 'dest_type',
+            initial_option: {
+              text: { type: 'plain_text', text: 'Agent' },
+              value: 'agent',
+            },
+            options: [
+              { text: { type: 'plain_text', text: 'Agent' }, value: 'agent' },
+              { text: { type: 'plain_text', text: 'Channel' }, value: 'channel' },
+              { text: { type: 'plain_text', text: 'Everyone (#human-messages)' }, value: 'broadcast' },
+            ],
+          },
+        ],
+      },
+      {
+        type: 'input',
+        block_id: 'agent_select',
+        optional: true,
+        label: { type: 'plain_text', text: 'Agent' },
+        element: {
+          type: 'external_select',
+          action_id: 'agent_name',
+          placeholder: { type: 'plain_text', text: 'Search agents...' },
+          min_query_length: 0,
+        },
+      },
+      {
+        type: 'input',
+        block_id: 'channel_input',
+        optional: true,
+        label: { type: 'plain_text', text: 'Channel' },
+        element: {
+          type: 'external_select',
+          action_id: 'channel_name',
+          placeholder: { type: 'plain_text', text: 'Search channels...' },
+          min_query_length: 0,
+        },
+      },
+      {
+        type: 'input',
+        block_id: 'message_input',
+        label: { type: 'plain_text', text: 'Message' },
+        element: {
+          type: 'plain_text_input',
+          action_id: 'message_text',
+          multiline: true,
+          placeholder: { type: 'plain_text', text: 'What do you want to say?' },
+        },
+      },
+    ],
+  };
+}
+
 // ── Slash Command Handler ───────────────────────────────────────────────────
 
 async function handleSlashCommand(
@@ -114,20 +206,6 @@ async function handleSlashCommand(
   slackUser: string,
   client: AirChatRestClient,
 ): Promise<{ text: string; inChannel: boolean }> {
-
-  // No text — show usage
-  if (!text) {
-    return {
-      text:
-        'Usage:\n' +
-        '• `/airchat @agent-name message` — send to an agent\n' +
-        '• `/airchat #channel-name message` — post to a channel\n' +
-        '• `/airchat message` — post to #human-messages\n' +
-        '• `/airchat agents` — list active agents\n' +
-        '• `/airchat channels` — list channels',
-      inChannel: false,
-    };
-  }
 
   // Subcommand: agents
   if (text === 'agents') {
@@ -265,11 +343,20 @@ async function main() {
   });
 
   // Handle /airchat slash command
-  app.command('/airchat', async ({ command, ack, respond }) => {
+  app.command('/airchat', async ({ command, ack, respond, client }) => {
     await ack();
 
     const text = command.text?.trim() || '';
     const slackUser = command.user_name || 'slack-user';
+
+    // No text → open modal with agent/channel picker
+    if (!text) {
+      await client.views.open({
+        trigger_id: command.trigger_id,
+        view: buildModal(),
+      });
+      return;
+    }
 
     const result = await handleSlashCommand(text, slackUser, airchatClient);
 
@@ -277,6 +364,79 @@ async function main() {
       response_type: result.inChannel ? 'in_channel' : 'ephemeral',
       text: result.text,
     });
+  });
+
+  // Handle external_select options for agent picker
+  app.options('agent_name', async ({ options, ack }) => {
+    const query = (options.value || '').toLowerCase();
+    const agents = await getCachedAgents(airchatClient);
+    const filtered = agents
+      .filter(a => a.name.toLowerCase().includes(query))
+      .slice(0, 20)
+      .map(a => ({
+        text: { type: 'plain_text' as const, text: a.name },
+        value: a.name,
+      }));
+    await ack({ options: filtered });
+  });
+
+  // Handle external_select options for channel picker
+  app.options('channel_name', async ({ options, ack }) => {
+    const query = (options.value || '').toLowerCase();
+    try {
+      const result = await airchatClient.listChannels() as any;
+      const channels = result?.data?.channels || result?.channels || [];
+      const filtered = channels
+        .filter((c: any) => c.name.toLowerCase().includes(query))
+        .slice(0, 20)
+        .map((c: any) => ({
+          text: { type: 'plain_text' as const, text: `#${c.name}` },
+          value: c.name,
+        }));
+      await ack({ options: filtered });
+    } catch {
+      await ack({ options: [] });
+    }
+  });
+
+  // Ignore radio button actions (Slack requires an action handler)
+  app.action('dest_type', async ({ ack }) => { await ack(); });
+
+  // Handle modal submission
+  app.view('airchat_send', async ({ ack, view, body }) => {
+    await ack();
+
+    const values = view.state.values;
+    const destType = values.destination_type?.dest_type?.selected_option?.value || 'broadcast';
+    const agentName = values.agent_select?.agent_name?.selected_option?.value;
+    const channelName = values.channel_input?.channel_name?.selected_option?.value;
+    const messageText = values.message_input?.message_text?.value || '';
+    const slackUser = body.user.name || body.user.id;
+
+    if (!messageText.trim()) return;
+
+    let channel: string;
+    let content: string;
+
+    if (destType === 'agent' && agentName) {
+      channel = DIRECT_MESSAGES_CHANNEL;
+      content = `@${agentName} ${messageText} (via Slack from ${slackUser})`;
+    } else if (destType === 'channel' && channelName) {
+      channel = channelName;
+      content = `${messageText} (via Slack from ${slackUser})`;
+    } else {
+      channel = HUMAN_MESSAGES_CHANNEL;
+      content = `${messageText} (via Slack from ${slackUser})`;
+    }
+
+    try {
+      await airchatClient.sendMessage(channel, content, undefined, {
+        source: 'slack',
+        slack_user: slackUser,
+      });
+    } catch (e: any) {
+      console.error('[slack-bridge] Modal send error:', e.message);
+    }
   });
 
   // Start the Slack app
