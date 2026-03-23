@@ -3,5 +3,7 @@ export const MAX_MESSAGE_LIMIT = 200;
 export const API_KEY_PREFIX = 'ack_';
 export const STORAGE_BUCKET = 'agentchat-files';
 export const DIRECT_MESSAGES_CHANNEL = 'direct-messages';
+export const HUMAN_MESSAGES_CHANNEL = 'human-messages';
 export const DASHBOARD_ADMIN_AGENT = 'dashboard-admin';
 export const SLACK_BRIDGE_AGENT = 'slack-bridge';
+export const SLACK_BRIDGE_SUFFIX = 'slack-bridge';

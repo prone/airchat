@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { createAgentClient } from '@airchat/shared/supabase';
-import { DIRECT_MESSAGES_CHANNEL, SLACK_BRIDGE_AGENT } from '@airchat/shared';
+import { DIRECT_MESSAGES_CHANNEL, SLACK_BRIDGE_AGENT, HUMAN_MESSAGES_CHANNEL } from '@airchat/shared';
 import { ensureAgentRegistered } from '@/lib/api-auth';
 
-// Slack slash command endpoint for AirChat
+// Slack slash command endpoint for AirChat (webhook mode, alternative to Socket Mode)
 //
 // Subcommands:
 //   /airchat @agent-name message  — DM an agent via #direct-messages
@@ -17,7 +17,8 @@ import { ensureAgentRegistered } from '@/lib/api-auth';
 //   SLACK_SIGNING_SECRET - Slack app signing secret for request verification
 //   SLACK_AGENT_API_KEY  - AirChat API key to post messages as
 
-const HUMAN_MESSAGES_CHANNEL = 'human-messages';
+const MAX_MESSAGE_LENGTH = 32000;
+const MAX_CHANNEL_LENGTH = 100;
 
 function verifySlackRequest(body: string, timestamp: string, signature: string, secret: string): boolean {
   if (!timestamp || !signature) return false;
@@ -62,6 +63,7 @@ export async function POST(request: NextRequest) {
 
   const params = new URLSearchParams(body);
   const text = params.get('text')?.trim() || '';
+  const slackUserId = params.get('user_id') || 'unknown';
   const slackUser = params.get('user_name') || 'slack-user';
 
   if (!text) {
@@ -73,6 +75,10 @@ export async function POST(request: NextRequest) {
       '• `/airchat agents` — list active agents\n' +
       '• `/airchat channels` — list channels'
     );
+  }
+
+  if (text.length > MAX_MESSAGE_LENGTH) {
+    return slackResponse(`Message too long (max ${MAX_MESSAGE_LENGTH} chars).`);
   }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -139,20 +145,24 @@ export async function POST(request: NextRequest) {
 
   if (mentionMatch) {
     channel = DIRECT_MESSAGES_CHANNEL;
-    content = `@${mentionMatch[1]} ${mentionMatch[2]} (via Slack from ${slackUser})`;
+    const targetAgent = mentionMatch[1].slice(0, MAX_CHANNEL_LENGTH);
+    // Strip @ from user message body to prevent mention injection
+    const safeMessage = mentionMatch[2].replace(/(?<!\S)@(?=[a-zA-Z0-9_-])/g, '');
+    content = `@${targetAgent} ${safeMessage}`;
   } else if (channelMatch) {
-    channel = channelMatch[1];
-    content = `${channelMatch[2]} (via Slack from ${slackUser})`;
+    channel = channelMatch[1].slice(0, MAX_CHANNEL_LENGTH);
+    const safeMessage = channelMatch[2].replace(/(?<!\S)@(?=[a-zA-Z0-9_-])/g, '');
+    content = safeMessage;
   } else {
     channel = HUMAN_MESSAGES_CHANNEL;
-    content = `${text} (via Slack from ${slackUser})`;
+    content = text.replace(/(?<!\S)@(?=[a-zA-Z0-9_-])/g, '');
   }
 
   const { error } = await agentClient.rpc('send_message_with_auto_join', {
     channel_name: channel,
     content,
     parent_message_id: null,
-    message_metadata: { source: 'slack', slack_user: slackUser },
+    message_metadata: { source: 'slack', slack_user: slackUser, slack_user_id: slackUserId },
   });
 
   if (error) {

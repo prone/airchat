@@ -24,10 +24,14 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { AirChatRestClient } from '@airchat/shared/rest-client';
+import {
+  HUMAN_MESSAGES_CHANNEL,
+  DIRECT_MESSAGES_CHANNEL,
+  SLACK_BRIDGE_SUFFIX,
+} from '@airchat/shared';
 
-const HUMAN_MESSAGES_CHANNEL = 'human-messages';
-const DIRECT_MESSAGES_CHANNEL = 'direct-messages';
-const BRIDGE_AGENT_SUFFIX = 'slack-bridge';
+const MAX_MESSAGE_LENGTH = 32000;
+const MAX_NAME_LENGTH = 100;
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -84,6 +88,12 @@ function loadConfig(): SlackBridgeConfig {
     process.exit(1);
   }
 
+  // Validate webhook URL if provided
+  if (slackWebhookUrl && !slackWebhookUrl.startsWith('https://hooks.slack.com/')) {
+    console.error('SLACK_WEBHOOK_URL must start with https://hooks.slack.com/');
+    process.exit(1);
+  }
+
   let privateKeyHex: string;
   try {
     privateKeyHex = readFileSync(join(homedir(), '.airchat', 'machine.key'), 'utf-8').trim();
@@ -98,13 +108,22 @@ function loadConfig(): SlackBridgeConfig {
 // ── AirChat Client ──────────────────────────────────────────────────────────
 
 function createAirChatClient(config: SlackBridgeConfig): AirChatRestClient {
-  const agentName = `${config.machineName}-${BRIDGE_AGENT_SUFFIX}`;
+  const agentName = `${config.machineName}-${SLACK_BRIDGE_SUFFIX}`;
   return new AirChatRestClient({
     webUrl: config.airchatWebUrl,
     machineName: config.machineName,
     privateKeyHex: config.privateKeyHex,
     agentName,
   });
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function escapeSlackMrkdwn(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 // ── Agent Cache ─────────────────────────────────────────────────────────────
@@ -124,75 +143,77 @@ async function getCachedAgents(client: AirChatRestClient): Promise<{ name: strin
       !a.name.startsWith('nonce-test-') && a.last_seen_at
     );
     _agentCacheTime = Date.now();
-  } catch {}
+  } catch (e: any) {
+    console.error('[slack-bridge] Agent cache refresh failed:', e.message);
+  }
   return _cachedAgents;
 }
 
 // ── Modal ───────────────────────────────────────────────────────────────────
 
-function buildModal(): any {
+function buildModal() {
   return {
-    type: 'modal',
+    type: 'modal' as const,
     callback_id: 'airchat_send',
-    title: { type: 'plain_text', text: 'AirChat' },
-    submit: { type: 'plain_text', text: 'Send' },
+    title: { type: 'plain_text' as const, text: 'AirChat' },
+    submit: { type: 'plain_text' as const, text: 'Send' },
     blocks: [
       {
-        type: 'section',
-        text: { type: 'mrkdwn', text: 'Send a message to an agent or channel.' },
+        type: 'section' as const,
+        text: { type: 'mrkdwn' as const, text: 'Send a message to an agent or channel.' },
       },
       {
-        type: 'actions',
+        type: 'actions' as const,
         block_id: 'destination_type',
         elements: [
           {
-            type: 'radio_buttons',
+            type: 'radio_buttons' as const,
             action_id: 'dest_type',
             initial_option: {
-              text: { type: 'plain_text', text: 'Agent' },
+              text: { type: 'plain_text' as const, text: 'Agent' },
               value: 'agent',
             },
             options: [
-              { text: { type: 'plain_text', text: 'Agent' }, value: 'agent' },
-              { text: { type: 'plain_text', text: 'Channel' }, value: 'channel' },
-              { text: { type: 'plain_text', text: 'Everyone (#human-messages)' }, value: 'broadcast' },
+              { text: { type: 'plain_text' as const, text: 'Agent' }, value: 'agent' },
+              { text: { type: 'plain_text' as const, text: 'Channel' }, value: 'channel' },
+              { text: { type: 'plain_text' as const, text: 'Everyone (#human-messages)' }, value: 'broadcast' },
             ],
           },
         ],
       },
       {
-        type: 'input',
+        type: 'input' as const,
         block_id: 'agent_select',
         optional: true,
-        label: { type: 'plain_text', text: 'Agent' },
+        label: { type: 'plain_text' as const, text: 'Agent' },
         element: {
-          type: 'external_select',
+          type: 'external_select' as const,
           action_id: 'agent_name',
-          placeholder: { type: 'plain_text', text: 'Search agents...' },
+          placeholder: { type: 'plain_text' as const, text: 'Search agents...' },
           min_query_length: 0,
         },
       },
       {
-        type: 'input',
+        type: 'input' as const,
         block_id: 'channel_input',
         optional: true,
-        label: { type: 'plain_text', text: 'Channel' },
+        label: { type: 'plain_text' as const, text: 'Channel' },
         element: {
-          type: 'external_select',
+          type: 'external_select' as const,
           action_id: 'channel_name',
-          placeholder: { type: 'plain_text', text: 'Search channels...' },
+          placeholder: { type: 'plain_text' as const, text: 'Search channels...' },
           min_query_length: 0,
         },
       },
       {
-        type: 'input',
+        type: 'input' as const,
         block_id: 'message_input',
-        label: { type: 'plain_text', text: 'Message' },
+        label: { type: 'plain_text' as const, text: 'Message' },
         element: {
-          type: 'plain_text_input',
+          type: 'plain_text_input' as const,
           action_id: 'message_text',
           multiline: true,
-          placeholder: { type: 'plain_text', text: 'What do you want to say?' },
+          placeholder: { type: 'plain_text' as const, text: 'What do you want to say?' },
         },
       },
     ],
@@ -204,17 +225,18 @@ function buildModal(): any {
 async function handleSlashCommand(
   text: string,
   slackUser: string,
+  slackUserId: string,
   client: AirChatRestClient,
 ): Promise<{ text: string; inChannel: boolean }> {
+
+  if (text.length > MAX_MESSAGE_LENGTH) {
+    return { text: `Message too long (max ${MAX_MESSAGE_LENGTH} chars).`, inChannel: false };
+  }
 
   // Subcommand: agents
   if (text === 'agents') {
     try {
-      const result = await client.listAgents() as any;
-      const allAgents = result?.data?.agents || result?.agents || [];
-      const agents = allAgents.filter((a: any) =>
-        !a.name.startsWith('nonce-test-') && a.last_seen_at
-      );
+      const agents = await getCachedAgents(client);
 
       if (agents.length === 0) {
         return { text: 'No agents registered yet.', inChannel: false };
@@ -229,7 +251,7 @@ async function handleSlashCommand(
 
       return { text: `*AirChat Agents (${agents.length}):*\n${lines.join('\n')}`, inChannel: false };
     } catch (e: any) {
-      return { text: `Failed to fetch agents: ${e.message}`, inChannel: false };
+      return { text: 'Failed to fetch agents.', inChannel: false };
     }
   }
 
@@ -246,7 +268,7 @@ async function handleSlashCommand(
       const lines = channels.map((c: any) => `• \`#${c.name}\``);
       return { text: `*AirChat Channels (${channels.length}):*\n${lines.join('\n')}`, inChannel: false };
     } catch (e: any) {
-      return { text: `Failed to fetch channels: ${e.message}`, inChannel: false };
+      return { text: 'Failed to fetch channels.', inChannel: false };
     }
   }
 
@@ -259,19 +281,24 @@ async function handleSlashCommand(
 
   if (mentionMatch) {
     channel = DIRECT_MESSAGES_CHANNEL;
-    content = `@${mentionMatch[1]} ${mentionMatch[2]} (via Slack from ${slackUser})`;
+    const targetAgent = mentionMatch[1].slice(0, MAX_NAME_LENGTH);
+    // Strip @ from user message body to prevent mention injection
+    const safeMessage = mentionMatch[2].replace(/(?<!\S)@(?=[a-zA-Z0-9_-])/g, '');
+    content = `@${targetAgent} ${safeMessage}`;
   } else if (channelMatch) {
-    channel = channelMatch[1];
-    content = `${channelMatch[2]} (via Slack from ${slackUser})`;
+    channel = channelMatch[1].slice(0, MAX_NAME_LENGTH);
+    const safeMessage = channelMatch[2].replace(/(?<!\S)@(?=[a-zA-Z0-9_-])/g, '');
+    content = safeMessage;
   } else {
     channel = HUMAN_MESSAGES_CHANNEL;
-    content = `${text} (via Slack from ${slackUser})`;
+    content = text.replace(/(?<!\S)@(?=[a-zA-Z0-9_-])/g, '');
   }
 
   try {
     await client.sendMessage(channel, content, undefined, {
       source: 'slack',
       slack_user: slackUser,
+      slack_user_id: slackUserId,
     });
 
     const response = mentionMatch
@@ -280,17 +307,18 @@ async function handleSlashCommand(
 
     return { text: response, inChannel: true };
   } catch (e: any) {
-    return { text: `Failed to send message: ${e.message}`, inChannel: false };
+    console.error('[slack-bridge] Send error:', e.message);
+    return { text: 'Failed to send message. Please try again.', inChannel: false };
   }
 }
 
 // ── Message Forwarder (AirChat → Slack) ─────────────────────────────────────
 
-async function pollAndForward(
+function startForwarder(
   airchatClient: AirChatRestClient,
   webhookUrl: string,
   watchedChannels: string[],
-): Promise<void> {
+): NodeJS.Timeout {
   let lastPollTime = new Date(Date.now() - 60_000).toISOString();
 
   const poll = async () => {
@@ -303,13 +331,16 @@ async function pollAndForward(
           const timestamp = msg.timestamp || msg.created_at;
           if (!timestamp || timestamp <= lastPollTime) continue;
 
+          // Skip messages originating from Slack (metadata-based echo prevention)
+          if (msg.project === 'slack' || msg.metadata?.source === 'slack') continue;
+
           const author = msg.author || msg.agents?.name || 'unknown';
-          // Skip messages from the slack bridge itself
-          if (author.endsWith(BRIDGE_AGENT_SUFFIX)) continue;
 
           const mentionsHuman = /\b@human\b/i.test(msg.content);
           const prefix = mentionsHuman ? ':rotating_light: ' : '';
-          const slackText = `${prefix}*${author}* in #${channel}:\n${msg.content}`;
+          const safeAuthor = escapeSlackMrkdwn(author);
+          const safeContent = escapeSlackMrkdwn(msg.content);
+          const slackText = `${prefix}*${safeAuthor}* in #${escapeSlackMrkdwn(channel)}:\n${safeContent}`;
 
           await fetch(webhookUrl, {
             method: 'POST',
@@ -325,9 +356,8 @@ async function pollAndForward(
     lastPollTime = new Date().toISOString();
   };
 
-  // Poll every 30 seconds
-  setInterval(poll, 30_000);
-  await poll(); // Initial poll
+  poll(); // Initial poll
+  return setInterval(poll, 30_000);
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -342,12 +372,15 @@ async function main() {
     socketMode: true,
   });
 
+  let pollInterval: NodeJS.Timeout | null = null;
+
   // Handle /airchat slash command
   app.command('/airchat', async ({ command, ack, respond, client }) => {
     await ack();
 
     const text = command.text?.trim() || '';
     const slackUser = command.user_name || 'slack-user';
+    const slackUserId = command.user_id || 'unknown';
 
     // No text → open modal with agent/channel picker
     if (!text) {
@@ -358,7 +391,7 @@ async function main() {
       return;
     }
 
-    const result = await handleSlashCommand(text, slackUser, airchatClient);
+    const result = await handleSlashCommand(text, slackUser, slackUserId, airchatClient);
 
     await respond({
       response_type: result.inChannel ? 'in_channel' : 'ephemeral',
@@ -412,27 +445,32 @@ async function main() {
     const channelName = values.channel_input?.channel_name?.selected_option?.value;
     const messageText = values.message_input?.message_text?.value || '';
     const slackUser = body.user.name || body.user.id;
+    const slackUserId = body.user.id;
 
     if (!messageText.trim()) return;
+    if (messageText.length > MAX_MESSAGE_LENGTH) return;
 
     let channel: string;
     let content: string;
+    // Strip @ from user content to prevent mention injection
+    const safeMessage = messageText.replace(/(?<!\S)@(?=[a-zA-Z0-9_-])/g, '');
 
     if (destType === 'agent' && agentName) {
       channel = DIRECT_MESSAGES_CHANNEL;
-      content = `@${agentName} ${messageText} (via Slack from ${slackUser})`;
+      content = `@${agentName} ${safeMessage}`;
     } else if (destType === 'channel' && channelName) {
       channel = channelName;
-      content = `${messageText} (via Slack from ${slackUser})`;
+      content = safeMessage;
     } else {
       channel = HUMAN_MESSAGES_CHANNEL;
-      content = `${messageText} (via Slack from ${slackUser})`;
+      content = safeMessage;
     }
 
     try {
       await airchatClient.sendMessage(channel, content, undefined, {
         source: 'slack',
         slack_user: slackUser,
+        slack_user_id: slackUserId,
       });
     } catch (e: any) {
       console.error('[slack-bridge] Modal send error:', e.message);
@@ -443,19 +481,25 @@ async function main() {
   await app.start();
   console.log('[slack-bridge] Connected to Slack (Socket Mode)');
   console.log(`[slack-bridge] AirChat: ${config.airchatWebUrl}`);
-  console.log(`[slack-bridge] Agent: ${config.machineName}-${BRIDGE_AGENT_SUFFIX}`);
 
   // Start forwarding if webhook URL is configured
   if (config.slackWebhookUrl) {
     console.log('[slack-bridge] Forwarding AirChat → Slack enabled');
-    await pollAndForward(airchatClient, config.slackWebhookUrl, [HUMAN_MESSAGES_CHANNEL]);
-  } else {
-    console.log('[slack-bridge] No SLACK_WEBHOOK_URL — AirChat → Slack forwarding disabled');
-    console.log('[slack-bridge] Add SLACK_WEBHOOK_URL to ~/.airchat/config to enable');
+    pollInterval = startForwarder(airchatClient, config.slackWebhookUrl, [HUMAN_MESSAGES_CHANNEL]);
   }
+
+  // Graceful shutdown
+  const shutdown = async () => {
+    console.log('[slack-bridge] Shutting down...');
+    if (pollInterval) clearInterval(pollInterval);
+    await app.stop();
+    process.exit(0);
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
 main().catch((err) => {
-  console.error('[slack-bridge] Fatal:', err);
+  console.error('[slack-bridge] Fatal:', err.message);
   process.exit(1);
 });

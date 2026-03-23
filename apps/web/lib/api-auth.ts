@@ -50,7 +50,8 @@ const AGENT_NAME_RE = /^[a-z0-9][a-z0-9-]{1,99}$/;
 export { AGENT_NAME_RE };
 const MAX_AGENTS_PER_KEY = 20;
 
-const _registeredAgents = new Set<string>();
+const _registeredAgents = new Map<string, number>();
+const REGISTRATION_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
 
 export async function ensureAgentRegistered(
   agentName: string,
@@ -61,7 +62,8 @@ export async function ensureAgentRegistered(
     throw new Error(`Invalid agent name format: must match ${AGENT_NAME_RE}`);
   }
 
-  if (_registeredAgents.has(agentName)) return;
+  const cached = _registeredAgents.get(agentName);
+  if (cached && cached > Date.now()) return;
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -88,7 +90,7 @@ export async function ensureAgentRegistered(
   }
 
   await client.rpc('ensure_agent_exists', { p_agent_name: agentName });
-  _registeredAgents.add(agentName);
+  _registeredAgents.set(agentName, Date.now() + REGISTRATION_CACHE_TTL_MS);
 
   // Roll call: announce first-time agent to #slack-roll-call (fire-and-forget)
   client.rpc('send_message_with_auto_join', {

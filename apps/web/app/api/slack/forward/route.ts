@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@airchat/shared/supabase';
-import { SLACK_BRIDGE_AGENT } from '@airchat/shared';
 
 // Polls for new AirChat messages and forwards them to Slack via Incoming Webhook.
 // Called by a cron job every 30-60 seconds.
@@ -9,12 +8,12 @@ import { SLACK_BRIDGE_AGENT } from '@airchat/shared';
 //   1. Mention @human in their content
 //   2. Are posted to channels listed in SLACK_WATCHED_CHANNELS (comma-separated)
 //
-// Skips messages posted by the slack-bridge agent (prevents echo loops).
+// Skips messages originating from Slack (metadata.source === 'slack') to prevent echo loops.
 //
 // Environment variables:
-//   SLACK_WEBHOOK_URL       - Slack Incoming Webhook URL
+//   SLACK_WEBHOOK_URL       - Slack Incoming Webhook URL (must start with https://hooks.slack.com/)
 //   SLACK_WATCHED_CHANNELS  - Comma-separated channel names to forward (default: "human-messages")
-//   SLACK_FORWARD_SECRET    - Shared secret to authenticate cron requests
+//   SLACK_FORWARD_SECRET    - Shared secret to authenticate cron requests (REQUIRED)
 
 let _lastPollTime: string | null = null;
 
@@ -26,12 +25,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'SLACK_WEBHOOK_URL not configured' }, { status: 500 });
   }
 
-  // Authenticate the cron request
-  if (forwardSecret) {
-    const auth = request.headers.get('authorization');
-    if (auth !== `Bearer ${forwardSecret}`) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+  // Validate webhook URL points to Slack
+  if (!webhookUrl.startsWith('https://hooks.slack.com/')) {
+    return NextResponse.json({ error: 'Invalid webhook URL' }, { status: 500 });
+  }
+
+  // REQUIRED: fail closed when secret is not configured
+  if (!forwardSecret) {
+    return NextResponse.json({ error: 'SLACK_FORWARD_SECRET not configured' }, { status: 500 });
+  }
+
+  const auth = request.headers.get('authorization');
+  if (auth !== `Bearer ${forwardSecret}`) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -51,7 +57,6 @@ export async function POST(request: NextRequest) {
   const since = _lastPollTime || new Date(Date.now() - 60_000).toISOString();
   const now = new Date().toISOString();
 
-  // Fetch recent messages with channel and author info
   const { data: messages, error } = await admin
     .from('messages')
     .select('id, content, created_at, metadata, channels!inner(name), agents!inner(name)')
@@ -59,7 +64,8 @@ export async function POST(request: NextRequest) {
     .order('created_at', { ascending: true });
 
   if (error) {
-    return NextResponse.json({ error: 'Failed to query messages', detail: error.message }, { status: 500 });
+    console.error('[slack-forward] Query error:', error.message);
+    return NextResponse.json({ error: 'Failed to query messages' }, { status: 500 });
   }
 
   _lastPollTime = now;
@@ -73,9 +79,10 @@ export async function POST(request: NextRequest) {
   for (const msg of messages) {
     const channelName = (msg.channels as any)?.name;
     const authorName = (msg.agents as any)?.name;
+    const metadata = (msg.metadata as any) || {};
 
-    // Skip messages from the slack-bridge agent (prevent echo)
-    if (authorName === SLACK_BRIDGE_AGENT) continue;
+    // Skip messages originating from Slack (prevents echo loops across all bridges)
+    if (metadata.source === 'slack') continue;
 
     // Check if this message should be forwarded
     const mentionsHuman = /\b@human\b/i.test(msg.content);
@@ -83,9 +90,11 @@ export async function POST(request: NextRequest) {
 
     if (!mentionsHuman && !inWatchedChannel) continue;
 
-    // Format and send to Slack
+    // Escape Slack mrkdwn control characters
+    const safeAuthor = escapeSlackMrkdwn(authorName || 'unknown');
+    const safeContent = escapeSlackMrkdwn(msg.content);
     const prefix = mentionsHuman ? ':rotating_light: ' : '';
-    const slackText = `${prefix}*${authorName}* in #${channelName}:\n${msg.content}`;
+    const slackText = `${prefix}*${safeAuthor}* in #${escapeSlackMrkdwn(channelName)}:\n${safeContent}`;
 
     const res = await fetch(webhookUrl, {
       method: 'POST',
@@ -97,4 +106,11 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json({ forwarded, checked: messages.length });
+}
+
+function escapeSlackMrkdwn(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
