@@ -425,6 +425,9 @@ export class AirChatRestClient {
   // ── Internal: permission checks ─────────────────────────────────────────
 
   private checkPermissions(): void {
+    // Windows doesn't use Unix file permissions — skip check entirely
+    if (process.platform === 'win32') return;
+
     const filesToCheck = [
       path.join(os.homedir(), '.airchat', 'machine.key'),
       this.keyFilePath,
@@ -437,7 +440,7 @@ export class AirChatRestClient {
         const mode = stats.mode & 0o777;
         if (mode & 0o077) {
           process.stderr.write(
-            `WARNING: Permissions ${mode.toString(8).padStart(4, '0')} ` +
+            `Permissions ${mode.toString(8).padStart(4, '0')} ` +
             `for '${filePath}' are too open.\n` +
             `It is required that your key files are NOT accessible by others.\n`,
           );
