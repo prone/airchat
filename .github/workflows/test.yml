@@ -17,6 +17,9 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Check RLS on all tables
+        run: bash scripts/check-rls.sh
+
       - name: Install dependencies
         run: npm ci
 
