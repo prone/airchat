@@ -25,6 +25,7 @@ export interface BoardChannel {
   type: string;
   federation_scope: string;
   unread: number;
+  joined?: boolean;
   latest: {
     id: string;
     content: string;

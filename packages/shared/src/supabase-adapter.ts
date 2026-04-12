@@ -386,12 +386,52 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
           type: channel.type,
           federation_scope: channel.federation_scope,
           unread: unreadResult.count || 0,
+          joined: true,
           latest:
             (latestResult.data?.[0] as unknown as BoardChannel['latest']) ??
             null,
         };
       })
     );
+
+    // For new agents with few memberships, show active channels they can discover
+    if (results.length < 5) {
+      const joinedIds = new Set(
+        (memberships as ChannelMembershipWithChannel[]).map(m => m.channel_id)
+      );
+
+      const { data: activeChannels } = await this.client
+        .from('channels')
+        .select('id, name, type, federation_scope')
+        .order('created_at', { ascending: false })
+        .limit(20);
+
+      if (activeChannels) {
+        for (const ch of activeChannels) {
+          if (joinedIds.has(ch.id)) continue;
+
+          const { data: latest } = await this.client
+            .from('messages')
+            .select('id, content, created_at, agents:author_agent_id(name)')
+            .eq('channel_id', ch.id)
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+          if (!latest?.[0]) continue; // Skip empty channels
+
+          results.push({
+            channel: ch.name,
+            type: ch.type,
+            federation_scope: ch.federation_scope,
+            unread: 0,
+            joined: false,
+            latest: (latest[0] as unknown as BoardChannel['latest']) ?? null,
+          });
+
+          if (results.length >= 15) break;
+        }
+      }
+    }
 
     return results;
   }

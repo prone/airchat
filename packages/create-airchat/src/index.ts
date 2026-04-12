@@ -34,6 +34,7 @@ interface SetupConfig {
   slackBotToken?: string;
   slackAppToken?: string;
   slackWebhookUrl?: string;
+  adminSecret?: string;
 }
 
 interface StepResult {
@@ -249,6 +250,21 @@ async function collectConfig(rl: readline.Interface, reconfigure: boolean): Prom
   const nodePath = detectNodePath();
   const webUrl = deployDashboard ? `http://localhost:${dashboardPort}` : (existing.AIRCHAT_WEB_URL || DEFAULT_AIRCHAT_URL);
 
+  if (webUrl === DEFAULT_AIRCHAT_URL && !deployDashboard) {
+    console.log(`  ${YELLOW}Note: No custom server URL. Data will be sent to the public supernode.${RESET}`);
+    console.log(`  ${dim('Set AIRCHAT_WEB_URL in ~/.airchat/config to use your own server.')}`);
+    console.log('');
+  }
+
+  // Prompt for admin secret when no Supabase creds (needed for machine key registration via API)
+  let adminSecret: string | undefined;
+  if (!supabaseUrl && !deployDashboard) {
+    console.log(`  ${dim('To register this machine with the server, enter the admin secret.')}`);
+    console.log(`  ${dim('(Set ADMIN_REGISTRATION_SECRET on your server. Leave blank to skip.)')}`);
+    adminSecret = await askSecret(rl, 'Admin registration secret (optional)') || undefined;
+    console.log('');
+  }
+
   return {
     dbProvider,
     supabaseUrl,
@@ -263,6 +279,7 @@ async function collectConfig(rl: readline.Interface, reconfigure: boolean): Prom
     slackBotToken,
     slackAppToken,
     slackWebhookUrl,
+    adminSecret,
   };
 }
 
@@ -442,7 +459,37 @@ async function generateAndRegisterKeypair(config: SetupConfig, reconfigure: bool
     return { name, ok: true, message: `Keypair generated and public key registered for "${config.machineName}"` };
   }
 
-  // Non-Supabase: keypair generated but not registered
+  // No Supabase creds — try registering via web API admin endpoint
+  if (config.webUrl) {
+    try {
+      const res = await fetch(`${config.webUrl}/api/v2/admin/register-machine`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          machine_name: config.machineName,
+          public_key: keypair.publicKey,
+          admin_secret: config.adminSecret || '',
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (res.ok) {
+        return { name, ok: true, message: `Keypair generated and registered via ${config.webUrl}` };
+      }
+
+      const body = await res.text().catch(() => '');
+      if (res.status === 501) {
+        // Server doesn't have ADMIN_REGISTRATION_SECRET set — fall through to manual
+      } else if (res.status === 403) {
+        return { name, ok: false, message: 'Keypair generated but admin secret was rejected by the server.' };
+      } else {
+        return { name, ok: false, message: `Keypair generated but API registration failed: HTTP ${res.status} — ${body}` };
+      }
+    } catch {
+      // Server unreachable — fall through to manual instructions
+    }
+  }
+
   return {
     name,
     ok: true,
@@ -520,7 +567,8 @@ function registerMcpServer(config: SetupConfig): StepResult {
   }
 
   // v2: No env vars passed — the MCP server reads from ~/.airchat/config and ~/.airchat/machine.key directly
-  const cmd = `claude mcp add airchat -s user -- "${config.nodePath}" "${tsxPath}" "${serverPath}"`;
+  // Use forward slashes on all platforms — backslashes break bash/PowerShell hook execution
+  const cmd = `claude mcp add airchat -s user -- "${config.nodePath}" "${tsxPath}" "${serverPath}"`.replace(/\\/g, '/');
 
   try {
     execSync(cmd, { stdio: 'pipe' });
@@ -574,7 +622,8 @@ function installMentionHook(config: SetupConfig): StepResult {
       settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
     }
 
-    const hookCommand = `${config.nodePath} ${path.join(config.airchatDir, 'scripts', 'check-mentions.mjs')}`;
+    // Use forward slashes on all platforms — backslashes break bash/PowerShell hook execution
+    const hookCommand = `${config.nodePath} ${path.join(config.airchatDir, 'scripts', 'check-mentions.mjs')}`.replace(/\\/g, '/');
 
     // Check if hook already exists
     if (settings.hooks?.UserPromptSubmit) {
