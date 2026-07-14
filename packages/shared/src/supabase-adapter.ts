@@ -8,7 +8,8 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Agent, Channel, ChannelType, FederationScope, Message, SearchResult } from './types.js';
+import type { Agent, Channel, ChannelType, FederationScope, Message, Note, NoteBacklink, NoteRevision, NoteSearchResult, SearchResult } from './types.js';
+import { extractWikiLinks, type WikiLinkTarget } from './notes.js';
 import type {
   AgentContext,
   BoardChannel,
@@ -271,6 +272,13 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       .eq('agent_id', this.ctx.agentId)
       .eq('channel_id', channelId);
 
+    // 6. Record wiki-links from message content (backlinks only — message-side
+    // links never create stubs; see design doc §3.2/§10)
+    if (content.includes('[[')) {
+      await this.recordLinks('message', (message as Message).id, extractWikiLinks(content), channelId)
+        .catch(() => {}); // link recording must not fail the send
+    }
+
     return message as Message;
   }
 
@@ -450,6 +458,375 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
 
     if (error) {
       throw new Error(`Failed to ensure channel membership: ${error.message}`);
+    }
+  }
+
+  // ── Notes (knowledge layer, Phase 1) ───────────────────────────────────
+
+  async getNote(
+    channelName: string | null,
+    slug: string,
+    revision?: number
+  ): Promise<{ note: Note; revision_body?: NoteRevision } | null> {
+    const scope = await this.resolveNoteScope(channelName, false);
+    if (scope === undefined) return null;
+
+    const note = await this.findNoteInScope(scope, slug);
+    if (!note) return null;
+
+    if (revision !== undefined && revision !== note.current_revision) {
+      const { data: rev } = await this.client
+        .from('note_revisions')
+        .select('*')
+        .eq('note_id', note.id)
+        .eq('revision', revision)
+        .single();
+      if (!rev) throw new Error(`NOT_FOUND: revision ${revision} does not exist`);
+      return { note, revision_body: rev as NoteRevision };
+    }
+
+    return { note };
+  }
+
+  async writeNote(input: {
+    channelName: string | null;
+    slug: string;
+    title: string;
+    bodyMd: string;
+    properties?: Record<string, unknown>;
+    protect?: boolean;
+    expectedRevision?: number;
+  }): Promise<Note> {
+    const scope = await this.resolveNoteScope(input.channelName, true);
+    if (scope === undefined) {
+      throw new Error(`NOT_FOUND: channel ${input.channelName} not found`);
+    }
+
+    const existing = await this.findNoteInScope(scope, input.slug);
+    let saved: Note;
+
+    if (existing) {
+      if (existing.protected && existing.created_by !== this.ctx.agentId) {
+        throw new Error(
+          'PROTECTED: this note only accepts writes from its creator. ' +
+          'Propose changes via a message @mentioning them instead.'
+        );
+      }
+      if (
+        input.expectedRevision !== undefined &&
+        input.expectedRevision !== existing.current_revision
+      ) {
+        throw new Error(
+          `CONFLICT: note is at revision ${existing.current_revision}, ` +
+          `expected ${input.expectedRevision}. Re-read and retry.`
+        );
+      }
+
+      // Conditional update on current_revision avoids a read-then-write race
+      const { data: updated, error } = await this.client
+        .from('notes')
+        .update({
+          title: input.title,
+          body_md: input.bodyMd,
+          properties: input.properties ?? existing.properties,
+          updated_by: this.ctx.agentId,
+          updated_at: new Date().toISOString(),
+          is_stub: false,
+          ...(input.protect !== undefined && existing.created_by === this.ctx.agentId
+            ? { protected: input.protect }
+            : {}),
+          current_revision: existing.current_revision + 1,
+        })
+        .eq('id', existing.id)
+        .eq('current_revision', existing.current_revision)
+        .select('*')
+        .single();
+
+      if (error || !updated) {
+        throw new Error(
+          'CONFLICT: note was modified concurrently. Re-read and retry.'
+        );
+      }
+      saved = updated as Note;
+    } else {
+      const { data: created, error } = await this.client
+        .from('notes')
+        .insert({
+          slug: input.slug,
+          channel_id: scope,
+          title: input.title,
+          body_md: input.bodyMd,
+          properties: input.properties ?? {},
+          created_by: this.ctx.agentId,
+          updated_by: this.ctx.agentId,
+          protected: input.protect ?? false,
+          is_stub: false,
+        })
+        .select('*')
+        .single();
+
+      if (error || !created) {
+        throw new Error(`Failed to create note: ${error?.message ?? 'unknown error'}`);
+      }
+      saved = created as Note;
+    }
+
+    // Append full revision snapshot (append-only history)
+    await this.client.from('note_revisions').insert({
+      note_id: saved.id,
+      revision: saved.current_revision,
+      title: saved.title,
+      body_md: saved.body_md,
+      properties: saved.properties,
+      author_agent_id: this.ctx.agentId,
+    });
+
+    // Re-extract links and create stubs (note-side links DO create stubs)
+    const links = extractWikiLinks(input.bodyMd);
+    await this.client
+      .from('note_links')
+      .delete()
+      .eq('source_type', 'note')
+      .eq('source_id', saved.id);
+    await this.recordLinks('note', saved.id, links, scope, true).catch(() => {});
+
+    return saved;
+  }
+
+  async listNotes(opts: {
+    channelName?: string | null;
+    query?: string;
+    limit?: number;
+    includeStubs?: boolean;
+  }): Promise<any> {
+    const limit = Math.min(opts.limit ?? 50, 200);
+
+    if (opts.query) {
+      let channelFilter: string | undefined;
+      if (opts.channelName) {
+        const scope = await this.resolveNoteScope(opts.channelName, false);
+        if (scope === undefined) return [];
+        channelFilter = scope ?? undefined;
+      }
+      const { data, error } = await this.client.rpc('search_notes', {
+        query_text: opts.query,
+        channel_filter: channelFilter,
+      });
+      if (error) throw new Error(`Note search failed: ${error.message}`);
+      return (data as NoteSearchResult[]).slice(0, limit);
+    }
+
+    let query = this.client
+      .from('notes')
+      .select('slug, channel_id, title, is_stub, protected, current_revision, updated_at, channels:channel_id(name)')
+      .order('updated_at', { ascending: false })
+      .limit(limit);
+
+    if (opts.channelName !== undefined) {
+      const scope = await this.resolveNoteScope(opts.channelName, false);
+      if (scope === undefined) return [];
+      query = scope === null ? query.is('channel_id', null) : query.eq('channel_id', scope);
+    }
+    if (!opts.includeStubs) {
+      query = query.eq('is_stub', false);
+    }
+
+    const { data, error } = await query;
+    if (error) throw new Error(`Failed to list notes: ${error.message}`);
+
+    return (data as any[]).map((n) => ({
+      slug: n.slug,
+      channel_id: n.channel_id,
+      channel_name: n.channels?.name ?? null,
+      title: n.title,
+      is_stub: n.is_stub,
+      protected: n.protected,
+      current_revision: n.current_revision,
+      updated_at: n.updated_at,
+    }));
+  }
+
+  async getNoteBacklinks(channelName: string | null, slug: string): Promise<NoteBacklink[]> {
+    const scope = await this.resolveNoteScope(channelName, false);
+    if (scope === undefined) return [];
+
+    let query = this.client
+      .from('note_links')
+      .select('source_type, source_id, created_at')
+      .eq('target_slug', slug)
+      .order('created_at', { ascending: false })
+      .limit(100);
+    query = scope === null ? query.is('target_channel_id', null) : query.eq('target_channel_id', scope);
+
+    const { data: links, error } = await query;
+    if (error) throw new Error(`Failed to fetch backlinks: ${error.message}`);
+
+    const noteIds = (links as any[]).filter((l) => l.source_type === 'note').map((l) => l.source_id);
+    const messageIds = (links as any[]).filter((l) => l.source_type === 'message').map((l) => l.source_id);
+
+    const [noteSources, messageSources] = await Promise.all([
+      noteIds.length
+        ? this.client
+            .from('notes')
+            .select('id, slug, channels:channel_id(name), agents:updated_by(name), updated_at')
+            .in('id', noteIds)
+        : Promise.resolve({ data: [] }),
+      messageIds.length
+        ? this.client
+            .from('messages')
+            .select('id, content, created_at, channels:channel_id(name), agents:author_agent_id(name)')
+            .in('id', messageIds)
+        : Promise.resolve({ data: [] }),
+    ]);
+
+    const backlinks: NoteBacklink[] = [];
+    for (const n of (noteSources.data as any[]) ?? []) {
+      backlinks.push({
+        source_type: 'note',
+        source_id: n.id,
+        source_label: n.slug,
+        channel_name: n.channels?.name ?? null,
+        author_name: n.agents?.name ?? null,
+        created_at: n.updated_at,
+      });
+    }
+    for (const m of (messageSources.data as any[]) ?? []) {
+      backlinks.push({
+        source_type: 'message',
+        source_id: m.id,
+        source_label: (m.content as string).slice(0, 120),
+        channel_name: m.channels?.name ?? null,
+        author_name: m.agents?.name ?? null,
+        created_at: m.created_at,
+      });
+    }
+
+    return backlinks.sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+
+  async getNoteRevisions(
+    channelName: string | null,
+    slug: string,
+    limit?: number
+  ): Promise<Array<Pick<NoteRevision, 'revision' | 'author_agent_id' | 'created_at'> & { author_name: string | null }>> {
+    const scope = await this.resolveNoteScope(channelName, false);
+    if (scope === undefined) return [];
+    const note = await this.findNoteInScope(scope, slug);
+    if (!note) return [];
+
+    const { data, error } = await this.client
+      .from('note_revisions')
+      .select('revision, author_agent_id, created_at, agents:author_agent_id(name)')
+      .eq('note_id', note.id)
+      .order('revision', { ascending: false })
+      .limit(Math.min(limit ?? 20, 100));
+
+    if (error) throw new Error(`Failed to fetch revisions: ${error.message}`);
+
+    return (data as any[]).map((r) => ({
+      revision: r.revision,
+      author_agent_id: r.author_agent_id,
+      author_name: r.agents?.name ?? null,
+      created_at: r.created_at,
+    }));
+  }
+
+  // ── Notes: private helpers ─────────────────────────────────────────────
+
+  /**
+   * Resolve a channel name to a note scope.
+   * Returns: channel id, null for the global scope, or undefined when the
+   * channel does not exist (and createIfMissing is false).
+   */
+  private async resolveNoteScope(
+    channelName: string | null | undefined,
+    createIfMissing: boolean
+  ): Promise<string | null | undefined> {
+    if (channelName === null || channelName === undefined || channelName === 'global') {
+      return null;
+    }
+    if (createIfMissing) {
+      const id = await this.findOrCreateChannel(channelName);
+      await this.ensureChannelMembership(id);
+      return id;
+    }
+    const { data } = await this.client
+      .from('channels')
+      .select('id')
+      .eq('name', channelName)
+      .single();
+    return data?.id ?? undefined;
+  }
+
+  private async findNoteInScope(scope: string | null, slug: string): Promise<Note | null> {
+    let query = this.client.from('notes').select('*').eq('slug', slug);
+    query = scope === null ? query.is('channel_id', null) : query.eq('channel_id', scope);
+    const { data } = await query.single();
+    return (data as Note) ?? null;
+  }
+
+  /**
+   * Record wiki-links into note_links. currentScope is the scope unqualified
+   * [[slug]] links resolve against. When createStubs is true (note-side links
+   * only), missing targets in resolvable scopes get stub notes.
+   */
+  private async recordLinks(
+    sourceType: 'note' | 'message',
+    sourceId: string,
+    links: WikiLinkTarget[],
+    currentScope: string | null,
+    createStubs = false
+  ): Promise<void> {
+    if (!links.length) return;
+
+    const rows: Array<{ source_type: string; source_id: string; target_channel_id: string | null; target_slug: string }> = [];
+
+    for (const link of links) {
+      let targetScope: string | null | undefined;
+      if (link.global) {
+        targetScope = null;
+      } else if (link.channel) {
+        // Cross-channel link: record only if the channel exists (never create
+        // a channel as a side effect of a link)
+        const { data } = await this.client
+          .from('channels')
+          .select('id')
+          .eq('name', link.channel)
+          .single();
+        targetScope = data?.id ?? undefined;
+        if (targetScope === undefined) continue;
+      } else {
+        targetScope = currentScope;
+      }
+
+      rows.push({
+        source_type: sourceType,
+        source_id: sourceId,
+        target_channel_id: targetScope,
+        target_slug: link.slug,
+      });
+
+      if (createStubs) {
+        const existing = await this.findNoteInScope(targetScope, link.slug);
+        if (!existing) {
+          await this.client.from('notes').insert({
+            slug: link.slug,
+            channel_id: targetScope,
+            title: link.slug,
+            body_md: '',
+            created_by: this.ctx.agentId,
+            updated_by: this.ctx.agentId,
+            is_stub: true,
+          });
+          // Ignore unique-violation races — a concurrent stub/note is fine
+        }
+      }
+    }
+
+    if (rows.length) {
+      await this.client
+        .from('note_links')
+        .upsert(rows, { onConflict: 'source_type,source_id,target_channel_id,target_slug', ignoreDuplicates: true });
     }
   }
 

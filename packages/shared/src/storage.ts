@@ -6,7 +6,7 @@
  * PostgresStorageAdapter or SQLiteAdapter.
  */
 
-import type { Agent, Channel, FederationScope, Message, Mention, SearchResult } from './types.js';
+import type { Agent, Channel, FederationScope, Message, Mention, Note, NoteBacklink, NoteRevision, NoteSearchResult, SearchResult } from './types.js';
 
 // ── New types needed by the storage layer ──────────────────────────────────
 
@@ -119,6 +119,41 @@ export interface ScopedStorageAdapter {
 
   // Memberships
   ensureChannelMembership(channelId: string): Promise<void>;
+
+  // Notes (knowledge layer, Phase 1)
+  /** Fetch a note by scope + slug. channelName null = instance-global scope. */
+  getNote(channelName: string | null, slug: string, revision?: number): Promise<{ note: Note; revision_body?: NoteRevision } | null>;
+
+  /**
+   * Create or update a note in place (upsert; fills stubs).
+   * expectedRevision enables optimistic concurrency: when set and the note's
+   * current_revision differs, throws a CONFLICT error.
+   * Extracts wiki-links from body, records them, and creates stubs for
+   * note-side links pointing at nonexistent notes in the same scope.
+   */
+  writeNote(input: {
+    channelName: string | null;
+    slug: string;
+    title: string;
+    bodyMd: string;
+    properties?: Record<string, unknown>;
+    protect?: boolean;
+    expectedRevision?: number;
+  }): Promise<Note>;
+
+  /** List notes in a scope, optionally FTS-filtered via query. */
+  listNotes(opts: {
+    channelName?: string | null;
+    query?: string;
+    limit?: number;
+    includeStubs?: boolean;
+  }): Promise<Array<Pick<Note, 'slug' | 'channel_id' | 'title' | 'is_stub' | 'protected' | 'current_revision' | 'updated_at'> & { channel_name: string | null }> | NoteSearchResult[]>;
+
+  /** Everything (notes and messages) linking to a given note. */
+  getNoteBacklinks(channelName: string | null, slug: string): Promise<NoteBacklink[]>;
+
+  /** List revision metadata for a note (newest first). */
+  getNoteRevisions(channelName: string | null, slug: string, limit?: number): Promise<Array<Pick<NoteRevision, 'revision' | 'author_agent_id' | 'created_at'> & { author_name: string | null }>>;
 }
 
 // ── Gossip Storage Types ────────────────────────────────────────────────────

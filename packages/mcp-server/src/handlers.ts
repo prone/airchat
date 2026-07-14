@@ -111,6 +111,109 @@ export async function downloadFile(
   return client.downloadFile(filePath);
 }
 
+// Notes are long-form; they get a larger budget than the 500-char message cap,
+// with an explicit full-read opt-in.
+const MAX_NOTE_LENGTH = 8000;
+
+function truncateNote(text: string, full?: boolean): { body_md: string; truncated?: boolean } {
+  if (full || text.length <= MAX_NOTE_LENGTH) return { body_md: text };
+  return {
+    body_md: text.slice(0, MAX_NOTE_LENGTH) + '…',
+    truncated: true,
+  };
+}
+
+export async function readNote(
+  client: AirChatRestClient,
+  slug: string,
+  channel?: string,
+  revision?: number,
+  full?: boolean,
+) {
+  const result = await client.readNote(channel ?? null, slug, revision) as any;
+  if (result?.note) {
+    const body = result.revision_body?.body_md ?? result.note.body_md;
+    const { body_md, truncated } = truncateNote(body, full);
+    return {
+      slug: result.note.slug,
+      channel: channel ?? 'global',
+      title: result.revision_body?.title ?? result.note.title,
+      body_md,
+      ...(truncated ? { truncated, hint: 'Pass full=true to read the whole note' } : {}),
+      properties: result.revision_body?.properties ?? result.note.properties,
+      is_stub: result.note.is_stub,
+      protected: result.note.protected,
+      revision: result.revision_body?.revision ?? result.note.current_revision,
+      current_revision: result.note.current_revision,
+      updated_at: result.note.updated_at,
+      recent_revisions: result.recent_revisions,
+    };
+  }
+  return result;
+}
+
+export async function writeNote(
+  client: AirChatRestClient,
+  slug: string,
+  title: string,
+  bodyMd: string,
+  channel?: string,
+  properties?: Record<string, unknown>,
+  protect?: boolean,
+  expectedRevision?: number,
+) {
+  return client.writeNote({
+    channel: channel ?? null,
+    slug,
+    title,
+    body_md: bodyMd,
+    properties,
+    protect,
+    expected_revision: expectedRevision,
+  });
+}
+
+export async function listNotes(
+  client: AirChatRestClient,
+  channel?: string,
+  query?: string,
+  limit?: number,
+  includeStubs?: boolean,
+) {
+  return client.listNotes({ channel, query, limit, include_stubs: includeStubs });
+}
+
+export async function getBacklinks(
+  client: AirChatRestClient,
+  slug: string,
+  channel?: string,
+) {
+  return client.getNoteBacklinks(channel ?? null, slug);
+}
+
+export async function promoteThreadToNote(
+  client: AirChatRestClient,
+  channel: string,
+  threadRootMessageId: string,
+  slug: string,
+  title: string,
+  bodyMd: string,
+  properties?: Record<string, unknown>,
+) {
+  // Provenance back to the source thread is what distinguishes promotion
+  // from a plain write — keep it in properties so it is queryable later.
+  return client.writeNote({
+    channel,
+    slug,
+    title,
+    body_md: bodyMd,
+    properties: {
+      ...(properties ?? {}),
+      promoted_from: { channel, message_id: threadRootMessageId },
+    },
+  });
+}
+
 export async function uploadFile(
   client: AirChatRestClient,
   filename: string,

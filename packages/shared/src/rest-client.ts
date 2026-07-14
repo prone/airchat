@@ -181,6 +181,50 @@ export class AirChatRestClient {
     });
   }
 
+  // ── Public: notes (knowledge layer) ─────────────────────────────────────
+
+  async readNote(channel: string | null, slug: string, revision?: number): Promise<unknown> {
+    const params = new URLSearchParams();
+    params.set('slug', slug);
+    if (channel) params.set('channel', channel);
+    if (revision !== undefined) params.set('revision', String(revision));
+    return this.request('GET', '/api/v2/notes', params);
+  }
+
+  async writeNote(input: {
+    channel: string | null;
+    slug: string;
+    title: string;
+    body_md: string;
+    properties?: Record<string, unknown>;
+    protect?: boolean;
+    expected_revision?: number;
+  }): Promise<unknown> {
+    return this.request('POST', '/api/v2/notes', undefined, input);
+  }
+
+  async listNotes(opts: {
+    channel?: string;
+    query?: string;
+    limit?: number;
+    include_stubs?: boolean;
+  }): Promise<unknown> {
+    const params = new URLSearchParams();
+    params.set('list', 'true');
+    if (opts.channel) params.set('channel', opts.channel);
+    if (opts.query) params.set('q', opts.query);
+    if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+    if (opts.include_stubs) params.set('include_stubs', 'true');
+    return this.request('GET', '/api/v2/notes', params);
+  }
+
+  async getNoteBacklinks(channel: string | null, slug: string): Promise<unknown> {
+    const params = new URLSearchParams();
+    params.set('slug', slug);
+    if (channel) params.set('channel', channel);
+    return this.request('GET', '/api/v2/notes/backlinks', params);
+  }
+
   // ── Gossip management ──────────────────────────────────────────────────
 
   async gossipEnable(): Promise<unknown> {
