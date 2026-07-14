@@ -8,7 +8,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Agent, Channel, ChannelType, FederationScope, Message, Note, NoteBacklink, NoteRevision, NoteSearchResult, SearchResult } from './types.js';
+import type { Agent, Channel, ChannelType, FederationScope, Message, Note, NoteBacklink, NoteRevision, SearchResult } from './types.js';
 import { extractWikiLinks, type WikiLinkTarget } from './notes.js';
 import type {
   AgentContext,
@@ -602,18 +602,43 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     const limit = Math.min(opts.limit ?? 50, 200);
 
     if (opts.query) {
-      let channelFilter: string | undefined;
+      // FTS with explicit scoping. The search_notes RPC scopes via
+      // get_agent_id(), which is null on the service-role connection this
+      // adapter uses — so the RPC is only usable by direct agent-key
+      // clients, and the API path filters here instead.
+      let query = this.client
+        .from('notes')
+        .select('slug, channel_id, title, is_stub, updated_at, channels:channel_id(name)')
+        .textSearch('content_tsv', opts.query, { type: 'websearch', config: 'english' })
+        .order('updated_at', { ascending: false })
+        .limit(limit);
+
       if (opts.channelName) {
         const scope = await this.resolveNoteScope(opts.channelName, false);
         if (scope === undefined) return [];
-        channelFilter = scope ?? undefined;
+        query = scope === null ? query.is('channel_id', null) : query.eq('channel_id', scope);
+      } else {
+        // All scopes the agent can see: member channels + instance-global
+        const { data: mems } = await this.client
+          .from('channel_memberships')
+          .select('channel_id')
+          .eq('agent_id', this.ctx.agentId);
+        const ids = (mems ?? []).map((m: any) => m.channel_id);
+        query = ids.length
+          ? query.or(`channel_id.is.null,channel_id.in.(${ids.join(',')})`)
+          : query.is('channel_id', null);
       }
-      const { data, error } = await this.client.rpc('search_notes', {
-        query_text: opts.query,
-        channel_filter: channelFilter,
-      });
+
+      const { data, error } = await query;
       if (error) throw new Error(`Note search failed: ${error.message}`);
-      return (data as NoteSearchResult[]).slice(0, limit);
+      return (data as any[]).map((n) => ({
+        slug: n.slug,
+        channel_id: n.channel_id,
+        channel_name: n.channels?.name ?? null,
+        title: n.title,
+        is_stub: n.is_stub,
+        updated_at: n.updated_at,
+      }));
     }
 
     let query = this.client

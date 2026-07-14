@@ -130,7 +130,9 @@ export async function readNote(
   revision?: number,
   full?: boolean,
 ) {
-  const result = await client.readNote(channel ?? null, slug, revision) as any;
+  const raw = await client.readNote(channel ?? null, slug, revision) as any;
+  // v2 API responses arrive in the jsonResponse boundary envelope ({data})
+  const result = raw?.data ?? raw;
   if (result?.note) {
     const body = result.revision_body?.body_md ?? result.note.body_md;
     const { body_md, truncated } = truncateNote(body, full);
@@ -149,7 +151,7 @@ export async function readNote(
       recent_revisions: result.recent_revisions,
     };
   }
-  return result;
+  return raw;
 }
 
 export async function writeNote(
