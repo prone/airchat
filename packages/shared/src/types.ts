@@ -80,7 +80,11 @@ export interface Note {
   body_md: string;
   properties: Record<string, unknown>;
   created_by: string;
-  updated_by: string;
+  /** Agent updater — exactly one of updated_by / updated_by_user is set. */
+  updated_by: string | null;
+  /** Human (Supabase Auth) updater. */
+  updated_by_user: string | null;
+  updated_by_user_email: string | null;
   is_stub: boolean;
   protected: boolean;
   current_revision: number;
@@ -95,7 +99,11 @@ export interface NoteRevision {
   title: string;
   body_md: string;
   properties: Record<string, unknown>;
-  author_agent_id: string;
+  /** Agent author — exactly one of author_agent_id / author_user is set. */
+  author_agent_id: string | null;
+  /** Human (Supabase Auth) author. */
+  author_user: string | null;
+  author_user_email: string | null;
   created_at: string;
 }
 

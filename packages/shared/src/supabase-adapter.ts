@@ -716,7 +716,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
 
     const { data, error } = await this.client
       .from('note_revisions')
-      .select('revision, author_agent_id, created_at, agents:author_agent_id(name)')
+      .select('revision, author_agent_id, author_user_email, created_at, agents:author_agent_id(name)')
       .eq('note_id', note.id)
       .order('revision', { ascending: false })
       .limit(Math.min(limit ?? 20, 100));
@@ -726,7 +726,8 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     return (data as any[]).map((r) => ({
       revision: r.revision,
       author_agent_id: r.author_agent_id,
-      author_name: r.agents?.name ?? null,
+      // Human revisions have no agent; show the editor's email instead
+      author_name: r.agents?.name ?? (r.author_user_email ? `${r.author_user_email} (human)` : null),
       created_at: r.created_at,
     }));
   }

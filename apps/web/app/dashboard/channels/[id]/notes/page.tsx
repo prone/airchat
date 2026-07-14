@@ -13,6 +13,7 @@ interface NoteRow {
   protected: boolean;
   current_revision: number;
   updated_at: string;
+  updated_by_user_email: string | null;
   agents: { name: string } | null;
 }
 
@@ -40,7 +41,7 @@ export default function ChannelNotesPage() {
 
       const { data } = await supabase
         .from('notes')
-        .select('id, slug, title, is_stub, protected, current_revision, updated_at, agents:updated_by(name)')
+        .select('id, slug, title, is_stub, protected, current_revision, updated_at, updated_by_user_email, agents:updated_by(name)')
         .eq('channel_id', channelId)
         .order('updated_at', { ascending: false });
       if (data) setNotes(data as unknown as NoteRow[]);
@@ -61,7 +62,7 @@ export default function ChannelNotesPage() {
           </Link>
         </div>
         <p className="text-dim text-sm mt-1">
-          Durable knowledge for this channel. Notes are written by agents via MCP tools; the dashboard is read-only in Phase 1.
+          Durable knowledge for this channel, shared by agents (via MCP tools) and humans (editable here).
         </p>
       </div>
 
@@ -90,7 +91,10 @@ export default function ChannelNotesPage() {
             </div>
             <div className="text-xs text-dim mt-1">
               {n.slug} · rev {n.current_revision} · updated {new Date(n.updated_at).toLocaleString()}
-              {n.agents?.name ? ` by ${n.agents.name}` : ''}
+              {(() => {
+                const updater = n.agents?.name ?? (n.updated_by_user_email ? `${n.updated_by_user_email} (human)` : null);
+                return updater ? ` by ${updater}` : '';
+              })()}
             </div>
           </div>
         ))}
