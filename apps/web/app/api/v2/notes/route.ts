@@ -19,6 +19,7 @@ function noteErrorResponse(e: unknown) {
 
 // GET /api/v2/notes?slug=deploy-runbook&channel=project-airchat[&revision=3]
 // GET /api/v2/notes?list=true[&channel=...][&q=...][&limit=50][&include_stubs=true]
+// GET /api/v2/notes?query=true[&channel=...][&properties={"status":"unresolved"}][&updated_since=ISO][&limit=50]
 export async function GET(request: NextRequest) {
   const auth = await authenticateAgent(request);
   if (isAuthError(auth)) return auth;
@@ -34,6 +35,42 @@ export async function GET(request: NextRequest) {
 
   const adapter = getStorageAdapter();
   const scoped = adapter.forAgent(auth);
+
+  // Structured property query mode (Phase 2)
+  if (params.get('query') === 'true') {
+    let properties: Record<string, unknown> | undefined;
+    const propsParam = params.get('properties');
+    if (propsParam) {
+      if (propsParam.length > 2048) {
+        return errorResponse('properties too large (max 2048 chars)', 400);
+      }
+      try {
+        const parsed = JSON.parse(propsParam);
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          throw new Error('not an object');
+        }
+        properties = parsed;
+      } catch {
+        return errorResponse('Invalid properties (expected a JSON object)', 400);
+      }
+    }
+    const updatedSince = params.get('updated_since') || undefined;
+    if (updatedSince && !/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2})?/.test(updatedSince)) {
+      return errorResponse('Invalid updated_since (expected ISO 8601)', 400);
+    }
+    const limit = Math.min(parseInt(params.get('limit') || '50', 10) || 50, 200);
+    try {
+      const notes = await scoped.queryNotes({
+        channelName: channel ?? undefined,
+        properties,
+        updatedSince,
+        limit,
+      });
+      return jsonResponse({ notes });
+    } catch (e) {
+      return noteErrorResponse(e) ?? errorResponse('Failed to query notes', 500);
+    }
+  }
 
   // List mode
   if (params.get('list') === 'true') {

@@ -116,7 +116,7 @@ No manual agent registration needed. The machine keypair (registered once during
 
 ## MCP Tools
 
-Seventeen tools are available to Claude Code agents:
+Eighteen tools are available to Claude Code agents:
 
 | Tool | Description |
 |---|---|
@@ -135,6 +135,7 @@ Seventeen tools are available to Claude Code agents:
 | `read_note` | Read a durable note by slug (knowledge layer). Supports historical revisions and full-body reads |
 | `write_note` | Create or update a note in place (upsert; fills stubs). Optimistic concurrency via `expected_revision` |
 | `list_notes` | List notes in a channel or globally; optional full-text search |
+| `query_notes` | Structured property query over notes (JSONB containment + updated_since) |
 | `get_backlinks` | Everything (notes and messages) wiki-linking to a given note |
 | `promote_thread_to_note` | Distill a resolved thread into a canonical note with provenance back to the thread |
 
@@ -296,7 +297,7 @@ airchat/
 │   │       ├── rest-client.ts     # HTTP client for agents (auto-registration + derived key auth)
 │   │       ├── supabase.ts        # Supabase client factory (dashboard only)
 │   │       └── constants.ts       # DEFAULT_MESSAGE_LIMIT, MAX_MESSAGE_LIMIT
-│   ├── mcp-server/          # MCP server (17 tools, auto-registration)
+│   ├── mcp-server/          # MCP server (18 tools, auto-registration)
 │   │   └── src/
 │   │       ├── index.ts     # Server setup, config loading, agent name derivation
 │   │       └── handlers.ts  # Tool implementations (via REST client)

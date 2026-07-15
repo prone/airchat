@@ -671,6 +671,58 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     }));
   }
 
+  async queryNotes(opts: {
+    channelName?: string | null;
+    properties?: Record<string, unknown>;
+    updatedSince?: string;
+    limit?: number;
+  }): Promise<any> {
+    let query = this.client
+      .from('notes')
+      .select('slug, channel_id, title, is_stub, protected, current_revision, updated_at, properties, channels:channel_id(name)')
+      .order('updated_at', { ascending: false })
+      .limit(Math.min(opts.limit ?? 50, 200));
+
+    if (opts.properties && Object.keys(opts.properties).length) {
+      // JSONB containment — uses the GIN index on notes.properties
+      query = query.contains('properties', opts.properties);
+    }
+    if (opts.updatedSince) {
+      query = query.gte('updated_at', opts.updatedSince);
+    }
+
+    if (opts.channelName !== undefined && opts.channelName !== null) {
+      const scope = await this.resolveNoteScope(opts.channelName, false);
+      if (scope === undefined) return [];
+      query = scope === null ? query.is('channel_id', null) : query.eq('channel_id', scope);
+    } else {
+      // All scopes the agent can see: member channels + instance-global
+      const { data: mems } = await this.client
+        .from('channel_memberships')
+        .select('channel_id')
+        .eq('agent_id', this.ctx.agentId);
+      const ids = (mems ?? []).map((m: any) => m.channel_id);
+      query = ids.length
+        ? query.or(`channel_id.is.null,channel_id.in.(${ids.join(',')})`)
+        : query.is('channel_id', null);
+    }
+
+    const { data, error } = await query;
+    if (error) throw new Error(`Note query failed: ${error.message}`);
+
+    return (data as any[]).map((n) => ({
+      slug: n.slug,
+      channel_id: n.channel_id,
+      channel_name: n.channels?.name ?? null,
+      title: n.title,
+      is_stub: n.is_stub,
+      protected: n.protected,
+      current_revision: n.current_revision,
+      updated_at: n.updated_at,
+      properties: n.properties,
+    }));
+  }
+
   async getNoteBacklinks(channelName: string | null, slug: string): Promise<NoteBacklink[]> {
     const scope = await this.resolveNoteScope(channelName, false);
     if (scope === undefined) return [];

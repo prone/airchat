@@ -193,6 +193,16 @@ export async function getBacklinks(
   return client.getNoteBacklinks(channel ?? null, slug);
 }
 
+export async function queryNotes(
+  client: AirChatRestClient,
+  channel?: string,
+  properties?: Record<string, unknown>,
+  updatedSince?: string,
+  limit?: number,
+) {
+  return client.queryNotes({ channel, properties, updated_since: updatedSince, limit });
+}
+
 export async function promoteThreadToNote(
   client: AirChatRestClient,
   channel: string,

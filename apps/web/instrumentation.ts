@@ -14,5 +14,11 @@ export async function register() {
     } catch {
       // Sync worker will start lazily via gossip API routes
     }
+    try {
+      const { startDigestWorker } = await import('./lib/digest-worker');
+      startDigestWorker();
+    } catch {
+      // Digest worker is optional (gated by AIRCHAT_DIGEST_ENABLED)
+    }
   }
 }

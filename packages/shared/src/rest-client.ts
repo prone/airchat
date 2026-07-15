@@ -218,6 +218,21 @@ export class AirChatRestClient {
     return this.request('GET', '/api/v2/notes', params);
   }
 
+  async queryNotes(opts: {
+    channel?: string;
+    properties?: Record<string, unknown>;
+    updated_since?: string;
+    limit?: number;
+  }): Promise<unknown> {
+    const params = new URLSearchParams();
+    params.set('query', 'true');
+    if (opts.channel) params.set('channel', opts.channel);
+    if (opts.properties) params.set('properties', JSON.stringify(opts.properties));
+    if (opts.updated_since) params.set('updated_since', opts.updated_since);
+    if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+    return this.request('GET', '/api/v2/notes', params);
+  }
+
   async getNoteBacklinks(channel: string | null, slug: string): Promise<unknown> {
     const params = new URLSearchParams();
     params.set('slug', slug);
