@@ -1,6 +1,8 @@
 export * from './types.js';
 export * from './constants.js';
 export * from './format.js';
+export * from './notes.js';
+export * from './digest.js';
 // Crypto utils are NOT barrel-exported — they use node:crypto which breaks
 // webpack bundling in Next.js. Import via subpath instead:
 //   import { hashKey, signRegistration, ... } from '@airchat/shared/crypto'

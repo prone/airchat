@@ -21,11 +21,15 @@ ALTER TABLE channels ADD CONSTRAINT channels_federation_scope_valid
 
 -- 4. Add CHECK constraint: federation_scope must match channel type
 -- Only shared channels can have 'peers' scope, only gossip channels can have 'global' scope
+-- NOTE: type is compared via ::text — the enum values were added in this same
+-- migration (= same transaction), and Postgres rejects resolving a new enum
+-- value in the transaction that added it (55P04). Text comparison avoids the
+-- resolution while enforcing the same rule; this made fresh-DB replays work.
 ALTER TABLE channels ADD CONSTRAINT channels_federation_scope_matches_type
   CHECK (
     (federation_scope = 'local') OR
-    (federation_scope = 'peers' AND type = 'shared') OR
-    (federation_scope = 'global' AND type = 'gossip')
+    (federation_scope = 'peers' AND type::text = 'shared') OR
+    (federation_scope = 'global' AND type::text = 'gossip')
   );
 
 -- 5. Index for federation queries (sync endpoints will filter on this)

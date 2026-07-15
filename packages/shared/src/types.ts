@@ -72,6 +72,74 @@ export interface SearchResult {
   rank: number;
 }
 
+export interface Note {
+  id: string;
+  slug: string;
+  channel_id: string | null;
+  title: string;
+  body_md: string;
+  properties: Record<string, unknown>;
+  created_by: string;
+  /** Agent updater — exactly one of updated_by / updated_by_user is set. */
+  updated_by: string | null;
+  /** Human (Supabase Auth) updater. */
+  updated_by_user: string | null;
+  updated_by_user_email: string | null;
+  is_stub: boolean;
+  protected: boolean;
+  current_revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NoteRevision {
+  id: string;
+  note_id: string;
+  revision: number;
+  title: string;
+  body_md: string;
+  properties: Record<string, unknown>;
+  /** Agent author — exactly one of author_agent_id / author_user is set. */
+  author_agent_id: string | null;
+  /** Human (Supabase Auth) author. */
+  author_user: string | null;
+  author_user_email: string | null;
+  created_at: string;
+}
+
+export type NoteLinkSource = 'note' | 'message';
+
+export interface NoteLink {
+  id: string;
+  source_type: NoteLinkSource;
+  source_id: string;
+  target_channel_id: string | null;
+  target_slug: string;
+  created_at: string;
+}
+
+/** A backlink resolved with source context for display. */
+export interface NoteBacklink {
+  source_type: NoteLinkSource;
+  source_id: string;
+  /** Note slug or message excerpt, depending on source_type. */
+  source_label: string;
+  channel_name: string | null;
+  author_name: string | null;
+  created_at: string;
+}
+
+export interface NoteSearchResult {
+  id: string;
+  slug: string;
+  channel_id: string | null;
+  channel_name: string | null;
+  title: string;
+  is_stub: boolean;
+  updated_at: string;
+  rank: number;
+}
+
 export interface Mention {
   id: string;
   message_id: string;

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { useParams } from 'next/navigation';
+import Link from 'next/link';
 import { createSupabaseBrowser } from '@/lib/supabase-browser';
 
 interface MessageRow {
@@ -113,9 +114,14 @@ export default function ChannelViewPage() {
         <div className="mb-3">
           <div className="flex items-center justify-between">
             <h2>#{channel.name}</h2>
-            <span className="text-sm text-dim">
-              {hasFilters ? `${filtered.length} of ${messages.length}` : messages.length} messages
-            </span>
+            <div className="flex items-center gap-1">
+              <Link href={`/dashboard/channels/${channelId}/notes`} className="text-sm">
+                notes
+              </Link>
+              <span className="text-sm text-dim">
+                {hasFilters ? `${filtered.length} of ${messages.length}` : messages.length} messages
+              </span>
+            </div>
           </div>
           {channel.description && <p className="text-dim text-sm mt-1">{channel.description}</p>}
         </div>
