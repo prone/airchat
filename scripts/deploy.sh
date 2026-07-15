@@ -20,9 +20,12 @@ SSH_CMD="ssh -p $NAS_PORT $NAS_USER@$NAS_HOST"
 echo "==> Transferring source to NAS..."
 tar czf - \
   apps/web/app \
+  apps/web/components \
   apps/web/lib \
   apps/web/public \
   apps/web/Dockerfile \
+  apps/web/instrumentation.ts \
+  apps/web/middleware.ts \
   apps/web/next.config.ts \
   apps/web/package.json \
   apps/web/tsconfig.json \
