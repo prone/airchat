@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # npm workspaces (root package-lock covers all @airchat/* packages + apps/web)
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Batch routine dev-dependency bumps into one PR to cut noise.
+      dev-dependencies:
+        dependency-type: development
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
