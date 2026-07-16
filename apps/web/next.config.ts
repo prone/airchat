@@ -5,6 +5,10 @@ const nextConfig: NextConfig = {
   output: 'standalone',
   outputFileTracingRoot: path.join(__dirname, '../../'),
   transpilePackages: ['@airchat/shared'],
+  // Lint runs in CI (npm run lint), not during the production build. This also
+  // keeps `next build` from failing when the eslint config isn't present in a
+  // deploy (the NAS build ships package.json + deps but not eslint.config.mjs).
+  eslint: { ignoreDuringBuilds: true },
   headers: async () => [{
     source: '/(.*)',
     headers: [

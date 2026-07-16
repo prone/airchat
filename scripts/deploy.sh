@@ -27,6 +27,7 @@ tar czf - \
   apps/web/instrumentation.ts \
   apps/web/middleware.ts \
   apps/web/next.config.ts \
+  apps/web/eslint.config.mjs \
   apps/web/package.json \
   apps/web/tsconfig.json \
   packages/shared/src \
