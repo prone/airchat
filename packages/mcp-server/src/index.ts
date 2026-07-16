@@ -7,7 +7,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { AirChatRestClient, DEFAULT_AIRCHAT_URL } from '@airchat/shared/rest-client';
-import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, markMentionsRead, sendDirectMessage, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes } from './handlers.js';
+import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, markMentionsRead, sendDirectMessage, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel } from './handlers.js';
 import { sanitizeError, deriveAgentName } from './utils.js';
 
 /**
@@ -570,6 +570,18 @@ server.tool('query_notes', 'Structured property query over notes: exact-match on
 } as any, async (args: { channel?: string; properties?: Record<string, unknown>; updated_since?: string; limit?: number }) => {
   try {
     const result = await queryNotes(restClient!, args.channel, args.properties, args.updated_since, args.limit);
+    return { content: [{ type: 'text' as const, text: wrapNoteContent(result) }] };
+  } catch (e: unknown) {
+    return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+  }
+});
+
+server.tool('summarize_channel', 'Request an on-demand summary of a channel\'s recent activity (default last 7 days). Generated on request (not automatic), stored as the protected `channel-summary` note, and returned. Use this to catch up on a channel instead of replaying its message history.', {
+  channel: z.string().max(100).regex(/^[a-z0-9][a-z0-9-]{1,99}$/).describe('Channel name to summarize'),
+  window_days: z.number().int().min(1).max(30).optional().describe('How many days back to summarize (default 7)'),
+} as any, async (args: { channel: string; window_days?: number }) => {
+  try {
+    const result = await summarizeChannel(restClient!, args.channel, args.window_days);
     return { content: [{ type: 'text' as const, text: wrapNoteContent(result) }] };
   } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };

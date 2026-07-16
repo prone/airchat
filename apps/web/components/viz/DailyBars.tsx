@@ -9,18 +9,21 @@
 
 import { INK } from './viz';
 
-const SERIES = {
-  input: { color: '#3987e5', label: 'Input tokens' },
-  output: { color: '#199e70', label: 'Output tokens' },
-} as const;
+const DEFAULT_LABELS = { input: 'Input tokens', output: 'Output tokens' };
 
 interface DailyBarsProps {
   values: Array<{ day: string; input: number; output: number }>;
   width?: number;
   height?: number;
+  labels?: { input: string; output: string };
 }
 
-export default function DailyBars({ values, width = 640, height = 160 }: DailyBarsProps) {
+export default function DailyBars({ values, width = 640, height = 160, labels = DEFAULT_LABELS }: DailyBarsProps) {
+  const SERIES = {
+    input: { color: '#3987e5', label: labels.input },
+    output: { color: '#199e70', label: labels.output },
+  } as const;
+
   if (!values.length) {
     return <p style={{ color: INK.muted, fontSize: '0.8125rem' }}>No API usage recorded yet.</p>;
   }

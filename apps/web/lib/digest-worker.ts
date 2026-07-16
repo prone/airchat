@@ -42,8 +42,12 @@ let workerInterval: ReturnType<typeof setInterval> | null = null;
 let passRunning = false;
 let lastPruneDay: string | null = null;
 
+// Auto-generation is OFF by default: summaries are on-demand (see lib/summarize.ts).
+// The daily-digest cron only runs when explicitly opted in with AIRCHAT_DIGEST_AUTO=true.
 function digestEnabled(): boolean {
-  return process.env.AIRCHAT_DIGEST_ENABLED === 'true' && !!process.env.ANTHROPIC_API_KEY;
+  return process.env.AIRCHAT_DIGEST_AUTO === 'true'
+    && process.env.AIRCHAT_DIGEST_ENABLED === 'true'
+    && !!process.env.ANTHROPIC_API_KEY;
 }
 
 function digestModel(): string {

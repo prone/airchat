@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useMemo } from 'react';
 import Link from 'next/link';
 import { createSupabaseBrowser } from '@/lib/supabase-browser';
 import FederationIcon from '@/components/viz/FederationIcon';
+import ChannelSummaryPanel from '@/components/viz/ChannelSummaryPanel';
 import { formatSize, DIRECT_MESSAGES_CHANNEL } from '@airchat/shared';
 
 interface ChannelRow {
@@ -80,6 +81,7 @@ export default function DashboardPage() {
   // Agents active in the current channel (distinct posters)
   const [channelAgents, setChannelAgents] = useState<AgentRow[]>([]);
   const [showChannelAgents, setShowChannelAgents] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   // Load sidebar data
   useEffect(() => {
@@ -102,6 +104,15 @@ export default function DashboardPage() {
     }
     load();
   }, []);
+
+  // Admin gate for inline description editing
+  useEffect(() => {
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) return;
+      const { data } = await supabase.from('admin_users').select('user_id').eq('user_id', user.id).maybeSingle();
+      setIsAdmin(!!data);
+    });
+  }, [supabase]);
 
   // Auto-select #general on first load
   useEffect(() => {
@@ -451,6 +462,18 @@ export default function DashboardPage() {
             </div>
           )}
         </div>
+
+        {/* Collapsible channel summary */}
+        {view?.type === 'channel' && (
+          <ChannelSummaryPanel
+            key={view.channel.id}
+            channelId={view.channel.id}
+            channelName={view.channel.name}
+            description={view.channel.description}
+            agentCount={channelAgents.length}
+            isAdmin={isAdmin}
+          />
+        )}
 
         {/* Messages / Search */}
         <div className="messages-area">

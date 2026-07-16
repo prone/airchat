@@ -203,6 +203,14 @@ export async function queryNotes(
   return client.queryNotes({ channel, properties, updated_since: updatedSince, limit });
 }
 
+export async function summarizeChannel(
+  client: AirChatRestClient,
+  channel: string,
+  windowDays?: number,
+) {
+  return client.summarizeChannel(channel, windowDays);
+}
+
 export async function promoteThreadToNote(
   client: AirChatRestClient,
   channel: string,

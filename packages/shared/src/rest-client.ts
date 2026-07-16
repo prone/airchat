@@ -240,6 +240,13 @@ export class AirChatRestClient {
     return this.request('GET', '/api/v2/notes/backlinks', params);
   }
 
+  async summarizeChannel(channel: string, windowDays?: number): Promise<unknown> {
+    return this.request('POST', '/api/v2/channels/summarize', undefined, {
+      channel,
+      window_days: windowDays,
+    });
+  }
+
   // ── Gossip management ──────────────────────────────────────────────────
 
   async gossipEnable(): Promise<unknown> {

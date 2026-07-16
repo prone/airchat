@@ -374,6 +374,61 @@ async function main() {
     check('anon cannot write channel tags', JSON.stringify(afterAnon?.metadata?.tags) === JSON.stringify(['infra', 'scanner']), anonTagErr?.message ?? 'silently applied');
   }
 
+  console.log('\n── Channel activity timeline (migration 00020) ──');
+  {
+    const authedClient4 = createClient(SUPABASE_URL, ANON_KEY, {
+      auth: { persistSession: false },
+      global: { headers: { Authorization: `Bearer ${signin!.session!.access_token}` } },
+    });
+    const { data: chRowT } = await service.from('channels').select('id').eq('name', CH).single();
+    const { data: tl, error: tlErr } = await authedClient4.rpc('channel_activity_timeline', { p_channel_id: chRowT!.id, p_days: 30 });
+    check('timeline returns 30 rows (gap-filled)', !tlErr && Array.isArray(tl) && (tl as any[]).length === 30, tlErr?.message ?? `len ${(tl as any[])?.length}`);
+    const withMsgs = (tl as any[])?.filter((r) => r.message_count > 0);
+    check('timeline has message + content-char data', withMsgs?.length >= 1 && withMsgs[0].content_chars > 0, JSON.stringify(withMsgs?.[0]));
+    if (process.env.DIGEST_E2E === 'true') {
+      const anyLlm = (tl as any[])?.some((r) => (r.llm_input_tokens + r.llm_output_tokens) > 0);
+      check('timeline surfaces llm token spend', anyLlm, JSON.stringify((tl as any[])?.filter((r:any)=>r.llm_output_tokens>0)));
+    }
+    const { error: anonTlErr } = await anon.rpc('channel_activity_timeline', { p_channel_id: chRowT!.id, p_days: 30 });
+    check('anon cannot call channel_activity_timeline', !!anonTlErr);
+  }
+
+  console.log('\n── On-demand channel summary (requested, not auto) ──');
+  if (process.env.DIGEST_E2E === 'true') {
+    // Agent requests a summary of CH (which has >=5 seeded messages)
+    const sumRes = un(await agentA.summarizeChannel(CH, 7).catch((e: any) => ({ error: e.message })));
+    check('agent summarize_channel returns a summary', !!sumRes?.summary?.body_md && sumRes.summary.body_md.length > 30, JSON.stringify(sumRes)?.slice(0, 200));
+    // Stored as the protected channel-summary note
+    const sumNote = un(await agentA.readNote(CH, 'channel-summary'));
+    check('summary stored as protected channel-summary note', sumNote?.note?.protected === true && sumNote?.note?.properties?.kind === 'channel-summary');
+    // Ledgered under purpose channel-summary
+    const { data: sumUsage } = await service.from('llm_usage').select('*').eq('purpose', 'channel-summary');
+    check('summary ledgered llm_usage (purpose channel-summary)', (sumUsage?.length ?? 0) >= 1 && sumUsage![0].output_tokens > 0);
+    // Human endpoint too
+    const { data: chRowS } = await service.from('channels').select('id').eq('name', CH).single();
+    const humanSum = await fetch(`${WEB_URL}/api/channels/summarize`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+      body: JSON.stringify({ channel_id: chRowS!.id }),
+    });
+    check('human summarize endpoint works', humanSum.ok, `HTTP ${humanSum.status}`);
+    const unauthSum = await fetch(`${WEB_URL}/api/channels/summarize`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel_id: chRowS!.id }),
+    });
+    check('unauthenticated summarize rejected (401)', unauthSum.status === 401);
+    // Empty channel → 422, not a bogus summary
+    const emptyName2 = `project-nosummary-${RUN}`;
+    await service.from('channels').insert({ name: emptyName2, type: 'project', federation_scope: 'local' });
+    const { data: emptyId } = await service.from('channels').select('id').eq('name', emptyName2).single();
+    const emptySum = await fetch(`${WEB_URL}/api/channels/summarize`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+      body: JSON.stringify({ channel_id: emptyId!.id }),
+    });
+    check('summarize empty channel rejected (422)', emptySum.status === 422);
+  } else {
+    console.log('  SKIP  set DIGEST_E2E=true (needs ANTHROPIC_API_KEY on dev server)');
+  }
+
   console.log(`\n${'─'.repeat(40)}\n${passed} passed, ${failed} failed\n`);
   process.exit(failed ? 1 : 0);
 }
