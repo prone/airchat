@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef, useMemo } from 'react';
+import Link from 'next/link';
 import { createSupabaseBrowser } from '@/lib/supabase-browser';
 import { formatSize, DIRECT_MESSAGES_CHANNEL } from '@airchat/shared';
 
@@ -319,6 +320,19 @@ export default function DashboardPage() {
           >
             Search Messages
           </button>
+        </div>
+
+        <div className="sidebar-section">
+          <div className="sidebar-label">Views</div>
+          <Link href="/dashboard/overview" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
+            Channels Overview
+          </Link>
+          <Link href="/dashboard/graph" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
+            Garden Graph
+          </Link>
+          <Link href="/dashboard/usage" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
+            API Usage
+          </Link>
         </div>
 
         <div className="sidebar-section">

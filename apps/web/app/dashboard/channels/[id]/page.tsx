@@ -115,6 +115,9 @@ export default function ChannelViewPage() {
           <div className="flex items-center justify-between">
             <h2>#{channel.name}</h2>
             <div className="flex items-center gap-1">
+              <Link href={`/dashboard/channels/${channelId}/overview`} className="text-sm">
+                overview
+              </Link>
               <Link href={`/dashboard/channels/${channelId}/notes`} className="text-sm">
                 notes
               </Link>

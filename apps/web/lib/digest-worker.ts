@@ -85,6 +85,7 @@ async function ensureSummarizerAgent(): Promise<AgentContext> {
 }
 
 async function generateDigestBody(
+  channelId: string,
   channelName: string,
   date: string,
   messages: DigestMessage[],
@@ -98,6 +99,18 @@ async function generateDigestBody(
     messages: [
       { role: 'user', content: buildDigestUserPrompt(channelName, date, transcript, included) },
     ],
+  });
+
+  // Ledger the spend regardless of outcome — refusals still bill streamed output
+  await getSupabaseClient().from('llm_usage').insert({
+    purpose: 'daily-digest',
+    channel_id: channelId,
+    model: digestModel(),
+    input_tokens: response.usage.input_tokens,
+    output_tokens: response.usage.output_tokens,
+    metadata: { date, note_slug: digestSlug(date), message_count: included, stop_reason: response.stop_reason },
+  }).then(({ error }) => {
+    if (error) console.error('[digest] failed to record llm_usage:', error.message);
   });
 
   if (response.stop_reason === 'refusal') {
@@ -172,7 +185,7 @@ export async function runDigestPass(now: Date = new Date()): Promise<DigestPassR
         created_at: m.created_at,
       }));
 
-      const body = await generateDigestBody(ch.name, date, digestMessages);
+      const body = await generateDigestBody(ch.id, ch.name, date, digestMessages);
 
       await scoped.writeNote({
         channelName: ch.name,

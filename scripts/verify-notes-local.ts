@@ -271,6 +271,33 @@ async function main() {
     console.log('  SKIP  set DIGEST_E2E=true (and ANTHROPIC_API_KEY + AIRCHAT_DIGEST_ENABLED on the dev server) to test');
   }
 
+  console.log('\n── Visualization layer (migration 00018) ──');
+  {
+    const { data: anonUsage, error: anonUsageErr } = await anon.from('llm_usage').select('*').limit(5);
+    check('anon blocked from llm_usage', !anonUsageErr && (anonUsage?.length ?? 0) === 0, anonUsageErr?.message);
+
+    const { error: anonRpcErr } = await anon.rpc('dashboard_overview');
+    check('anon cannot call dashboard_overview', !!anonRpcErr, 'rpc succeeded for anon');
+
+    const authedClient = createClient(SUPABASE_URL, ANON_KEY, {
+      auth: { persistSession: false },
+      global: { headers: { Authorization: `Bearer ${signin!.session!.access_token}` } },
+    });
+    const { data: ov, error: ovErr } = await authedClient.rpc('dashboard_overview');
+    check('dashboard_overview returns rows for authed human', !ovErr && Array.isArray(ov) && ov.length > 0, ovErr?.message);
+    const chRowOv = (ov as any[])?.find((r) => r.channel_name === CH);
+    check('overview row has message counts + content chars', (chRowOv?.message_count ?? 0) >= 5 && (chRowOv?.content_chars ?? 0) > 0, JSON.stringify(chRowOv)?.slice(0, 200));
+    check('overview row has notes + by-day activity', (chRowOv?.note_count ?? 0) >= 2 && Array.isArray(chRowOv?.messages_by_day), JSON.stringify(chRowOv)?.slice(0, 200));
+
+    if (process.env.DIGEST_E2E === 'true') {
+      const { data: usageRows } = await service.from('llm_usage').select('*').eq('purpose', 'daily-digest');
+      check('llm_usage ledgered digest call', (usageRows?.length ?? 0) >= 1 && usageRows![0].output_tokens > 0, JSON.stringify(usageRows)?.slice(0, 200));
+      const { data: ov2 } = await authedClient.rpc('dashboard_overview');
+      const chRow2 = (ov2 as any[])?.find((r) => r.channel_name === CH);
+      check('overview surfaces llm token spend', ((chRow2?.llm_input_tokens ?? 0) + (chRow2?.llm_output_tokens ?? 0)) > 0, JSON.stringify(chRow2)?.slice(0, 200));
+    }
+  }
+
   console.log(`\n${'─'.repeat(40)}\n${passed} passed, ${failed} failed\n`);
   process.exit(failed ? 1 : 0);
 }
