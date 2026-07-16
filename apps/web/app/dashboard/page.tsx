@@ -465,25 +465,29 @@ export default function DashboardPage() {
               {showChannelAgents && (
                 <div
                   className="card"
-                  style={{ position: 'absolute', right: 0, top: '100%', marginTop: 4, zIndex: 20, minWidth: 220, maxHeight: 360, overflowY: 'auto', padding: '0.5rem' }}
+                  style={{ position: 'absolute', right: 0, top: '100%', marginTop: 4, zIndex: 20, width: 300, maxHeight: 380, overflowY: 'auto', padding: 4 }}
                 >
                   {channelAgents.map((a) => {
                     const online = a.last_seen_at && (Date.now() - new Date(a.last_seen_at).getTime()) < ONLINE_THRESHOLD_MS;
                     return (
-                      <div key={a.id} className="flex items-center justify-between" style={{ padding: '0.25rem 0.375rem', gap: 8 }}>
+                      <div
+                        key={a.id}
+                        className="agent-row"
+                        style={{ display: 'flex', alignItems: 'center', gap: 8, height: 34, padding: '0 8px', borderRadius: 6 }}
+                      >
+                        <span className={`presence-dot ${online ? 'online' : ''}`} style={{ flexShrink: 0 }} />
                         <button
-                          className="agent-name-btn"
                           onClick={() => { setProfileAgent(a); setShowChannelAgents(false); }}
-                          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', padding: 0 }}
+                          title={a.name}
+                          style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', padding: 0, fontSize: '0.8125rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                         >
-                          <span className={`presence-dot ${online ? 'online' : ''}`} />
                           {a.name}
-                          {!a.active && <span className="badge badge-dim" style={{ fontSize: '0.5625rem' }}>archived</span>}
+                          {!a.active && <span className="badge badge-dim" style={{ fontSize: '0.5625rem', marginLeft: 6 }}>archived</span>}
                         </button>
                         <button
                           className="text-xs"
                           onClick={() => { setView({ type: 'dm', agent: a }); setShowChannelAgents(false); }}
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--accent, #3987e5)' }}
+                          style={{ flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--accent, #3987e5)', fontWeight: 600 }}
                         >
                           DM
                         </button>

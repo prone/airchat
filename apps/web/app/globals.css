@@ -391,3 +391,6 @@ input, textarea, select {
   justify-content: space-between;
   align-items: center;
 }
+
+/* Channel-header agent dropdown rows */
+.agent-row:hover { background: var(--bg-hover); }

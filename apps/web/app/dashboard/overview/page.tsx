@@ -14,7 +14,7 @@ import Sparkline from '@/components/viz/Sparkline';
 import SplitBar from '@/components/viz/SplitBar';
 import ChannelTags, { normalizeTags } from '@/components/viz/ChannelTags';
 import FederationIcon from '@/components/viz/FederationIcon';
-import { estimateTokens, formatTokens, INK } from '@/components/viz/viz';
+import { estimateTokens, formatTokens, INK, recencyTier, agoLabel, RECENCY_TIERS } from '@/components/viz/viz';
 
 interface RelationRow { channel_a: string; channel_b: string; link_count: number }
 
@@ -174,6 +174,16 @@ export default function OverviewPage() {
         </div>
       </div>
 
+      <div className="mb-3" style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: '0.6875rem', color: INK.muted }}>last activity:</span>
+        {RECENCY_TIERS.map((t) => (
+          <span key={t.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.6875rem', color: INK.secondary }}>
+            <span style={{ width: 9, height: 9, borderRadius: '50%', background: t.color, display: 'inline-block' }} />
+            {t.label}
+          </span>
+        ))}
+      </div>
+
       {error && <p className="text-sm" style={{ color: '#e66767' }}>Failed to load: {error}</p>}
       {!error && rows.length === 0 && lastArchived.length === 0 && <p className="text-dim">Loading…</p>}
 
@@ -225,14 +235,20 @@ export default function OverviewPage() {
             .sort((a, b) => b[1] - a[1])
             .slice(0, 4)
             .map(([id, weight]) => ({ id, name: nameById.get(id) ?? '?', weight }));
+          const recency = recencyTier(r.last_message_at);
           return (
-            <div key={r.channel_id} className="card" style={{ padding: '0.75rem 1rem' }}>
+            <div
+              key={r.channel_id}
+              className="card"
+              style={{ padding: '0.75rem 1rem', borderColor: recency.key === 'idle' ? undefined : `${recency.color}66` }}
+            >
               <div className="flex items-center justify-between">
-                <Link href={`/dashboard/channels/${r.channel_id}/overview`} style={{ fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <Link href={`/dashboard/channels/${r.channel_id}/overview`} style={{ fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ width: 9, height: 9, borderRadius: '50%', background: recency.color, flexShrink: 0 }} title={`Last activity ${agoLabel(r.last_message_at)}`} />
                   #{r.channel_name}
                   <FederationIcon scope={r.federation_scope} />
                 </Link>
-                <span className="badge badge-dim" style={{ fontSize: '0.625rem' }}>{r.channel_type}</span>
+                <span style={{ fontSize: '0.625rem', color: recency.color }} title={`Last activity ${agoLabel(r.last_message_at)}`}>{agoLabel(r.last_message_at)}</span>
               </div>
 
               <div style={{ marginTop: 6 }}>
