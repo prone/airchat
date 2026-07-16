@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseServer } from '@/lib/supabase-server';
-import { getSupabaseClient } from '@/lib/api-v2-auth';
+import { getSupabaseClient, isDashboardAdmin } from '@/lib/api-v2-auth';
 import { extractWikiLinks } from '@airchat/shared';
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,199}$/;
@@ -21,6 +21,9 @@ export async function POST(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (!(await isDashboardAdmin(user.id))) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
   let body: {

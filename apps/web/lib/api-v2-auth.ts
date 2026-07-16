@@ -110,6 +110,20 @@ export function isAuthError(
 }
 
 /**
+ * True if the given Supabase Auth user id is a dashboard admin (in admin_users).
+ * Service-role human endpoints bypass RLS, so they must call this explicitly —
+ * an authenticated (signed-up) user is NOT automatically an admin.
+ */
+export async function isDashboardAdmin(userId: string): Promise<boolean> {
+  const { data } = await getSupabaseClient()
+    .from('admin_users')
+    .select('user_id')
+    .eq('user_id', userId)
+    .maybeSingle();
+  return !!data;
+}
+
+/**
  * Check per-agent rate limit. Returns null if allowed, or an error NextResponse if exceeded.
  */
 export function checkAgentRateLimit(

@@ -171,6 +171,8 @@ async function main() {
   const password = 'verify-test-password-1';
   const { data: created, error: userErr } = await service.auth.admin.createUser({ email, password, email_confirm: true });
   check('auth user created', !userErr && !!created?.user, userErr?.message);
+  // Human dashboard endpoints are admin-gated (migration 00021) — make this user an admin
+  await service.from('admin_users').insert({ user_id: created!.user!.id });
 
   const authClient = createClient(SUPABASE_URL, ANON_KEY, { auth: { persistSession: false } });
   const { data: signin, error: signinErr } = await authClient.auth.signInWithPassword({ email, password });
@@ -304,9 +306,6 @@ async function main() {
       auth: { persistSession: false },
       global: { headers: { Authorization: `Bearer ${signin!.session!.access_token}` } },
     });
-    // The dashboard cleanup button requires admin_users membership (is_admin())
-    await service.from('admin_users').insert({ user_id: created!.user!.id });
-
     // Seed an empty channel directly
     const emptyName = `project-empty-${RUN}`;
     await service.from('channels').insert({ name: emptyName, type: 'project', federation_scope: 'local' });
@@ -427,6 +426,38 @@ async function main() {
     check('summarize empty channel rejected (422)', emptySum.status === 422);
   } else {
     console.log('  SKIP  set DIGEST_E2E=true (needs ANTHROPIC_API_KEY on dev server)');
+  }
+
+  console.log('\n── Admin gating (migration 00021 security fix) ──');
+  {
+    // A signed-up but NON-admin authenticated user must be denied everywhere
+    const nonAdminEmail = `nonadmin-${Date.now()}@example.com`;
+    const { data: na } = await service.auth.admin.createUser({ email: nonAdminEmail, password: 'nonadmin-pw-123', email_confirm: true });
+    const naClient = createClient(SUPABASE_URL, ANON_KEY, { auth: { persistSession: false } });
+    const { data: naSignin } = await naClient.auth.signInWithPassword({ email: nonAdminEmail, password: 'nonadmin-pw-123' });
+    const naAuthed = createClient(SUPABASE_URL, ANON_KEY, { auth: { persistSession: false }, global: { headers: { Authorization: `Bearer ${naSignin!.session!.access_token}` } } });
+
+    const { data: naNotes } = await naAuthed.from('notes').select('id').limit(5);
+    check('non-admin cannot read notes directly (RLS)', (naNotes?.length ?? 0) === 0);
+    const { data: naUsage } = await naAuthed.from('llm_usage').select('id').limit(5);
+    check('non-admin cannot read llm_usage (RLS)', (naUsage?.length ?? 0) === 0);
+    const { data: naOv } = await naAuthed.rpc('dashboard_overview');
+    check('non-admin gets empty dashboard_overview', (naOv as any[])?.length === 0 || naOv === null);
+    const { data: naRel } = await naAuthed.rpc('channel_relations');
+    check('non-admin gets empty channel_relations', (naRel as any[])?.length === 0 || naRel === null);
+
+    const naCookie = (() => {
+      const ref = new URL(SUPABASE_URL).hostname.split('.')[0];
+      const val = 'base64-' + Buffer.from(JSON.stringify(naSignin!.session)).toString('base64url');
+      return `sb-${ref}-auth-token=${val}`;
+    })();
+    const { data: chRowNa } = await service.from('channels').select('id').eq('name', CH).single();
+    const naNoteWrite = await fetch(`${WEB_URL}/api/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: naCookie },
+      body: JSON.stringify({ channel_id: chRowNa!.id, slug: 'deploy-runbook', title: 'x', body_md: 'x', expected_revision: 1 }) });
+    check('non-admin note write rejected (403)', naNoteWrite.status === 403);
+    const naSum = await fetch(`${WEB_URL}/api/channels/summarize`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: naCookie },
+      body: JSON.stringify({ channel_id: chRowNa!.id }) });
+    check('non-admin summarize rejected (403)', naSum.status === 403);
   }
 
   console.log(`\n${'─'.repeat(40)}\n${passed} passed, ${failed} failed\n`);

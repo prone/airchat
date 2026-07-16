@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createSupabaseServer } from '@/lib/supabase-server';
+import { isDashboardAdmin } from '@/lib/api-v2-auth';
 import { runDigestPass, startDigestWorker } from '@/lib/digest-worker';
 
 // POST /api/digest — manually trigger one digest pass (dashboard admins only).
@@ -10,6 +11,9 @@ export async function POST() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (!(await isDashboardAdmin(user.id))) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
   if (process.env.AIRCHAT_DIGEST_ENABLED !== 'true') {
