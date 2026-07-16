@@ -2,16 +2,18 @@
 
 /**
  * Collapsible summary section at the top of a channel:
- *  - General summary: the channel description (project blurb; admin-editable)
- *    plus an ON-DEMAND activity summary — requested via a button, never
- *    auto-generated; a previously-requested summary is shown if one exists.
+ *  - Project summary (manual, admin button) — describes what the project is.
+ *  - Activity summary — recaps recent activity. Auto-refreshes when an admin
+ *    opens a channel that has recent activity newer than the current summary
+ *    (i.e. unviewed); otherwise the existing one is shown. Also regenerable
+ *    manually. Project summaries are never auto-triggered.
  *  - Last-activity metrics (last post, totals, agents, notes).
  *  - Token usage over time (content-token footprint per day + actual LLM spend).
  *
  * Collapsed/expanded state persists per browser in localStorage.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { createSupabaseBrowser } from '@/lib/supabase-browser';
 import DailyBars from './DailyBars';
@@ -56,6 +58,8 @@ export default function ChannelSummaryPanel({
   const [repoEditing, setRepoEditing] = useState(false);
   const [repoDraft, setRepoDraft] = useState('');
   const [totals, setTotals] = useState<{ messages: number; notes: number; lastAt: string | null }>({ messages: 0, notes: 0, lastAt: null });
+  // Guards the once-per-visit auto activity summary (component remounts per channel via key)
+  const autoTriggered = useRef(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const [savingDesc, setSavingDesc] = useState(false);
@@ -83,16 +87,27 @@ export default function ChannelSummaryPanel({
       if (cancelled) return;
       setTimeline((tl.data as TimelineRow[]) ?? []);
       const act = actNote.data as any, proj = projNote.data as any;
-      setSummary(act ? { body: act.body_md as string, generatedAt: (act.properties?.generated_at as string) ?? null } : null);
+      const actState = act ? { body: act.body_md as string, generatedAt: (act.properties?.generated_at as string) ?? null } : null;
+      setSummary(actState);
       setProjectSummary(proj ? { body: proj.body_md as string, generatedAt: (proj.properties?.generated_at as string) ?? null } : null);
-      setTotals({
-        messages: msgCount.count ?? 0,
-        notes: noteCount.count ?? 0,
-        lastAt: (lastMsg.data as any)?.created_at ?? null,
-      });
+      const lastAt = (lastMsg.data as any)?.created_at ?? null;
+      setTotals({ messages: msgCount.count ?? 0, notes: noteCount.count ?? 0, lastAt });
+
+      // Activity summaries auto-refresh on visit when there's recent activity
+      // the current summary doesn't yet cover. (Project summaries stay manual.)
+      // Only admins can generate; the endpoint is rate-limited.
+      if (isAdmin && lastAt && !autoTriggered.current) {
+        const RECENCY_MS = 7 * 86_400_000;
+        const isRecent = Date.now() - new Date(lastAt).getTime() < RECENCY_MS;
+        const unviewed = !actState?.generatedAt || new Date(lastAt) > new Date(actState.generatedAt);
+        if (isRecent && unviewed) {
+          autoTriggered.current = true;
+          void requestSummary('activity');
+        }
+      }
     })();
     return () => { cancelled = true; };
-  }, [channelId, supabase]);
+  }, [channelId, supabase, isAdmin]);
 
   function toggle() {
     setExpanded((e) => {
@@ -216,7 +231,7 @@ export default function ChannelSummaryPanel({
               state={summary}
               busy={busyKind === 'activity'}
               onRequest={() => requestSummary('activity')}
-              emptyText="Distill this channel's recent activity."
+              emptyText="Recaps recent activity — refreshes automatically when you visit with new activity."
               channelId={channelId}
             />
 
