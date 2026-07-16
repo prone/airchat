@@ -463,6 +463,15 @@ async function main() {
     const naSum = await fetch(`${WEB_URL}/api/channels/summarize`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: naCookie },
       body: JSON.stringify({ channel_id: chRowNa!.id }) });
     check('non-admin summarize rejected (403)', naSum.status === 403);
+
+    // Dashboard messaging (rewritten to service-role dashboard-admin path)
+    const adminMsg = await fetch(`${WEB_URL}/api/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+      body: JSON.stringify({ channel: CH, content: 'dashboard test message from e2e' }) });
+    const adminMsgBody: any = await adminMsg.json().catch(() => ({}));
+    check('admin can send dashboard message', adminMsg.ok && !!adminMsgBody?.message?.id, `HTTP ${adminMsg.status}: ${JSON.stringify(adminMsgBody).slice(0,200)}`);
+    const naMsg = await fetch(`${WEB_URL}/api/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: naCookie },
+      body: JSON.stringify({ channel: CH, content: 'should be denied' }) });
+    check('non-admin dashboard message rejected (403)', naMsg.status === 403);
   }
 
   console.log(`\n${'─'.repeat(40)}\n${passed} passed, ${failed} failed\n`);

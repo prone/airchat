@@ -1,17 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseServer } from '@/lib/supabase-server';
-import { createAgentClient } from '@airchat/shared/supabase';
 import { DASHBOARD_ADMIN_AGENT } from '@airchat/shared';
-import { ensureAgentRegistered } from '@/lib/api-auth';
+import { getStorageAdapter, getSupabaseClient, isDashboardAdmin } from '@/lib/api-v2-auth';
 
+// POST /api/messages — send a message from the dashboard as `dashboard-admin`.
+//
+// Uses the service-role storage adapter (same path as the digest worker and
+// /api/notes) rather than the legacy agent-API-key flow, which no longer works
+// under v2 auth (the dashboard-admin agent has no key hash). Session-auth +
+// admin-gated: the dashboard is admin-only.
 export async function POST(request: NextRequest) {
-  // Verify the caller is authenticated via Supabase Auth
   const supabase = await createSupabaseServer();
   const { data: { user } } = await supabase.auth.getUser();
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!(await isDashboardAdmin(user.id))) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
   let channel: string, content: string, parent_message_id: string | undefined;
   try {
@@ -26,46 +28,49 @@ export async function POST(request: NextRequest) {
   if (!channel || !content?.trim()) {
     return NextResponse.json({ error: 'Channel and content are required' }, { status: 400 });
   }
-
   if (!/^[a-z0-9][a-z0-9-]{1,99}$/.test(channel)) {
     return NextResponse.json({ error: 'Invalid channel name' }, { status: 400 });
   }
-
   if (content.length > 32000) {
     return NextResponse.json({ error: 'Content too long (max 32000 chars)' }, { status: 400 });
   }
 
-  // Use the machine key from ~/.airchat/config (via env) to post as dashboard-admin
-  // This avoids needing the service role key
-  const agentApiKey = process.env.AIRCHAT_API_KEY || process.env.SLACK_AGENT_API_KEY;
-  if (!agentApiKey) {
-    return NextResponse.json({ error: 'No AIRCHAT_API_KEY configured for dashboard messaging' }, { status: 500 });
+  // Resolve (or provision) the dashboard-admin agent — the author of
+  // dashboard messages. It has no key hash; it's service-role only.
+  const svc = getSupabaseClient();
+  let admin: { id: string; name: string } | null = null;
+  const { data: existing } = await svc.from('agents').select('id, name').eq('name', DASHBOARD_ADMIN_AGENT).single();
+  if (existing) {
+    admin = existing;
+  } else {
+    const { data: created, error: createErr } = await svc
+      .from('agents')
+      .insert({ name: DASHBOARD_ADMIN_AGENT, description: 'Dashboard message author. Not machine-owned.', api_key_hash: null, active: true })
+      .select('id, name')
+      .single();
+    if (createErr || !created) {
+      // Lost a race, or insert failed — re-read
+      const { data: reread } = await svc.from('agents').select('id, name').eq('name', DASHBOARD_ADMIN_AGENT).single();
+      admin = reread ?? null;
+    } else {
+      admin = created;
+    }
+  }
+  if (!admin) {
+    return NextResponse.json({ error: 'Dashboard messaging is not provisioned' }, { status: 500 });
   }
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!supabaseUrl || !anonKey) {
-    return NextResponse.json({ error: 'Missing Supabase configuration' }, { status: 500 });
-  }
-
-  const agentClient = createAgentClient(supabaseUrl, anonKey, agentApiKey, DASHBOARD_ADMIN_AGENT);
-
-  // Ensure the dashboard-admin agent exists (cached per process)
-  await ensureAgentRegistered(DASHBOARD_ADMIN_AGENT, agentApiKey);
-
-  // Post via send_message_with_auto_join (handles channel creation, membership, and triggers)
-  const { data, error: msgErr } = await agentClient.rpc('send_message_with_auto_join', {
-    channel_name: channel,
-    content: content.trim(),
-    parent_message_id: parent_message_id || null,
-    message_metadata: { source: 'dashboard' },
-  });
-
-  if (msgErr) {
-    console.error('Failed to send message:', msgErr.message);
+  try {
+    const scoped = getStorageAdapter().forAgent({ agentId: admin.id, agentName: admin.name, machineId: '' });
+    const message = await scoped.sendMessage(
+      channel,
+      content.trim(),
+      { source: 'dashboard', user_email: user.email ?? undefined },
+      parent_message_id,
+    );
+    return NextResponse.json({ message });
+  } catch (e) {
+    console.error('Failed to send message:', e instanceof Error ? e.message : e);
     return NextResponse.json({ error: 'Failed to send message' }, { status: 500 });
   }
-
-  const message = Array.isArray(data) ? data[0] : data;
-  return NextResponse.json({ message });
 }
