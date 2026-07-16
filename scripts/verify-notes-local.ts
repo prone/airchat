@@ -401,7 +401,7 @@ async function main() {
     const sumNote = un(await agentA.readNote(CH, 'channel-summary'));
     check('summary stored as protected channel-summary note', sumNote?.note?.protected === true && sumNote?.note?.properties?.kind === 'channel-summary');
     // Ledgered under purpose channel-summary
-    const { data: sumUsage } = await service.from('llm_usage').select('*').eq('purpose', 'channel-summary');
+    const { data: sumUsage } = await service.from('llm_usage').select('*').like('purpose', 'channel-summary%');
     check('summary ledgered llm_usage (purpose channel-summary)', (sumUsage?.length ?? 0) >= 1 && sumUsage![0].output_tokens > 0);
     // Human endpoint too
     const { data: chRowS } = await service.from('channels').select('id').eq('name', CH).single();
@@ -424,6 +424,11 @@ async function main() {
       body: JSON.stringify({ channel_id: emptyId!.id }),
     });
     check('summarize empty channel rejected (422)', emptySum.status === 422);
+    // Project-kind summary → project-summary note
+    const projSum = un(await agentA.summarizeChannel(CH, 90, 'project').catch((e: any) => ({ error: e.message })));
+    check('project summary returns body + kind', projSum?.summary?.kind === 'project' && (projSum?.summary?.body_md?.length ?? 0) > 30, JSON.stringify(projSum)?.slice(0, 200));
+    const projNote = un(await agentA.readNote(CH, 'project-summary'));
+    check('project summary stored as project-summary note', projNote?.note?.protected === true && projNote?.note?.properties?.kind === 'project-summary');
   } else {
     console.log('  SKIP  set DIGEST_E2E=true (needs ANTHROPIC_API_KEY on dev server)');
   }

@@ -14,13 +14,14 @@ export async function POST(request: NextRequest) {
   const rateLimit = checkAgentRateLimit(auth.agentId, 'write');
   if (rateLimit) return rateLimit;
 
-  let body: { channel?: string; window_days?: number };
+  let body: { channel?: string; window_days?: number; kind?: 'activity' | 'project' };
   try { body = await request.json(); } catch { return errorResponse('Invalid JSON body', 400); }
 
   if (!body.channel || !AGENT_NAME_RE.test(body.channel)) {
     return errorResponse('Valid channel name required', 400);
   }
-  const windowDays = Number.isInteger(body.window_days) ? Math.min(Math.max(body.window_days!, 1), 30) : undefined;
+  const windowDays = Number.isInteger(body.window_days) ? Math.min(Math.max(body.window_days!, 1), 90) : undefined;
+  const kind = body.kind === 'project' ? 'project' : 'activity';
 
   try {
     // Resolve name → id through the agent's scope (auto-joins if a member)
@@ -28,7 +29,7 @@ export async function POST(request: NextRequest) {
     const channel = await scoped.findChannelByName(body.channel);
     if (!channel) return errorResponse('Channel not found', 404);
 
-    const summary = await summarizeChannel(channel.id, { windowDays });
+    const summary = await summarizeChannel(channel.id, { windowDays, kind });
     return jsonResponse({ summary });
   } catch (e) {
     if (e instanceof SummaryError) return errorResponse(e.message, e.status);

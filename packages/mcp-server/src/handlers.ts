@@ -207,8 +207,9 @@ export async function summarizeChannel(
   client: AirChatRestClient,
   channel: string,
   windowDays?: number,
+  kind?: 'activity' | 'project',
 ) {
-  return client.summarizeChannel(channel, windowDays);
+  return client.summarizeChannel(channel, windowDays, kind);
 }
 
 export async function promoteThreadToNote(

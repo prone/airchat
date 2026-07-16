@@ -13,16 +13,25 @@
 import Anthropic from '@anthropic-ai/sdk';
 import {
   buildDigestUserPrompt,
+  buildProjectSummaryPrompt,
   DIGEST_SYSTEM_PROMPT,
+  PROJECT_SUMMARY_SYSTEM_PROMPT,
   formatMessagesForDigest,
   type DigestMessage,
 } from '@airchat/shared';
 import type { AgentContext } from '@airchat/shared';
 import { getStorageAdapter, getSupabaseClient } from '@/lib/api-v2-auth';
 
+export type SummaryKind = 'activity' | 'project';
+
 const SUMMARIZER_AGENT_NAME = 'summarizer';
-const SUMMARY_SLUG = 'channel-summary';
+const SLUG_BY_KIND: Record<SummaryKind, string> = {
+  activity: 'channel-summary',
+  project: 'project-summary',
+};
 const DEFAULT_WINDOW_DAYS = 7;
+// Project summaries sample a wider window to describe the whole project.
+const PROJECT_WINDOW_DAYS = 90;
 const MAX_MESSAGES = 400;
 
 export function summariesEnabled(): boolean {
@@ -69,6 +78,7 @@ export async function ensureSummarizerAgent(): Promise<AgentContext> {
 export interface ChannelSummaryResult {
   channel: string;
   slug: string;
+  kind: SummaryKind;
   body_md: string;
   message_count: number;
   model: string;
@@ -88,12 +98,13 @@ export class SummaryError extends Error {
  * the protected `channel-summary` note. Throws SummaryError with an HTTP status
  * on user-facing failures (channel not found, too few messages, refusal).
  */
-export async function summarizeChannel(channelId: string, opts?: { windowDays?: number }): Promise<ChannelSummaryResult> {
+export async function summarizeChannel(channelId: string, opts?: { windowDays?: number; kind?: SummaryKind }): Promise<ChannelSummaryResult> {
   if (!summariesEnabled()) {
     throw new SummaryError('Summaries are not configured (ANTHROPIC_API_KEY missing)', 503);
   }
   const client = getSupabaseClient();
-  const windowDays = opts?.windowDays ?? DEFAULT_WINDOW_DAYS;
+  const kind: SummaryKind = opts?.kind ?? 'activity';
+  const windowDays = opts?.windowDays ?? (kind === 'project' ? PROJECT_WINDOW_DAYS : DEFAULT_WINDOW_DAYS);
 
   const { data: channel } = await client.from('channels').select('id, name').eq('id', channelId).single();
   if (!channel) throw new SummaryError('Channel not found', 404);
@@ -119,25 +130,29 @@ export async function summarizeChannel(channelId: string, opts?: { windowDays?: 
   }));
 
   const { transcript, included } = formatMessagesForDigest(digestMessages);
-  const windowLabel = `last ${windowDays} days (${included} messages)`;
   const model = summaryModel();
+
+  const system = kind === 'project' ? PROJECT_SUMMARY_SYSTEM_PROMPT : DIGEST_SYSTEM_PROMPT;
+  const userPrompt = kind === 'project'
+    ? buildProjectSummaryPrompt(channel.name, transcript, included)
+    : buildDigestUserPrompt(channel.name, `last ${windowDays} days (${included} messages)`, transcript, included);
 
   const response = await getAnthropic().messages.create({
     model,
     max_tokens: 4000,
     thinking: { type: 'adaptive' },
-    system: DIGEST_SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: buildDigestUserPrompt(channel.name, windowLabel, transcript, included) }],
+    system,
+    messages: [{ role: 'user', content: userPrompt }],
   });
 
   // Ledger spend regardless of outcome
   await client.from('llm_usage').insert({
-    purpose: 'channel-summary',
+    purpose: `channel-summary:${kind}`,
     channel_id: channelId,
     model,
     input_tokens: response.usage.input_tokens,
     output_tokens: response.usage.output_tokens,
-    metadata: { window_days: windowDays, message_count: included, stop_reason: response.stop_reason },
+    metadata: { kind, window_days: windowDays, message_count: included, stop_reason: response.stop_reason },
   }).then(({ error }) => { if (error) console.error('[summary] llm_usage insert failed:', error.message); });
 
   if (response.stop_reason === 'refusal') {
@@ -149,15 +164,16 @@ export async function summarizeChannel(channelId: string, opts?: { windowDays?: 
   if (!body) throw new SummaryError('Summary generation returned no text', 502);
 
   const generatedAt = new Date().toISOString();
+  const slug = SLUG_BY_KIND[kind];
   const summarizer = await ensureSummarizerAgent();
   const scoped = getStorageAdapter().forAgent(summarizer);
   const note = await scoped.writeNote({
     channelName: channel.name,
-    slug: SUMMARY_SLUG,
-    title: `Summary — #${channel.name}`,
+    slug,
+    title: kind === 'project' ? `Project — #${channel.name}` : `Summary — #${channel.name}`,
     bodyMd: body,
     properties: {
-      kind: 'channel-summary',
+      kind: kind === 'project' ? 'project-summary' : 'channel-summary',
       window_days: windowDays,
       message_count: included,
       model,
@@ -169,6 +185,7 @@ export async function summarizeChannel(channelId: string, opts?: { windowDays?: 
   return {
     channel: channel.name,
     slug: note.slug,
+    kind,
     body_md: body,
     message_count: included,
     model,

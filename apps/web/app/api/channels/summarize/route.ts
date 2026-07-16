@@ -19,16 +19,17 @@ export async function POST(request: NextRequest) {
   const rl = checkRateLimit(`summarize:${user.id}`, 60_000, 10);
   if (!rl.allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
-  let body: { channel_id?: string; window_days?: number };
+  let body: { channel_id?: string; window_days?: number; kind?: 'activity' | 'project' };
   try { body = await request.json(); } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }); }
 
   if (!body.channel_id || !UUID_RE.test(body.channel_id)) {
     return NextResponse.json({ error: 'Valid channel_id required' }, { status: 400 });
   }
-  const windowDays = Number.isInteger(body.window_days) ? Math.min(Math.max(body.window_days!, 1), 30) : undefined;
+  const windowDays = Number.isInteger(body.window_days) ? Math.min(Math.max(body.window_days!, 1), 90) : undefined;
+  const kind = body.kind === 'project' ? 'project' : 'activity';
 
   try {
-    const summary = await summarizeChannel(body.channel_id, { windowDays });
+    const summary = await summarizeChannel(body.channel_id, { windowDays, kind });
     return NextResponse.json({ summary });
   } catch (e) {
     if (e instanceof SummaryError) return NextResponse.json({ error: e.message }, { status: e.status });

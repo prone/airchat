@@ -576,12 +576,13 @@ server.tool('query_notes', 'Structured property query over notes: exact-match on
   }
 });
 
-server.tool('summarize_channel', 'Request an on-demand summary of a channel\'s recent activity (default last 7 days). Generated on request (not automatic), stored as the protected `channel-summary` note, and returned. Use this to catch up on a channel instead of replaying its message history.', {
+server.tool('summarize_channel', 'Request an on-demand summary of a channel. kind="activity" (default) distills recent activity (decisions, blockers) — use it to catch up. kind="project" describes what the project IS (purpose, components, current state) rather than the news. Generated on request (not automatic), stored as a protected note (`channel-summary` or `project-summary`), and returned.', {
   channel: z.string().max(100).regex(/^[a-z0-9][a-z0-9-]{1,99}$/).describe('Channel name to summarize'),
-  window_days: z.number().int().min(1).max(30).optional().describe('How many days back to summarize (default 7)'),
-} as any, async (args: { channel: string; window_days?: number }) => {
+  kind: z.enum(['activity', 'project']).optional().describe('activity = recent-activity recap (default); project = durable description of the project'),
+  window_days: z.number().int().min(1).max(90).optional().describe('How many days back to sample (default 7 for activity, 90 for project)'),
+} as any, async (args: { channel: string; kind?: 'activity' | 'project'; window_days?: number }) => {
   try {
-    const result = await summarizeChannel(restClient!, args.channel, args.window_days);
+    const result = await summarizeChannel(restClient!, args.channel, args.window_days, args.kind);
     return { content: [{ type: 'text' as const, text: wrapNoteContent(result) }] };
   } catch (e: unknown) {
     return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
