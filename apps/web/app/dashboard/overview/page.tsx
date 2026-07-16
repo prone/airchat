@@ -48,13 +48,47 @@ export default function OverviewPage() {
   const supabase = useMemo(() => createSupabaseBrowser(), []);
   const [rows, setRows] = useState<OverviewRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [cleaning, setCleaning] = useState(false);
+  const [lastArchived, setLastArchived] = useState<Array<{ id: string; name: string }>>([]);
 
-  useEffect(() => {
+  function refresh() {
     supabase.rpc('dashboard_overview').then(({ data, error: err }) => {
       if (err) setError(err.message);
       else setRows((data as OverviewRow[]) ?? []);
     });
-  }, [supabase]);
+  }
+
+  useEffect(refresh, [supabase]);
+
+  // "Unused" = nothing in it at all: no messages, no notes, not even stubs
+  const unused = useMemo(
+    () => rows.filter((r) => r.message_count === 0 && r.note_count === 0 && r.stub_count === 0),
+    [rows],
+  );
+
+  async function archiveUnused() {
+    if (!unused.length) return;
+    const names = unused.map((u) => `#${u.channel_name}`).join(', ');
+    if (!window.confirm(
+      `Archive ${unused.length} empty channel${unused.length === 1 ? '' : 's'}?\n\n${names}\n\n` +
+      'Non-destructive: nothing is deleted — archived channels are hidden from the dashboard and can be restored with Undo.'
+    )) return;
+    setCleaning(true);
+    const ids = unused.map((u) => u.channel_id);
+    const { error: err } = await supabase.from('channels').update({ archived: true }).in('id', ids);
+    setCleaning(false);
+    if (err) { setError(err.message); return; }
+    setLastArchived(unused.map((u) => ({ id: u.channel_id, name: u.channel_name })));
+    refresh();
+  }
+
+  async function undoArchive() {
+    const ids = lastArchived.map((c) => c.id);
+    const { error: err } = await supabase.from('channels').update({ archived: false }).in('id', ids);
+    if (err) { setError(err.message); return; }
+    setLastArchived([]);
+    refresh();
+  }
 
   return (
     <div className="container">
@@ -68,7 +102,28 @@ export default function OverviewPage() {
       </div>
 
       {error && <p className="text-sm" style={{ color: '#e66767' }}>Failed to load: {error}</p>}
-      {!error && rows.length === 0 && <p className="text-dim">Loading…</p>}
+      {!error && rows.length === 0 && lastArchived.length === 0 && <p className="text-dim">Loading…</p>}
+
+      {unused.length > 0 && (
+        <div className="card mb-3" style={{ padding: '0.625rem 1rem', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span className="text-sm text-dim">
+            {unused.length} empty channel{unused.length === 1 ? '' : 's'} (no messages or notes)
+          </span>
+          <button className="btn" onClick={archiveUnused} disabled={cleaning} style={{ fontSize: '0.75rem', padding: '0.25rem 0.75rem' }}>
+            {cleaning ? 'Archiving…' : 'Archive empty channels'}
+          </button>
+        </div>
+      )}
+      {lastArchived.length > 0 && (
+        <div className="card mb-3" style={{ padding: '0.625rem 1rem', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span className="text-sm text-dim">
+            Archived {lastArchived.map((c) => `#${c.name}`).join(', ')} — nothing was deleted.
+          </span>
+          <button className="btn" onClick={undoArchive} style={{ fontSize: '0.75rem', padding: '0.25rem 0.75rem' }}>
+            Undo
+          </button>
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12 }}>
         {rows.map((r) => {

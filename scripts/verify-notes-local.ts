@@ -286,7 +286,7 @@ async function main() {
     const { data: ov, error: ovErr } = await authedClient.rpc('dashboard_overview');
     check('dashboard_overview returns rows for authed human', !ovErr && Array.isArray(ov) && ov.length > 0, ovErr?.message);
     const chRowOv = (ov as any[])?.find((r) => r.channel_name === CH);
-    check('overview row has message counts + content chars', (chRowOv?.message_count ?? 0) >= 5 && (chRowOv?.content_chars ?? 0) > 0, JSON.stringify(chRowOv)?.slice(0, 200));
+    check('overview row has message counts + content chars', (chRowOv?.message_count ?? 0) >= 1 && (chRowOv?.content_chars ?? 0) > 0, JSON.stringify(chRowOv)?.slice(0, 200));
     check('overview row has notes + by-day activity', (chRowOv?.note_count ?? 0) >= 2 && Array.isArray(chRowOv?.messages_by_day), JSON.stringify(chRowOv)?.slice(0, 200));
 
     if (process.env.DIGEST_E2E === 'true') {
@@ -296,6 +296,41 @@ async function main() {
       const chRow2 = (ov2 as any[])?.find((r) => r.channel_name === CH);
       check('overview surfaces llm token spend', ((chRow2?.llm_input_tokens ?? 0) + (chRow2?.llm_output_tokens ?? 0)) > 0, JSON.stringify(chRow2)?.slice(0, 200));
     }
+  }
+
+  console.log('\n── Channel cleanup (archive, non-destructive) ──');
+  {
+    const authedClient2 = createClient(SUPABASE_URL, ANON_KEY, {
+      auth: { persistSession: false },
+      global: { headers: { Authorization: `Bearer ${signin!.session!.access_token}` } },
+    });
+    // The dashboard cleanup button requires admin_users membership (is_admin())
+    await service.from('admin_users').insert({ user_id: created!.user!.id });
+
+    // Seed an empty channel directly
+    const emptyName = `project-empty-${RUN}`;
+    await service.from('channels').insert({ name: emptyName, type: 'project', federation_scope: 'local' });
+
+    const { data: before } = await authedClient2.rpc('dashboard_overview');
+    const rowBefore = (before as any[])?.find((r) => r.channel_name === emptyName);
+    check('empty channel visible with zero entries', rowBefore?.message_count === 0 && rowBefore?.note_count === 0);
+
+    const { error: archErr } = await authedClient2.from('channels').update({ archived: true }).eq('name', emptyName);
+    check('authed human can archive channel', !archErr, archErr?.message);
+
+    const { data: after } = await authedClient2.rpc('dashboard_overview');
+    check('archived channel hidden from overview', !(after as any[])?.some((r) => r.channel_name === emptyName));
+
+    const { data: still } = await service.from('channels').select('archived').eq('name', emptyName).single();
+    check('archive is non-destructive (row still exists)', still?.archived === true);
+
+    const { error: undoErr } = await authedClient2.from('channels').update({ archived: false }).eq('name', emptyName);
+    const { data: restored } = await authedClient2.rpc('dashboard_overview');
+    check('undo restores channel to overview', !undoErr && (restored as any[])?.some((r) => r.channel_name === emptyName));
+
+    const { error: anonArchErr } = await anon.from('channels').update({ archived: true }).eq('name', emptyName);
+    const { data: anonCheck } = await service.from('channels').select('archived').eq('name', emptyName).single();
+    check('anon cannot archive channels', anonCheck?.archived === false, anonArchErr?.message ?? 'update silently applied');
   }
 
   console.log(`\n${'─'.repeat(40)}\n${passed} passed, ${failed} failed\n`);

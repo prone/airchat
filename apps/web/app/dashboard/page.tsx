@@ -81,6 +81,7 @@ export default function DashboardPage() {
       const { data: chs } = await supabase
         .from('channels')
         .select('id, name, type, description')
+        .eq('archived', false)
         .order('type')
         .order('name');
       if (chs) setChannels(chs);
