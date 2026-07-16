@@ -295,9 +295,9 @@ describe('valid registration', () => {
   });
 });
 
-// ── Agent cap (50 per machine) ────────────────────────────────────────────
-// NOTE: The 50-agent-per-machine cap cannot be tested without creating 50+
+// ── Agent cap (500 per machine) ───────────────────────────────────────────
+// NOTE: The 500-agent-per-machine cap cannot be tested without creating 500+
 // real agents, which is destructive to the database. The cap is enforced in
-// apps/web/app/api/v2/register/route.ts (MAX_AGENTS_PER_MACHINE = 50) and
+// apps/web/app/api/v2/register/route.ts (MAX_AGENTS_PER_MACHINE = 500) and
 // returns { error: 'Agent limit exceeded for this machine' } with status 429.
 // Re-registration of existing agents is exempt from the cap.

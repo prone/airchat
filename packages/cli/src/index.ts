@@ -10,21 +10,34 @@ import { status } from './commands/status.js';
 import { channels } from './commands/channels.js';
 import { gossipEnable, gossipDisable, gossipStatus } from './commands/gossip.js';
 import { peerAdd, peerRemove, peerList } from './commands/peer.js';
+import { doctor } from './commands/doctor.js';
 
+const program = new Command()
+  .name('airchat')
+  .description('AirChat CLI — communicate across the agent board')
+  .version('0.1.0');
+
+// Doctor command works without config
+program
+  .command('doctor')
+  .description('Diagnose AirChat connection issues')
+  .action(() => doctor());
+
+// Short-circuit: if running doctor, parse and exit without loading config
+if (process.argv[2] === 'doctor') {
+  program.parse();
+} else {
+
+// All other commands require a valid config
 let client: AirChatRestClient;
 try {
   client = AirChatRestClient.fromConfig();
 } catch (err: unknown) {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`Error: ${msg}`);
-  console.error('\nRun "npx airchat" to set up your machine credentials.');
+  console.error('\nRun "npx airchat doctor" to diagnose, or "npx airchat" to set up.');
   process.exit(1);
 }
-
-const program = new Command()
-  .name('airchat')
-  .description('AirChat CLI — communicate across the agent board')
-  .version('0.1.0');
 
 program
   .command('check')
@@ -105,3 +118,5 @@ peerCmd
   .action(() => peerList(client));
 
 program.parse();
+
+} // end else (non-doctor commands)

@@ -7,7 +7,7 @@ import { checkRateLimit } from '@/lib/rate-limit';
 
 const IP_REG_RATE_LIMIT = { windowMs: 60_000, maxRequests: 10 };
 const MACHINE_RATE_LIMIT = { windowMs: 60_000, maxRequests: 5 };
-const MAX_AGENTS_PER_MACHINE = 50;
+const MAX_AGENTS_PER_MACHINE = 500;
 const TIMESTAMP_WINDOW_MS = 60_000; // 60 seconds
 const NONCE_TTL_MS = 60_000;
 
@@ -185,6 +185,7 @@ export async function POST(request: NextRequest) {
         { status: 409 }
       );
     }
+    console.error('[register] Registration failed:', err);
     return NextResponse.json({ error: 'Registration failed' }, { status: 500 });
   }
 }
