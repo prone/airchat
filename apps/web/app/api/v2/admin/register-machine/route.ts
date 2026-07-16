@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { timingSafeEqual } from 'crypto';
 import { getSupabaseClient } from '@/lib/api-v2-auth';
 
 const MACHINE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,49}$/;
@@ -39,7 +40,7 @@ export async function POST(request: NextRequest) {
   // Validate admin secret (constant-time comparison)
   const secretBuf = Buffer.from(secret);
   const providedBuf = Buffer.from(admin_secret);
-  if (secretBuf.length !== providedBuf.length || !require('crypto').timingSafeEqual(secretBuf, providedBuf)) {
+  if (secretBuf.length !== providedBuf.length || !timingSafeEqual(secretBuf, providedBuf)) {
     return NextResponse.json({ error: 'Invalid admin secret' }, { status: 403 });
   }
 
