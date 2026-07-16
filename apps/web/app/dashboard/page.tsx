@@ -46,6 +46,20 @@ type View = { type: 'channel'; channel: ChannelRow } | { type: 'dm'; agent: Agen
 
 const ONLINE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
 
+// Human messages: posted from the dashboard or the Slack bridge (carry a
+// source/user_email in metadata). Everything else is agent-authored.
+const HUMAN_TEXT_COLOR = '#22c55e';
+function isHumanMessage(m: { metadata?: { source?: string; user_email?: string } | null }): boolean {
+  const src = m.metadata?.source;
+  return src === 'dashboard' || src === 'slack' || !!m.metadata?.user_email;
+}
+
+type MsgFilter =
+  | { kind: 'all' }
+  | { kind: 'humans' }
+  | { kind: 'agents' }
+  | { kind: 'agent'; name: string };
+
 export default function DashboardPage() {
   const supabase = useMemo(() => createSupabaseBrowser(), []);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -83,6 +97,20 @@ export default function DashboardPage() {
   const [showChannelAgents, setShowChannelAgents] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [channelRepo, setChannelRepo] = useState<string | null>(null);
+  // Message-stream author filter (set from the header agent dropdown)
+  const [msgFilter, setMsgFilter] = useState<MsgFilter>({ kind: 'all' });
+
+  const shownMessages = useMemo(
+    () => messages.filter((m) => {
+      switch (msgFilter.kind) {
+        case 'humans': return isHumanMessage(m);
+        case 'agents': return !isHumanMessage(m);
+        case 'agent': return m.agents?.name === msgFilter.name;
+        default: return true;
+      }
+    }),
+    [messages, msgFilter],
+  );
 
   // GitHub repos + tasks referenced in this channel's messages
   const detectedLinks = useMemo(
@@ -144,6 +172,7 @@ export default function DashboardPage() {
   // Distinct agents who have posted in the current channel
   useEffect(() => {
     setShowChannelAgents(false);
+    setMsgFilter({ kind: 'all' });
     if (view?.type !== 'channel') { setChannelAgents([]); return; }
     const channelId = view.channel.id;
     let cancelled = false;
@@ -454,7 +483,13 @@ export default function DashboardPage() {
             {viewDescription && <p className="text-sm text-dim">{viewDescription}</p>}
           </div>
           {view?.type === 'channel' && channelAgents.length > 0 && (
-            <div style={{ position: 'relative' }}>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6 }}>
+              {msgFilter.kind !== 'all' && (
+                <span className="badge" style={{ fontSize: '0.625rem', background: msgFilter.kind === 'humans' ? HUMAN_TEXT_COLOR : 'var(--bg-hover)', color: msgFilter.kind === 'humans' ? '#04120a' : 'var(--text)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  {msgFilter.kind === 'humans' ? 'humans only' : msgFilter.kind === 'agents' ? 'agents only' : `@${msgFilter.name}`}
+                  <button onClick={() => setMsgFilter({ kind: 'all' })} style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', padding: 0, lineHeight: 1 }} title="Clear filter">✕</button>
+                </span>
+              )}
               <button
                 className="btn"
                 onClick={() => setShowChannelAgents((s) => !s)}
@@ -465,8 +500,23 @@ export default function DashboardPage() {
               {showChannelAgents && (
                 <div
                   className="card"
-                  style={{ position: 'absolute', right: 0, top: '100%', marginTop: 4, zIndex: 20, width: 300, maxHeight: 380, overflowY: 'auto', padding: 4 }}
+                  style={{ position: 'absolute', right: 0, top: '100%', marginTop: 4, zIndex: 20, width: 300, maxHeight: 420, overflowY: 'auto', padding: 4 }}
                 >
+                  {/* Filter the stream by author type */}
+                  <div style={{ display: 'flex', gap: 4, padding: '2px 4px 6px' }}>
+                    {([['all', 'All'], ['humans', 'Humans'], ['agents', 'Agents']] as const).map(([kind, label]) => (
+                      <button
+                        key={kind}
+                        onClick={() => { setMsgFilter({ kind }); setShowChannelAgents(false); }}
+                        className="btn"
+                        style={{ flex: 1, fontSize: '0.6875rem', padding: '3px 6px', justifyContent: 'center',
+                          ...(msgFilter.kind === kind ? { background: 'var(--bg-active)', borderColor: 'var(--accent)' } : {}) }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ borderTop: '1px solid var(--border)', margin: '2px 0 4px' }} />
                   {channelAgents.map((a) => {
                     const online = a.last_seen_at && (Date.now() - new Date(a.last_seen_at).getTime()) < ONLINE_THRESHOLD_MS;
                     return (
@@ -477,13 +527,16 @@ export default function DashboardPage() {
                       >
                         <span className={`presence-dot ${online ? 'online' : ''}`} style={{ flexShrink: 0 }} />
                         <button
-                          onClick={() => { setProfileAgent(a); setShowChannelAgents(false); }}
-                          title={a.name}
-                          style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', padding: 0, fontSize: '0.8125rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                          onClick={() => { setMsgFilter({ kind: 'agent', name: a.name }); setShowChannelAgents(false); }}
+                          title={`Show only ${a.name}'s messages`}
+                          style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: '0.8125rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            color: msgFilter.kind === 'agent' && msgFilter.name === a.name ? 'var(--accent, #3987e5)' : 'inherit',
+                            fontWeight: msgFilter.kind === 'agent' && msgFilter.name === a.name ? 600 : 400 }}
                         >
                           {a.name}
                           {!a.active && <span className="badge badge-dim" style={{ fontSize: '0.5625rem', marginLeft: 6 }}>archived</span>}
                         </button>
+                        <button className="text-xs" onClick={() => { setProfileAgent(a); setShowChannelAgents(false); }} style={{ flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)' }} title="Profile">info</button>
                         <button
                           className="text-xs"
                           onClick={() => { setView({ type: 'dm', agent: a }); setShowChannelAgents(false); }}
@@ -550,19 +603,29 @@ export default function DashboardPage() {
             </div>
           ) : (
             <>
-              {messages.map((m) => (
+              {shownMessages.length === 0 && messages.length > 0 && (
+                <p className="text-dim" style={{ padding: '1rem 0' }}>No messages match this filter.</p>
+              )}
+              {shownMessages.map((m) => {
+                const human = isHumanMessage(m);
+                return (
                 <div key={m.id} className="message-row">
                   <div className="message-meta">
-                    <button className="agent-name-btn" onClick={() => showAgentProfile(m.agents?.name || '')}>
+                    <button
+                      className="agent-name-btn"
+                      onClick={() => showAgentProfile(m.agents?.name || '')}
+                      style={human ? { color: HUMAN_TEXT_COLOR } : undefined}
+                    >
                       {m.agents?.name || 'unknown'}
                     </button>
+                    {human && <span className="badge" style={{ fontSize: '0.55rem', background: HUMAN_TEXT_COLOR, color: '#04120a' }}>human</span>}
                     {m.metadata?.project && <span className="text-dim text-xs">({m.metadata.project})</span>}
                     {m.metadata?.user_email && <span className="text-dim text-xs">· {m.metadata.user_email}</span>}
                     <span className="text-dim text-xs">{new Date(m.created_at).toLocaleString()}</span>
                     {m.pinned && <span className="badge" style={{ fontSize: '0.6rem' }}>pinned</span>}
                     {m.parent_message_id && <span className="text-dim text-xs">thread</span>}
                   </div>
-                  <div className="message-content">{m.content}</div>
+                  <div className="message-content" style={human ? { color: HUMAN_TEXT_COLOR } : undefined}>{m.content}</div>
                   {m.metadata?.files && m.metadata.files.length > 0 && (
                     <div className="file-attachments">
                       {m.metadata.files.map((f, i) => (
@@ -576,7 +639,8 @@ export default function DashboardPage() {
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
               {messages.length === 0 && (
                 <div className="empty-state">
                   <p className="text-dim">

@@ -133,6 +133,15 @@ export default function OverviewPage() {
     [rows, tagFilter, tagsByChannel],
   );
 
+  // Channels with no activity in the last 7 days are hidden by default
+  const [showStale, setShowStale] = useState(false);
+  const isStale = (r: OverviewRow) => recencyTier(r.last_message_at).key === 'idle';
+  const staleCount = useMemo(() => visibleRows.filter(isStale).length, [visibleRows]);
+  const displayRows = useMemo(
+    () => showStale ? visibleRows : visibleRows.filter((r) => !isStale(r)),
+    [visibleRows, showStale],
+  );
+
   // "Unused" = nothing in it at all: no messages, no notes, not even stubs
   const unused = useMemo(
     () => rows.filter((r) => r.message_count === 0 && r.note_count === 0 && r.stub_count === 0),
@@ -228,7 +237,7 @@ export default function OverviewPage() {
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12 }}>
-        {visibleRows.map((r) => {
+        {displayRows.map((r) => {
           const contentTokens = estimateTokens(r.content_chars + r.note_chars);
           const llmTokens = r.llm_input_tokens + r.llm_output_tokens;
           const related = [...(relatedByChannel.get(r.channel_id) ?? new Map())]
@@ -260,7 +269,7 @@ export default function OverviewPage() {
               </div>
 
               <div className="flex items-center justify-between" style={{ marginTop: 8 }}>
-                <Sparkline values={last7Days(r.messages_by_day)} />
+                <Sparkline values={last7Days(r.messages_by_day)} color={recency.color} width={150} height={44} />
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ fontSize: '1.125rem', fontWeight: 600 }}>{r.message_count.toLocaleString()}</div>
                   <div style={{ fontSize: '0.6875rem', color: INK.muted }}>messages</div>
@@ -309,6 +318,19 @@ export default function OverviewPage() {
           );
         })}
       </div>
+
+      {staleCount > 0 && (
+        <div style={{ marginTop: 12, textAlign: 'center' }}>
+          <button
+            onClick={() => setShowStale((s) => !s)}
+            style={{ background: 'none', border: 'none', color: 'var(--accent, #3987e5)', cursor: 'pointer', fontSize: '0.8125rem' }}
+          >
+            {showStale
+              ? `Hide ${staleCount} inactive channel${staleCount === 1 ? '' : 's'}`
+              : `Show ${staleCount} inactive channel${staleCount === 1 ? '' : 's'} (no activity in 7+ days) →`}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
