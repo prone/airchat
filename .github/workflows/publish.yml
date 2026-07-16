@@ -18,6 +18,9 @@ name: Publish to npm
 on:
   release:
     types: [published]
+  # Manual trigger — publishes the current create-airchat version from main.
+  # Useful to (re)publish without cutting a new release.
+  workflow_dispatch:
 
 jobs:
   publish:
