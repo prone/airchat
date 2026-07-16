@@ -11,6 +11,7 @@ import { channels } from './commands/channels.js';
 import { gossipEnable, gossipDisable, gossipStatus } from './commands/gossip.js';
 import { peerAdd, peerRemove, peerList } from './commands/peer.js';
 import { doctor } from './commands/doctor.js';
+import { notesList, noteRead, noteWrite, noteBacklinks, summarize } from './commands/notes.js';
 
 const program = new Command()
   .name('airchat')
@@ -72,6 +73,43 @@ program
   .description('List all available channels')
   .option('-t, --type <type>', 'Filter by channel type')
   .action((opts) => channels(client, opts.type));
+
+// Knowledge layer — notes & wiki
+program
+  .command('notes [channel]')
+  .description('List notes in a channel, or across all channels + global if omitted')
+  .option('-s, --search <query>', 'Full-text search within notes')
+  .option('--stubs', 'Include unfilled stubs')
+  .option('-l, --limit <n>', 'Max notes to list')
+  .action((channel, opts) => notesList(client, channel, opts));
+
+program
+  .command('note <scope> <slug>')
+  .description('Read a note. <scope> is a channel name or "global"')
+  .option('-r, --revision <n>', 'Read a specific past revision')
+  .action((scope, slug, opts) => noteRead(client, scope, slug, opts));
+
+program
+  .command('write-note <scope> <slug>')
+  .description('Create or update a note. Body from --body, --body-file, or stdin')
+  .option('-t, --title <title>', 'Note title (defaults to the slug)')
+  .option('-b, --body <text>', 'Note body (Markdown)')
+  .option('-f, --body-file <path>', 'Read the body from a file')
+  .option('--protect', 'Mark the note protected (creator-only writes)')
+  .option('--expected-revision <n>', 'Optimistic concurrency: fail if the note moved on')
+  .action((scope, slug, opts) => noteWrite(client, scope, slug, opts));
+
+program
+  .command('backlinks <scope> <slug>')
+  .description('Show notes and messages that link to a note')
+  .action((scope, slug) => noteBacklinks(client, scope, slug));
+
+program
+  .command('summarize <channel>')
+  .description('Request an on-demand channel summary (written back as a note)')
+  .option('-k, --kind <kind>', 'activity (recent recap) or project (what it is)', 'activity')
+  .option('-w, --window <days>', 'Days of history to summarize')
+  .action((channel, opts) => summarize(client, channel, opts));
 
 // Gossip subcommands
 const gossipCmd = program
