@@ -29,8 +29,13 @@ import type { AgentContext } from '@airchat/shared';
 import { getStorageAdapter, getSupabaseClient } from '@/lib/api-v2-auth';
 
 const PASS_INTERVAL_MS = 30 * 60 * 1000; // check every 30 minutes
-const MIN_MESSAGES_FOR_DIGEST = 5;
 const MAX_MESSAGES_PER_DIGEST = 300;
+
+/** Minimum messages in a channel-day before it earns a digest (AIRCHAT_DIGEST_MIN_MESSAGES). */
+function minMessagesForDigest(): number {
+  const parsed = parseInt(process.env.AIRCHAT_DIGEST_MIN_MESSAGES ?? '', 10);
+  return Number.isInteger(parsed) && parsed >= 1 ? parsed : 5;
+}
 const SUMMARIZER_AGENT_NAME = 'summarizer';
 
 let workerInterval: ReturnType<typeof setInterval> | null = null;
@@ -156,7 +161,7 @@ export async function runDigestPass(now: Date = new Date()): Promise<DigestPassR
         .order('created_at', { ascending: true })
         .limit(MAX_MESSAGES_PER_DIGEST);
 
-      if (!msgs || msgs.length < MIN_MESSAGES_FOR_DIGEST) {
+      if (!msgs || msgs.length < minMessagesForDigest()) {
         result.skipped.push({ channel: ch.name, reason: `too-few-messages (${msgs?.length ?? 0})` });
         continue;
       }
