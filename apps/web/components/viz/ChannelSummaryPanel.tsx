@@ -220,7 +220,7 @@ export default function ChannelSummaryPanel({
               state={projectSummary}
               busy={busyKind === 'project'}
               onRequest={() => requestSummary('project')}
-              emptyText="Describe what this project is — its purpose, components, and current state."
+              emptyText="Click Request to generate a project summary."
               channelId={channelId}
             />
 
@@ -231,7 +231,7 @@ export default function ChannelSummaryPanel({
               state={summary}
               busy={busyKind === 'activity'}
               onRequest={() => requestSummary('activity')}
-              emptyText="Recaps recent activity — refreshes automatically when you visit with new activity."
+              emptyText="Click Request to summarize recent activity."
               channelId={channelId}
             />
 
@@ -255,10 +255,10 @@ export default function ChannelSummaryPanel({
                     <button className="btn" onClick={() => setRepoEditing(false)} style={{ fontSize: '0.625rem', padding: '2px 6px' }}>cancel</button>
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
+                  <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 3 }}>
                     {[...new Set([githubRepo, ...detectedRepos].filter(Boolean) as string[])].map((r) => (
-                      <a key={r} href={`https://github.com/${r}`} target="_blank" rel="noopener noreferrer" className="badge badge-dim" style={{ fontSize: '0.5625rem', textDecoration: 'none' }} title={r === githubRepo ? 'linked repo' : 'referenced in channel'}>
-                        {r}{r === githubRepo ? ' ★' : ''}
+                      <a key={r} href={`https://github.com/${r}`} target="_blank" rel="noopener noreferrer" style={githubLinkStyle} title={r === githubRepo ? 'linked repo' : 'referenced in channel'}>
+                        <GithubMark />{r}{r === githubRepo && <span title="linked" style={{ color: INK.muted }}>★</span>}
                       </a>
                     ))}
                     {githubRepo === null && detectedRepos.length === 0 && <span className="text-xs text-dim">none</span>}
@@ -267,10 +267,10 @@ export default function ChannelSummaryPanel({
                 {detectedTasks.length > 0 && (
                   <>
                     <div style={{ fontSize: '0.6875rem', color: INK.muted, marginTop: 6 }}>Tasks</div>
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 3 }}>
                       {detectedTasks.slice(0, 12).map((t) => (
-                        <a key={t.key} href={t.url} target="_blank" rel="noopener noreferrer" className="badge badge-dim" style={{ fontSize: '0.5625rem', textDecoration: 'none' }} title={t.kind === 'pr' ? 'pull request' : 'issue'}>
-                          {t.kind === 'pr' ? '⇅ ' : '◦ '}{t.key}
+                        <a key={t.key} href={t.url} target="_blank" rel="noopener noreferrer" style={githubLinkStyle} title={t.kind === 'pr' ? 'pull request' : 'issue'}>
+                          <GithubMark />{t.key}<span style={{ color: INK.muted }}>{t.kind === 'pr' ? 'PR' : ''}</span>
                         </a>
                       ))}
                     </div>
@@ -300,6 +300,23 @@ export default function ChannelSummaryPanel({
         </div>
       )}
     </div>
+  );
+}
+
+const githubLinkStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 5,
+  fontSize: '0.75rem',
+  color: 'var(--accent, #3987e5)',
+  textDecoration: 'none',
+};
+
+function GithubMark({ size = 13 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden style={{ flexShrink: 0 }}>
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/>
+    </svg>
   );
 }
 
