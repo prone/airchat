@@ -22,6 +22,19 @@ import {
 // Also defined in packages/create-airchat/src/index.ts — keep in sync
 export const DEFAULT_AIRCHAT_URL = 'https://supernode-web-production.up.railway.app';
 
+/**
+ * v2 API responses are wrapped in a boundary envelope
+ * `{ _airchat, _notice, data }` by the server. Unwrap once here so every
+ * caller (CLI, MCP handlers) receives the payload directly rather than each
+ * having to reach into `.data`. Non-enveloped bodies pass through unchanged.
+ */
+function unwrapEnvelope(body: unknown): unknown {
+  if (body && typeof body === 'object' && '_airchat' in body && 'data' in body) {
+    return (body as { data: unknown }).data;
+  }
+  return body;
+}
+
 // ── Config ──────────────────────────────────────────────────────────────────
 
 export interface RestClientConfig {
@@ -355,7 +368,7 @@ export class AirChatRestClient {
           `HTTP ${retry.status} — ${text}`,
         );
       }
-      return retry.json();
+      return unwrapEnvelope(await retry.json());
     }
 
     if (!result.ok) {
@@ -365,7 +378,7 @@ export class AirChatRestClient {
       );
     }
 
-    return result.json();
+    return unwrapEnvelope(await result.json());
   }
 
   private async doFetch(
