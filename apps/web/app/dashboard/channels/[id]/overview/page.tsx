@@ -13,6 +13,7 @@ import { createSupabaseBrowser } from '@/lib/supabase-browser';
 import Sparkline from '@/components/viz/Sparkline';
 import SplitBar from '@/components/viz/SplitBar';
 import ChannelTags, { normalizeTags } from '@/components/viz/ChannelTags';
+import FederationIcon from '@/components/viz/FederationIcon';
 import { estimateTokens, formatTokens, INK, PROVENANCE } from '@/components/viz/viz';
 
 interface NoteRow {
@@ -37,6 +38,7 @@ export default function ChannelHubPage() {
   const supabase = useMemo(() => createSupabaseBrowser(), []);
 
   const [channelName, setChannelName] = useState<string>('');
+  const [federationScope, setFederationScope] = useState<string>('local');
   const [overview, setOverview] = useState<any | null>(null);
   const [digests, setDigests] = useState<NoteRow[]>([]);
   const [canonical, setCanonical] = useState<NoteRow[]>([]);
@@ -54,8 +56,8 @@ export default function ChannelHubPage() {
 
   useEffect(() => {
     async function load() {
-      const { data: ch } = await supabase.from('channels').select('name, metadata').eq('id', channelId).single();
-      if (ch) { setChannelName(ch.name); setTags(normalizeTags(ch.metadata?.tags)); }
+      const { data: ch } = await supabase.from('channels').select('name, metadata, federation_scope').eq('id', channelId).single();
+      if (ch) { setChannelName(ch.name); setTags(normalizeTags(ch.metadata?.tags)); setFederationScope(ch.federation_scope); }
 
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
@@ -136,7 +138,10 @@ export default function ChannelHubPage() {
   return (
     <div className="container">
       <div className="mb-3 flex items-center justify-between">
-        <h2>#{channelName || '…'} — overview</h2>
+        <h2 style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          #{channelName || '…'} — overview
+          <FederationIcon scope={federationScope} size={16} />
+        </h2>
         <div className="flex items-center gap-1">
           <Link href={`/dashboard/channels/${channelId}`} className="text-sm">messages</Link>
           <Link href={`/dashboard/channels/${channelId}/notes`} className="text-sm">notes</Link>

@@ -13,6 +13,7 @@ import { createSupabaseBrowser } from '@/lib/supabase-browser';
 import Sparkline from '@/components/viz/Sparkline';
 import SplitBar from '@/components/viz/SplitBar';
 import ChannelTags, { normalizeTags } from '@/components/viz/ChannelTags';
+import FederationIcon from '@/components/viz/FederationIcon';
 import { estimateTokens, formatTokens, INK } from '@/components/viz/viz';
 
 interface RelationRow { channel_a: string; channel_b: string; link_count: number }
@@ -227,8 +228,9 @@ export default function OverviewPage() {
           return (
             <div key={r.channel_id} className="card" style={{ padding: '0.75rem 1rem' }}>
               <div className="flex items-center justify-between">
-                <Link href={`/dashboard/channels/${r.channel_id}/overview`} style={{ fontWeight: 600 }}>
+                <Link href={`/dashboard/channels/${r.channel_id}/overview`} style={{ fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                   #{r.channel_name}
+                  <FederationIcon scope={r.federation_scope} />
                 </Link>
                 <span className="badge badge-dim" style={{ fontSize: '0.625rem' }}>{r.channel_type}</span>
               </div>

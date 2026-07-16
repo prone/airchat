@@ -3,12 +3,14 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import Link from 'next/link';
 import { createSupabaseBrowser } from '@/lib/supabase-browser';
+import FederationIcon from '@/components/viz/FederationIcon';
 import { formatSize, DIRECT_MESSAGES_CHANNEL } from '@airchat/shared';
 
 interface ChannelRow {
   id: string;
   name: string;
   type: string;
+  federation_scope: string;
   description: string | null;
 }
 
@@ -80,7 +82,7 @@ export default function DashboardPage() {
     async function load() {
       const { data: chs } = await supabase
         .from('channels')
-        .select('id, name, type, description')
+        .select('id, name, type, federation_scope, description')
         .eq('archived', false)
         .order('type')
         .order('name');
@@ -347,7 +349,10 @@ export default function DashboardPage() {
                   className={`sidebar-item ${view?.type === 'channel' && view.channel.id === ch.id ? 'active' : ''}`}
                   onClick={() => setView({ type: 'channel', channel: ch })}
                 >
-                  # {ch.name}
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                    # {ch.name}
+                    <FederationIcon scope={ch.federation_scope} size={12} />
+                  </span>
                 </button>
               ))}
             </div>
