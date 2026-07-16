@@ -65,7 +65,15 @@ export async function POST(request: NextRequest) {
     return errorResponse('Invalid JSON body', 400);
   }
 
-  const { channel, content, parent_message_id, metadata } = body;
+  const { channel, content, parent_message_id, metadata: rawMetadata } = body;
+
+  // Strip reserved keys that mark a message as human-authored. Only server
+  // paths (the dashboard endpoint, the Slack bridge) may set these; an agent
+  // must not be able to spoof the human/agent distinction in the dashboard.
+  const RESERVED_METADATA_KEYS = new Set(['source', 'user_email']);
+  const metadata = rawMetadata
+    ? Object.fromEntries(Object.entries(rawMetadata).filter(([k]) => !RESERVED_METADATA_KEYS.has(k)))
+    : rawMetadata;
 
   // Use stricter rate limits for federated channels
   const isFederated = channel?.startsWith('gossip-') || channel?.startsWith('shared-');
