@@ -195,29 +195,77 @@ a:hover { text-decoration: underline; }
   padding: 2rem;
 }
 
-/* ─── Compose bar ─── */
+/* ─── Compose bar (classic chat input) ─── */
 
 .compose {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.75rem 1.5rem;
+  padding: 0.75rem 1.5rem 1rem;
   border-top: 1px solid var(--border);
   background: var(--bg);
 }
 
-.compose input {
-  flex: 1;
-  padding: 0.6rem 0.75rem;
-  border-radius: 6px;
-  border: 1px solid var(--border);
+.compose-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  width: 100%;
   background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 0.2rem 0.3rem 0.2rem 0.5rem;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.compose-bar:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.compose-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
   color: var(--text);
   font-size: 0.9rem;
-}
-.compose input:focus {
+  padding: 0.55rem 0.4rem;
   outline: none;
-  border-color: var(--accent);
 }
+.compose-input::placeholder {
+  color: var(--text-dim);
+}
+
+.compose-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+.compose-icon:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.compose-icon:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.compose-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 50%;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.compose-send:hover:not(:disabled) { background: var(--accent-hover); }
+.compose-send:disabled { background: var(--border); color: var(--text-dim); cursor: not-allowed; }
 
 /* ─── Search ─── */
 

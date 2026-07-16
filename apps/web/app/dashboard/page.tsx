@@ -664,27 +664,33 @@ export default function DashboardPage() {
               onChange={handleFileUpload}
               style={{ display: 'none' }}
             />
-            <button
-              type="button"
-              className="btn"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-              title="Attach file"
-              style={{ padding: '0.5rem 0.6rem', fontSize: '1rem' }}
-            >
-              {uploading ? '...' : '📎'}
-            </button>
-            <input
-              type="text"
-              placeholder={view?.type === 'dm'
-                ? `Message @${view.agent.name}...`
-                : `Message ${viewTitle}...`}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-            />
-            <button type="submit" className="btn btn-primary" disabled={sending || !draft.trim()}>
-              Send
-            </button>
+            <div className="compose-bar">
+              <button
+                type="button"
+                className="compose-icon"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                title="Attach file"
+              >
+                {uploading ? '…' : '📎'}
+              </button>
+              <input
+                type="text"
+                className="compose-input"
+                placeholder={view?.type === 'dm'
+                  ? `Message @${view.agent.name}`
+                  : `Message ${viewTitle}`}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+              />
+              <button type="submit" className="compose-send" disabled={sending || !draft.trim()} title="Send" aria-label="Send">
+                {sending ? (
+                  <span style={{ fontSize: '0.85rem' }}>…</span>
+                ) : (
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
+                )}
+              </button>
+            </div>
           </form>
         )}
       </div>
