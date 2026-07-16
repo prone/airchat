@@ -12,7 +12,10 @@ import Link from 'next/link';
 import { createSupabaseBrowser } from '@/lib/supabase-browser';
 import Sparkline from '@/components/viz/Sparkline';
 import SplitBar from '@/components/viz/SplitBar';
+import ChannelTags, { normalizeTags } from '@/components/viz/ChannelTags';
 import { estimateTokens, formatTokens, INK } from '@/components/viz/viz';
+
+interface RelationRow { channel_a: string; channel_b: string; link_count: number }
 
 interface OverviewRow {
   channel_id: string;
@@ -50,15 +53,84 @@ export default function OverviewPage() {
   const [error, setError] = useState<string | null>(null);
   const [cleaning, setCleaning] = useState(false);
   const [lastArchived, setLastArchived] = useState<Array<{ id: string; name: string }>>([]);
+  const [tagsByChannel, setTagsByChannel] = useState<Map<string, string[]>>(new Map());
+  const [nameById, setNameById] = useState<Map<string, string>>(new Map());
+  const [relations, setRelations] = useState<RelationRow[]>([]);
+  const [tagFilter, setTagFilter] = useState<string>('');
+  const [isAdmin, setIsAdmin] = useState(false);
 
   function refresh() {
     supabase.rpc('dashboard_overview').then(({ data, error: err }) => {
       if (err) setError(err.message);
       else setRows((data as OverviewRow[]) ?? []);
     });
+    supabase.from('channels').select('id, name, metadata').then(({ data }) => {
+      const tags = new Map<string, string[]>();
+      const names = new Map<string, string>();
+      for (const c of (data as any[]) ?? []) {
+        tags.set(c.id, normalizeTags(c.metadata?.tags));
+        names.set(c.id, c.name);
+      }
+      setTagsByChannel(tags);
+      setNameById(names);
+    });
+    supabase.rpc('channel_relations').then(({ data }) => {
+      setRelations((data as RelationRow[]) ?? []);
+    });
   }
 
-  useEffect(refresh, [supabase]);
+  useEffect(() => {
+    refresh();
+    // Tag editing is admin-gated by RLS; only show controls to admins
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) return;
+      const { data } = await supabase.from('admin_users').select('user_id').eq('user_id', user.id).maybeSingle();
+      setIsAdmin(!!data);
+    });
+  }, [supabase]);
+
+  // Channels sharing at least one tag, OR linked via note wiki-links (derived).
+  const relatedByChannel = useMemo(() => {
+    const map = new Map<string, Map<string, number>>(); // channelId -> (relatedId -> weight)
+    const add = (a: string, b: string, w: number) => {
+      if (!map.has(a)) map.set(a, new Map());
+      map.get(a)!.set(b, (map.get(a)!.get(b) ?? 0) + w);
+    };
+    // Derived: wiki-link edges between channels
+    for (const r of relations) {
+      add(r.channel_a, r.channel_b, r.link_count);
+      add(r.channel_b, r.channel_a, r.link_count);
+    }
+    // Deliberate: shared tags
+    const ids = [...tagsByChannel.keys()];
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const shared = tagsByChannel.get(ids[i])!.filter((t) => tagsByChannel.get(ids[j])!.includes(t));
+        if (shared.length) { add(ids[i], ids[j], shared.length); add(ids[j], ids[i], shared.length); }
+      }
+    }
+    return map;
+  }, [relations, tagsByChannel]);
+
+  async function saveTags(channelId: string, tags: string[]) {
+    // Read-modify-write so we never clobber other metadata keys
+    const { data: cur } = await supabase.from('channels').select('metadata').eq('id', channelId).single();
+    const metadata = { ...(cur?.metadata ?? {}), tags };
+    const { error: err } = await supabase.from('channels').update({ metadata }).eq('id', channelId);
+    if (err) { setError(err.message); return; }
+    setTagsByChannel((prev) => new Map(prev).set(channelId, tags));
+  }
+
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const ts of tagsByChannel.values()) ts.forEach((t) => set.add(t));
+    return [...set].sort();
+  }, [tagsByChannel]);
+
+  const visibleRows = useMemo(
+    () => tagFilter ? rows.filter((r) => (tagsByChannel.get(r.channel_id) ?? []).includes(tagFilter)) : rows,
+    [rows, tagFilter, tagsByChannel],
+  );
 
   // "Unused" = nothing in it at all: no messages, no notes, not even stubs
   const unused = useMemo(
@@ -125,10 +197,33 @@ export default function OverviewPage() {
         </div>
       )}
 
+      {allTags.length > 0 && (
+        <div className="mb-3" style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: '0.6875rem', color: INK.muted }}>filter by tag:</span>
+          {allTags.map((t) => (
+            <button
+              key={t}
+              onClick={() => setTagFilter(tagFilter === t ? '' : t)}
+              className={`badge ${tagFilter === t ? '' : 'badge-dim'}`}
+              style={{ fontSize: '0.625rem', cursor: 'pointer', border: 'none' }}
+            >
+              #{t}
+            </button>
+          ))}
+          {tagFilter && (
+            <button onClick={() => setTagFilter('')} style={{ fontSize: '0.625rem', color: INK.muted, background: 'none', border: 'none', cursor: 'pointer' }}>clear</button>
+          )}
+        </div>
+      )}
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12 }}>
-        {rows.map((r) => {
+        {visibleRows.map((r) => {
           const contentTokens = estimateTokens(r.content_chars + r.note_chars);
           const llmTokens = r.llm_input_tokens + r.llm_output_tokens;
+          const related = [...(relatedByChannel.get(r.channel_id) ?? new Map())]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 4)
+            .map(([id, weight]) => ({ id, name: nameById.get(id) ?? '?', weight }));
           return (
             <div key={r.channel_id} className="card" style={{ padding: '0.75rem 1rem' }}>
               <div className="flex items-center justify-between">
@@ -136,6 +231,14 @@ export default function OverviewPage() {
                   #{r.channel_name}
                 </Link>
                 <span className="badge badge-dim" style={{ fontSize: '0.625rem' }}>{r.channel_type}</span>
+              </div>
+
+              <div style={{ marginTop: 6 }}>
+                <ChannelTags
+                  tags={tagsByChannel.get(r.channel_id) ?? []}
+                  onSave={isAdmin ? (tags) => saveTags(r.channel_id, tags) : undefined}
+                  size="sm"
+                />
               </div>
 
               <div className="flex items-center justify-between" style={{ marginTop: 8 }}>
@@ -159,6 +262,23 @@ export default function OverviewPage() {
                 <span title="Estimated size of all messages and notes, at ~4 chars/token">content ≈{formatTokens(contentTokens)} tok</span>
                 <span title="Actual Anthropic API tokens spent on this channel (digests)">LLM spend {formatTokens(llmTokens)} tok</span>
               </div>
+
+              {related.length > 0 && (
+                <div style={{ marginTop: 8, fontSize: '0.6875rem', color: INK.secondary, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <span style={{ color: INK.muted }}>related:</span>
+                  {related.map((rel) => (
+                    <Link
+                      key={rel.id}
+                      href={`/dashboard/channels/${rel.id}/overview`}
+                      className="badge badge-dim"
+                      style={{ fontSize: '0.5625rem', textDecoration: 'none' }}
+                      title={`${rel.weight} shared tag${rel.weight === 1 ? '' : 's'} or wiki-link${rel.weight === 1 ? '' : 's'}`}
+                    >
+                      #{rel.name}
+                    </Link>
+                  ))}
+                </div>
+              )}
 
               <div style={{ marginTop: 8, display: 'flex', gap: 12, fontSize: '0.75rem' }}>
                 <Link href={`/dashboard/channels/${r.channel_id}`}>messages</Link>

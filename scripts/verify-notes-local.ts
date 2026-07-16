@@ -333,6 +333,47 @@ async function main() {
     check('anon cannot archive channels', anonCheck?.archived === false, anonArchErr?.message ?? 'update silently applied');
   }
 
+  console.log('\n── Channel relations (derived links + tags, migration 00019) ──');
+  {
+    const authedClient3 = createClient(SUPABASE_URL, ANON_KEY, {
+      auth: { persistSession: false },
+      global: { headers: { Authorization: `Bearer ${signin!.session!.access_token}` } },
+    });
+    // The earlier note-side wiki-links included [[global/agent-directory-*]] (global,
+    // not a cross-channel edge). Create a real cross-channel link: a note in a second
+    // channel linking to a note in CH.
+    const otherCh = `project-related-${RUN}`;
+    await agentA.writeNote({
+      channel: otherCh, slug: 'cross-ref', title: 'Cross Ref',
+      body_md: `Depends on [[${CH}/deploy-runbook]].`,
+    });
+
+    const { data: rels, error: relErr } = await authedClient3.rpc('channel_relations');
+    check('channel_relations returns cross-channel edge', !relErr &&
+      (rels as any[])?.some((r) => {
+        return true; // presence of any edge; specific pair checked below
+      }), relErr?.message);
+    const { data: chIds } = await service.from('channels').select('id, name').in('name', [CH, otherCh]);
+    const idFor = (n: string) => (chIds as any[])?.find((c) => c.name === n)?.id;
+    const a = idFor(CH), b = idFor(otherCh);
+    const edge = (rels as any[])?.find((r) =>
+      (r.channel_a === a && r.channel_b === b) || (r.channel_a === b && r.channel_b === a));
+    check('derived relation links the two channels', !!edge && edge.link_count >= 1, JSON.stringify(rels)?.slice(0, 300));
+
+    const { error: anonRelErr } = await anon.rpc('channel_relations');
+    check('anon cannot call channel_relations', !!anonRelErr);
+
+    // Deliberate layer: tags in channels.metadata, admin-writable
+    const { error: tagErr } = await authedClient3.from('channels').update({ metadata: { tags: ['infra', 'scanner'] } }).eq('id', a);
+    check('admin can write channel tags', !tagErr, tagErr?.message);
+    const { data: tagged } = await service.from('channels').select('metadata').eq('id', a).single();
+    check('tags persisted in metadata', JSON.stringify(tagged?.metadata?.tags) === JSON.stringify(['infra', 'scanner']));
+
+    const { error: anonTagErr } = await anon.from('channels').update({ metadata: { tags: ['x'] } }).eq('id', a);
+    const { data: afterAnon } = await service.from('channels').select('metadata').eq('id', a).single();
+    check('anon cannot write channel tags', JSON.stringify(afterAnon?.metadata?.tags) === JSON.stringify(['infra', 'scanner']), anonTagErr?.message ?? 'silently applied');
+  }
+
   console.log(`\n${'─'.repeat(40)}\n${passed} passed, ${failed} failed\n`);
   process.exit(failed ? 1 : 0);
 }

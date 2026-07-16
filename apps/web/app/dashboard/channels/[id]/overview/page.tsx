@@ -12,6 +12,7 @@ import Link from 'next/link';
 import { createSupabaseBrowser } from '@/lib/supabase-browser';
 import Sparkline from '@/components/viz/Sparkline';
 import SplitBar from '@/components/viz/SplitBar';
+import ChannelTags, { normalizeTags } from '@/components/viz/ChannelTags';
 import { estimateTokens, formatTokens, INK, PROVENANCE } from '@/components/viz/viz';
 
 interface NoteRow {
@@ -40,11 +41,52 @@ export default function ChannelHubPage() {
   const [digests, setDigests] = useState<NoteRow[]>([]);
   const [canonical, setCanonical] = useState<NoteRow[]>([]);
   const [contributors, setContributors] = useState<Contributor[]>([]);
+  const [tags, setTags] = useState<string[]>([]);
+  const [related, setRelated] = useState<Array<{ id: string; name: string; weight: number; via: string }>>([]);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  async function saveTags(newTags: string[]) {
+    const { data: cur } = await supabase.from('channels').select('metadata').eq('id', channelId).single();
+    const metadata = { ...(cur?.metadata ?? {}), tags: newTags };
+    const { error } = await supabase.from('channels').update({ metadata }).eq('id', channelId);
+    if (!error) setTags(newTags);
+  }
 
   useEffect(() => {
     async function load() {
-      const { data: ch } = await supabase.from('channels').select('name').eq('id', channelId).single();
-      if (ch) setChannelName(ch.name);
+      const { data: ch } = await supabase.from('channels').select('name, metadata').eq('id', channelId).single();
+      if (ch) { setChannelName(ch.name); setTags(normalizeTags(ch.metadata?.tags)); }
+
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data: adm } = await supabase.from('admin_users').select('user_id').eq('user_id', user.id).maybeSingle();
+        setIsAdmin(!!adm);
+      }
+
+      // Related channels: derived wiki-link edges + shared tags
+      const [{ data: rels }, { data: allCh }] = await Promise.all([
+        supabase.rpc('channel_relations'),
+        supabase.from('channels').select('id, name, metadata'),
+      ]);
+      const nameById = new Map<string, string>((allCh as any[] ?? []).map((c) => [c.id, c.name]));
+      const myTags = normalizeTags(ch?.metadata?.tags);
+      const weights = new Map<string, { weight: number; via: Set<string> }>();
+      const bump = (id: string, w: number, via: string) => {
+        const cur = weights.get(id) ?? { weight: 0, via: new Set<string>() };
+        cur.weight += w; cur.via.add(via); weights.set(id, cur);
+      };
+      for (const r of (rels as any[]) ?? []) {
+        if (r.channel_a === channelId) bump(r.channel_b, r.link_count, 'links');
+        else if (r.channel_b === channelId) bump(r.channel_a, r.link_count, 'links');
+      }
+      for (const c of (allCh as any[]) ?? []) {
+        if (c.id === channelId) continue;
+        const shared = normalizeTags(c.metadata?.tags).filter((t) => myTags.includes(t));
+        if (shared.length) bump(c.id, shared.length, 'tags');
+      }
+      setRelated([...weights.entries()]
+        .map(([id, v]) => ({ id, name: nameById.get(id) ?? '?', weight: v.weight, via: [...v.via].join('+') }))
+        .sort((a, b) => b.weight - a.weight));
 
       const { data: ov } = await supabase.rpc('dashboard_overview');
       const row = (ov as any[])?.find((r) => r.channel_id === channelId);
@@ -102,6 +144,11 @@ export default function ChannelHubPage() {
         </div>
       </div>
 
+      <div className="mb-3" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontSize: '0.6875rem', color: INK.muted }}>tags:</span>
+        <ChannelTags tags={tags} onSave={isAdmin ? saveTags : undefined} />
+      </div>
+
       {overview && (
         <div className="card mb-3" style={{ padding: '0.75rem 1rem', display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'center' }}>
           <div>
@@ -122,6 +169,27 @@ export default function ChannelHubPage() {
             <div title="Actual Anthropic API tokens spent on this channel">
               LLM spend {formatTokens((overview.llm_input_tokens ?? 0) + (overview.llm_output_tokens ?? 0))} tokens
             </div>
+          </div>
+        </div>
+      )}
+
+      {related.length > 0 && (
+        <div className="card mb-3" style={{ padding: '0.75rem 1rem' }}>
+          <h3 className="text-sm" style={{ marginBottom: 8 }}>Related channels</h3>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {related.map((rel) => (
+              <Link
+                key={rel.id}
+                href={`/dashboard/channels/${rel.id}/overview`}
+                className="badge badge-dim"
+                style={{ fontSize: '0.6875rem', textDecoration: 'none' }}
+                title={rel.via === 'links' ? `${rel.weight} wiki-link${rel.weight === 1 ? '' : 's'} between these channels`
+                  : rel.via === 'tags' ? `${rel.weight} shared tag${rel.weight === 1 ? '' : 's'}`
+                  : `${rel.weight} shared tags + wiki-links`}
+              >
+                #{rel.name} <span style={{ color: INK.muted }}>· {rel.via}</span>
+              </Link>
+            ))}
           </div>
         </div>
       )}
