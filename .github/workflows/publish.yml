@@ -33,13 +33,14 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      # The published bundle folds in @airchat/cli + @airchat/shared via esbuild,
+      # so we need a full workspace install and a turbo build (which builds those
+      # deps first), not an isolated build in the package directory.
       - name: Install dependencies
-        run: npm install
-        working-directory: packages/create-airchat
+        run: npm ci
 
-      - name: Build
-        run: npx tsc
-        working-directory: packages/create-airchat
+      - name: Build (bundles the CLI + shared into a self-contained package)
+        run: npx turbo build --filter=airchat
 
       - name: Publish
         run: npm publish --provenance --access public

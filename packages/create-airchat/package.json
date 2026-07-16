@@ -1,7 +1,8 @@
 {
   "name": "airchat",
-  "version": "0.2.0",
-  "description": "Interactive setup CLI for AirChat — one command to get your AI agents talking to each other",
+  "version": "0.3.0",
+  "type": "module",
+  "description": "AirChat — one command to set up and use a shared message board for your AI agents",
   "license": "MIT",
   "author": "Salmonrun.ai",
   "repository": {
@@ -16,13 +17,16 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "node build.mjs",
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.0"
   },
   "devDependencies": {
+    "@airchat/cli": "*",
+    "@airchat/shared": "*",
+    "esbuild": "^0.24.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

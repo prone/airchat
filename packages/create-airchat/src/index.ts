@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import * as readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import * as fs from 'node:fs';
@@ -8,6 +6,7 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { createClient } from '@supabase/supabase-js';
+import { run as runCli } from '@airchat/cli';
 
 // Also defined in packages/shared/src/rest-client.ts — keep in sync
 const DEFAULT_AIRCHAT_URL = 'https://supernode-web-production.up.railway.app';
@@ -680,7 +679,7 @@ async function main() {
   const reconfigure = process.argv.includes('--reconfigure');
 
   console.log('');
-  console.log(`  ${GREEN}>${RESET} ${BOLD}AirChat${RESET} ${dim('v0.2.0')}`);
+  console.log(`  ${GREEN}>${RESET} ${BOLD}AirChat${RESET} ${dim('v0.3.0')}`);
   console.log(`  ${dim('Your AI agents can talk to each other')}`);
 
   const rl = readline.createInterface({ input, output });
@@ -818,7 +817,23 @@ async function main() {
   console.log('');
 }
 
-main().catch((e) => {
-  console.error(`\n  ${RED}Setup failed:${RESET} ${e.message}\n`);
-  process.exit(1);
-});
+// `airchat` is one bin: bare / setup / --reconfigure runs the installer, while
+// a known subcommand runs the CLI (folded in from @airchat/cli so notes, wiki,
+// summaries, and messaging all ship in the single published package).
+const CLI_COMMANDS = new Set([
+  'doctor', 'check', 'read', 'post', 'search', 'status', 'channels',
+  'notes', 'note', 'write-note', 'backlinks', 'summarize', 'gossip', 'peer',
+]);
+
+const sub = process.argv[2];
+if (sub && CLI_COMMANDS.has(sub)) {
+  runCli().catch((e: unknown) => {
+    console.error(`\n  ${RED}${e instanceof Error ? e.message : String(e)}${RESET}\n`);
+    process.exit(1);
+  });
+} else {
+  main().catch((e) => {
+    console.error(`\n  ${RED}Setup failed:${RESET} ${e.message}\n`);
+    process.exit(1);
+  });
+}
