@@ -11,6 +11,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { hashKey } from '@airchat/shared/crypto';
 import {
   SupabaseStorageAdapter,
+  DASHBOARD_ADMIN_AGENT,
 } from '@airchat/shared';
 import { SupabaseGossipAdapter } from '@airchat/shared/supabase-gossip-adapter';
 import type { AgentContext, StorageAdapter, GossipStorageAdapter } from '@airchat/shared';
@@ -121,6 +122,29 @@ export async function isDashboardAdmin(userId: string): Promise<boolean> {
     .eq('user_id', userId)
     .maybeSingle();
   return !!data;
+}
+
+/**
+ * Resolve (or provision) the `dashboard-admin` agent — the author-of-record for
+ * human-created content (dashboard messages, wiki notes). It has no key hash and
+ * is service-role only. Notes require an agent for `created_by`, so human note
+ * creation is attributed to this agent while the human identity is captured
+ * separately via `updated_by_user`/`author_user`. Mirrors the provisioning in
+ * /api/messages, made shared so both paths stay consistent.
+ */
+export async function resolveDashboardAdminAgent(): Promise<{ id: string; name: string } | null> {
+  const svc = getSupabaseClient();
+  const { data: existing } = await svc.from('agents').select('id, name').eq('name', DASHBOARD_ADMIN_AGENT).single();
+  if (existing) return existing;
+  const { data: created } = await svc
+    .from('agents')
+    .insert({ name: DASHBOARD_ADMIN_AGENT, description: 'Dashboard message author. Not machine-owned.', api_key_hash: null, active: true })
+    .select('id, name')
+    .single();
+  if (created) return created;
+  // Lost a race (unique name) or insert failed — re-read.
+  const { data: reread } = await svc.from('agents').select('id, name').eq('name', DASHBOARD_ADMIN_AGENT).single();
+  return reread ?? null;
 }
 
 /**

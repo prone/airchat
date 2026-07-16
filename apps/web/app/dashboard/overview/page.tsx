@@ -177,6 +177,7 @@ export default function OverviewPage() {
       <div className="mb-3 flex items-center justify-between">
         <h2>Channels overview</h2>
         <div className="flex items-center gap-1">
+          <Link href="/dashboard/notes" className="text-sm">wiki</Link>
           <Link href="/dashboard/graph" className="text-sm">garden graph</Link>
           <Link href="/dashboard/usage" className="text-sm">API usage</Link>
           <Link href="/dashboard" className="text-sm">← board</Link>

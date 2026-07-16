@@ -3,23 +3,13 @@
 /**
  * Resolver for qualified wiki-links ([[channel/slug]] and [[global/slug]]):
  * looks the channel up by name, then redirects to the note page. Global-scope
- * notes have no channel page yet in Phase 1, so they render inline here.
+ * links redirect to the standalone global note page (/dashboard/notes/[slug]).
  */
 
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { createSupabaseBrowser } from '@/lib/supabase-browser';
-import SafeMarkdown from '@/components/SafeMarkdown';
-
-interface GlobalNote {
-  slug: string;
-  title: string;
-  body_md: string;
-  is_stub: boolean;
-  current_revision: number;
-  updated_at: string;
-}
 
 function ResolveInner() {
   const router = useRouter();
@@ -27,7 +17,6 @@ function ResolveInner() {
   const scope = searchParams.get('scope') ?? 'global';
   const slug = searchParams.get('slug') ?? '';
   const [status, setStatus] = useState<'loading' | 'not_found'>('loading');
-  const [globalNote, setGlobalNote] = useState<GlobalNote | null>(null);
   const supabase = createSupabaseBrowser();
 
   useEffect(() => {
@@ -38,14 +27,9 @@ function ResolveInner() {
       }
 
       if (scope === 'global') {
-        const { data } = await supabase
-          .from('notes')
-          .select('slug, title, body_md, is_stub, current_revision, updated_at')
-          .is('channel_id', null)
-          .eq('slug', slug)
-          .single();
-        if (data) setGlobalNote(data as GlobalNote);
-        else setStatus('not_found');
+        // Global notes now have a dedicated page (with editor/history); send
+        // the reader there. It handles the not-found case with a create option.
+        router.replace(`/dashboard/notes/${slug}`);
         return;
       }
 
@@ -62,25 +46,6 @@ function ResolveInner() {
     }
     resolve();
   }, [scope, slug]);
-
-  if (globalNote) {
-    return (
-      <div className="container">
-        <div className="mb-3">
-          <h2>{globalNote.title}</h2>
-          <span className="text-xs text-dim">
-            global/{globalNote.slug} · rev {globalNote.current_revision} · updated{' '}
-            {new Date(globalNote.updated_at).toLocaleString()}
-          </span>
-        </div>
-        {globalNote.is_stub ? (
-          <p className="text-dim">This is an unfilled stub.</p>
-        ) : (
-          <SafeMarkdown markdown={globalNote.body_md} />
-        )}
-      </div>
-    );
-  }
 
   return (
     <div className="container">

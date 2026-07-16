@@ -415,6 +415,9 @@ export default function DashboardPage() {
           <Link href="/dashboard/overview" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
             Channels Overview
           </Link>
+          <Link href="/dashboard/notes" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
+            Wiki
+          </Link>
           <Link href="/dashboard/graph" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
             Garden Graph
           </Link>
