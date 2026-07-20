@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseServer } from '@/lib/supabase-server';
-import { createAgentClient } from '@airchat/shared/supabase';
-import { STORAGE_BUCKET, DASHBOARD_ADMIN_AGENT, DIRECT_MESSAGES_CHANNEL, formatSize } from '@airchat/shared';
-import { ensureAgentRegistered, getStorageClient } from '@/lib/api-auth';
+import { STORAGE_BUCKET, DIRECT_MESSAGES_CHANNEL, formatSize } from '@airchat/shared';
+import { getSupabaseClient, getStorageAdapter, isDashboardAdmin, resolveDashboardAdminAgent } from '@/lib/api-v2-auth';
 
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
 
@@ -11,18 +10,19 @@ function sanitizeFileName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
+// POST /api/upload — upload a file from the dashboard and post a message linking
+// it. Session-auth + admin-gated (the dashboard is admin-only). Uses the
+// service role for storage and posts as the `dashboard-admin` agent via the
+// storage adapter — the same path as /api/messages. (Replaces the old flow that
+// required an unset AIRCHAT_API_KEY and the dead v1 agent-key send path.)
 export async function POST(request: NextRequest) {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!supabaseUrl || !anonKey) {
-    return NextResponse.json({ error: 'Missing Supabase configuration (NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY)' }, { status: 500 });
-  }
-
-  // Verify authenticated
   const supabase = await createSupabaseServer();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (!(await isDashboardAdmin(user.id))) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
   const formData = await request.formData();
@@ -32,87 +32,55 @@ export async function POST(request: NextRequest) {
   if (!file || !channel) {
     return NextResponse.json({ error: 'File and channel are required' }, { status: 400 });
   }
-
   if (!/^[a-z0-9][a-z0-9-]{1,99}$/.test(channel)) {
     return NextResponse.json({ error: 'Invalid channel name' }, { status: 400 });
   }
-
   if (file.size > MAX_FILE_SIZE_BYTES) {
     return NextResponse.json({ error: 'File too large (max 50MB)' }, { status: 400 });
   }
 
-  const agentApiKey = process.env.AIRCHAT_API_KEY;
-  if (!agentApiKey) {
-    return NextResponse.json({ error: 'No AIRCHAT_API_KEY configured' }, { status: 500 });
+  const admin = await resolveDashboardAdminAgent();
+  if (!admin) {
+    return NextResponse.json({ error: 'Dashboard uploads are not provisioned' }, { status: 500 });
   }
 
-  // Upload using the authenticated user's session (has storage access)
   const timestamp = Date.now();
   const safeName = sanitizeFileName(file.name);
   const path = `${channel}/${timestamp}-${safeName}`;
   const buffer = Buffer.from(await file.arrayBuffer());
 
-  // Try with the user's auth session first
-  const { error: uploadErr } = await supabase.storage
+  // Upload via the service role (the private bucket isn't writable by the anon
+  // session; the service key never leaves the server).
+  const { error: uploadErr } = await getSupabaseClient()
+    .storage
     .from(STORAGE_BUCKET)
-    .upload(path, buffer, {
-      contentType: file.type,
-      upsert: false,
-    });
-
+    .upload(path, buffer, { contentType: file.type, upsert: false });
   if (uploadErr) {
-    // If RLS blocks it, try with service role key if available
-    const adminClient = getStorageClient();
-    if (adminClient) {
-      const { error: adminUploadErr } = await adminClient.storage
-        .from(STORAGE_BUCKET)
-        .upload(path, buffer, { contentType: file.type, upsert: false });
-
-      if (adminUploadErr) {
-        console.error('Upload failed:', adminUploadErr.message);
-        return NextResponse.json({ error: 'Upload failed' }, { status: 500 });
-      }
-    } else {
-      console.error('Upload failed (no admin fallback):', uploadErr.message);
-      return NextResponse.json({ error: 'Upload failed — check server configuration' }, { status: 500 });
-    }
+    console.error('Upload failed:', uploadErr.message);
+    return NextResponse.json({ error: 'Upload failed' }, { status: 500 });
   }
 
-  // Post a message with the file reference
-  const agentClient = createAgentClient(supabaseUrl, anonKey, agentApiKey, DASHBOARD_ADMIN_AGENT);
-
-  await ensureAgentRegistered(DASHBOARD_ADMIN_AGENT, agentApiKey);
-
+  // Post a message linking the file, as dashboard-admin via the service-role
+  // storage adapter.
   const target = formData.get('target_agent') as string | null;
   const messageContent = target
     ? `@${target} Shared a file: **${safeName}** (${formatSize(file.size)})`
     : `Shared a file: **${safeName}** (${formatSize(file.size)})`;
-
   const actualChannel = target ? DIRECT_MESSAGES_CHANNEL : channel;
 
-  await agentClient.rpc('send_message_with_auto_join', {
-    channel_name: actualChannel,
-    content: messageContent,
-    parent_message_id: null,
-    message_metadata: {
+  try {
+    const scoped = getStorageAdapter().forAgent({ agentId: admin.id, agentName: admin.name, machineId: '' });
+    await scoped.sendMessage(actualChannel, messageContent, {
       source: 'dashboard',
-      user_email: user.email,
-      files: [{
-        name: file.name,
-        size: file.size,
-        type: file.type,
-        path,
-        bucket: STORAGE_BUCKET,
-      }],
-    },
-  });
+      user_email: user.email ?? undefined,
+      files: [{ name: file.name, size: file.size, type: file.type, path, bucket: STORAGE_BUCKET }],
+    });
+  } catch (e) {
+    // The file uploaded fine; only the announcement message failed.
+    console.error('Failed to post file message:', e instanceof Error ? e.message : e);
+  }
 
   return NextResponse.json({
-    file: {
-      name: file.name,
-      size: file.size,
-      path,
-      bucket: STORAGE_BUCKET,
-    },
+    file: { name: file.name, size: file.size, path, bucket: STORAGE_BUCKET },
   });
 }
