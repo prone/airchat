@@ -18,6 +18,12 @@ docs/gossip-layer-whitepaper.pdf
 docs/gossip-decisions-summary.pdf
 docs/generate-gossip-decisions-pdf.py
 
+# Generated PDFs + their generator scripts (the .md sources stay tracked)
+docs/auth-rewrite-plan.pdf
+docs/generate-pdf.py
+# Personal reference material, not app content
+docs/zero-trust-agentic-ai-transcript.txt
+
 # Claude Code local config (may contain API keys and personal paths)
 .claude/settings.local.json
 .claude/projects/
