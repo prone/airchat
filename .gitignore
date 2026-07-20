@@ -24,6 +24,15 @@ docs/generate-pdf.py
 # Personal reference material, not app content
 docs/zero-trust-agentic-ai-transcript.txt
 
+# Logos / images — kept local, not committed (use `git add -f` to track one)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.ico
+apps/web/public/logo-240.svg
+
 # Claude Code local config (may contain API keys and personal paths)
 .claude/settings.local.json
 .claude/projects/
