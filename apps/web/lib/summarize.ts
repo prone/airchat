@@ -110,16 +110,23 @@ export async function summarizeChannel(channelId: string, opts?: { windowDays?: 
   if (!channel) throw new SummaryError('Channel not found', 404);
 
   const since = new Date(Date.now() - windowDays * 86_400_000).toISOString();
-  const { data: msgs } = await client
+  // Sample the MOST RECENT messages in the window, not the oldest. With a cap
+  // (MAX_MESSAGES) an ascending fetch keeps only a channel's earliest messages
+  // and drops recent activity — which biased busy channels' summaries toward
+  // whatever they happened to start with. Fetch newest-first, then reverse to
+  // chronological order so the transcript still reads oldest → newest.
+  const { data: recent } = await client
     .from('messages')
     .select('content, created_at, agents:author_agent_id(name), author_display')
     .eq('channel_id', channelId)
     .eq('quarantined', false)
     .gte('created_at', since)
-    .order('created_at', { ascending: true })
+    .order('created_at', { ascending: false })
     .limit(MAX_MESSAGES);
 
-  if (!msgs || msgs.length === 0) {
+  const msgs = (recent ?? []).slice().reverse();
+
+  if (msgs.length === 0) {
     throw new SummaryError(`No messages in #${channel.name} in the last ${windowDays} days to summarize`, 422);
   }
 
