@@ -21,11 +21,11 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.6",
     "@types/d3-force": "^3.0.10",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.1.1",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "eslint": "^9.39.5",
-    "eslint-config-next": "^15.5.20",
-    "typescript": "^5.7.0"
+    "eslint": "^10.7.0",
+    "eslint-config-next": "^16.2.11",
+    "typescript": "^7.0.2"
   }
 }
