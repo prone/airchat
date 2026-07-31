@@ -20,13 +20,20 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
 
+      # Majors are deliberately excluded from both groups below, so they
+      # arrive as their own reviewable PR. PR #20 bundled TypeScript 5.7 -> 7
+      # (the native rewrite) and @types/node 22 -> 26 into a routine
+      # "9 dev-dependency updates" PR; it broke `tsc` in @airchat/shared with
+      # "Cannot find name 'node:fs'" and would have read as low-risk.
       production-dependencies:
         applies-to: version-updates
         dependency-type: production
+        update-types: ["minor", "patch"]
 
       dev-dependencies:
         applies-to: version-updates
         dependency-type: development
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: github-actions
     directory: "/"
