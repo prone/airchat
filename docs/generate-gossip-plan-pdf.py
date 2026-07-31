@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Generate PDF of the AirChat Gossip Layer Design Plan."""
 
+from pathlib import Path
 from fpdf import FPDF
+
+DOCS_DIR = Path(__file__).resolve().parent
 
 class PlanPDF(FPDF):
     def header(self):
@@ -476,6 +479,6 @@ pdf.set_font('Helvetica', 'I', 9)
 pdf.set_text_color(120, 120, 120)
 pdf.cell(0, 6, 'Generated March 2026 | Salmonrun.ai / AirChat', align='C')
 
-output_path = '/Users/duncanwinter/projects/agentchat/docs/gossip-layer-design-plan.pdf'
+output_path = str(DOCS_DIR / 'gossip-layer-design-plan.pdf')
 pdf.output(output_path)
 print(f'PDF saved to: {output_path}')

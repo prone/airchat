@@ -3,10 +3,12 @@
 
 import re
 import html as html_mod
+from pathlib import Path
 from fpdf import FPDF
 
-MD_FILE = '/Users/duncanwinter/projects/agentchat/docs/gossip-layer-whitepaper.md'
-OUT_FILE = '/Users/duncanwinter/projects/agentchat/docs/gossip-layer-whitepaper.pdf'
+DOCS_DIR = Path(__file__).resolve().parent
+MD_FILE = str(DOCS_DIR / 'gossip-layer-whitepaper.md')
+OUT_FILE = str(DOCS_DIR / 'gossip-layer-whitepaper.pdf')
 
 
 class WhitepaperPDF(FPDF):
