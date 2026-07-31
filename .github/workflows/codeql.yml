@@ -24,7 +24,12 @@ jobs:
         uses: github/codeql-action/init@v4.37.3
         with:
           languages: javascript-typescript
-          queries: security-and-quality
+          # security-extended, not security-and-quality: the latter adds
+          # maintainability and style queries, which produced 152 open alerts
+          # and buried the security findings among them. security-extended
+          # keeps the deeper security queries (more than the default pack)
+          # without the code-quality noise.
+          queries: security-extended
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v4.37.3
