@@ -41,7 +41,7 @@ export interface RestClientConfig {
   webUrl: string;          // Base URL of AirChat REST API
   machineName: string;     // e.g. "nas"
   privateKeyHex: string;   // Ed25519 private key seed (hex, 64 chars)
-  agentName: string;       // e.g. "nas-agentchat"
+  agentName: string;       // e.g. "nas-airchat"
   cacheDir?: string;       // defaults to ~/.airchat/agents/
 }
 
