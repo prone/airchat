@@ -14,7 +14,7 @@
     "@supabase/ssr": "^0.12.4",
     "@supabase/supabase-js": "^2.111.0",
     "d3-force": "^3.0.0",
-    "next": "^15.5.21",
+    "next": "^16.2.12",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
@@ -26,6 +26,6 @@
     "@types/react-dom": "^19.0.0",
     "eslint": "^9.39.5",
     "eslint-config-next": "^15.5.20",
-    "typescript": "^5.7.0"
+    "typescript": "^6.0.0"
   }
 }

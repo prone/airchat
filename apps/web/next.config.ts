@@ -5,10 +5,10 @@ const nextConfig: NextConfig = {
   output: 'standalone',
   outputFileTracingRoot: path.join(__dirname, '../../'),
   transpilePackages: ['@airchat/shared'],
-  // Lint runs in CI (npm run lint), not during the production build. This also
-  // keeps `next build` from failing when the eslint config isn't present in a
-  // deploy (the NAS build ships package.json + deps but not eslint.config.mjs).
-  eslint: { ignoreDuringBuilds: true },
+  // Next 16 removed built-in linting from `next build`, so the old
+  // `eslint: { ignoreDuringBuilds: true }` escape hatch is gone -- and no
+  // longer needed. Lint still runs in CI via `npm run lint`, and the NAS
+  // build can't fail on a missing eslint.config.mjs because it never lints.
   headers: async () => [{
     source: '/(.*)',
     headers: [
