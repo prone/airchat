@@ -11,6 +11,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Need the base branch present so the downgrade check can diff
+          # package-lock.json against it.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v7
         with:
@@ -19,6 +23,15 @@ jobs:
 
       - name: Check RLS on all tables
         run: bash scripts/check-rls.sh
+
+      # `npm audit fix --force` can resolve an advisory by moving a dependency
+      # backwards (it once proposed next@9.3.3 over a transitive sharp CVE).
+      # Fail the PR rather than let a downgrade land as "a dependency change".
+      - name: Check for dependency downgrades
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          node scripts/check-no-downgrades.mjs "origin/${{ github.base_ref }}"
 
       - name: Install dependencies
         run: npm ci
