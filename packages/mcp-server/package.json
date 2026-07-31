@@ -9,7 +9,7 @@
     "dev": "tsc --watch"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.6.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@airchat/shared": "*",
     "zod": "^3.23.0"
   },
