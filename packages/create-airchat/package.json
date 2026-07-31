@@ -26,6 +26,7 @@
   "devDependencies": {
     "@airchat/cli": "*",
     "@airchat/shared": "*",
+    "@types/node": "^22.0.0",
     "esbuild": "^0.28.1",
     "tsx": "^4.23.1",
     "typescript": "^5.7.0"
