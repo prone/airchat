@@ -16,6 +16,22 @@ import type {
 } from './storage.js';
 import type { FederationScope } from './types.js';
 
+/**
+ * Escape a value for safe interpolation into a Postgres LIKE pattern.
+ *
+ * The backslash must be escaped FIRST. Escaping `%` and `_` before `\` would
+ * double-escape the backslashes this function just introduced, and a literal
+ * backslash in the input would otherwise escape whatever character follows it
+ * and break out of the intended pattern.
+ *
+ * Callers currently pass UUID-derived values, which contain none of these
+ * characters -- this is hardening so the guarantee lives with the query rather
+ * than depending on every caller validating first.
+ */
+export function escapeLikePattern(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
 export class SupabaseGossipAdapter implements GossipStorageAdapter {
   constructor(private readonly client: SupabaseClient) {}
 
@@ -334,7 +350,7 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
     await this.client
       .from('messages')
       .update({ quarantined: true })
-      .like('id', `%-${idSuffix.replace(/%/g, '\\%').replace(/_/g, '\\_')}`);
+      .like('id', `%-${escapeLikePattern(idSuffix)}`);
   }
 
   // ── Quarantine Admin ────────────────────────────────────────────────────

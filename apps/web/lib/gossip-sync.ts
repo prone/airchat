@@ -6,6 +6,7 @@
 
 import { getGossipAdapter } from '@/lib/api-v2-auth';
 import { fetchPeerUrl } from '@/lib/url-validation';
+import { stripHtmlTags } from '@/lib/sanitize';
 import { classifyMessage } from '@airchat/shared/safety';
 import { loadPatternSet } from '@airchat/shared/safety';
 import { verifyEnvelope, verifyRetraction, signData, signEnvelope } from '@airchat/shared/gossip';
@@ -202,7 +203,7 @@ async function processInboundMessage(
   const channelName = (raw.channels as Record<string, string>)?.name;
   // Defense-in-depth: strip HTML tags from federated content to prevent stored XSS
   const rawContent = raw.content as string;
-  const content = rawContent?.replace(/<[^>]*>/g, '') ?? rawContent;
+  const content = rawContent != null ? stripHtmlTags(rawContent) : rawContent;
   const metadata = raw.metadata as Record<string, unknown> | null;
   const originInstance = raw.origin_instance as string | null;
   const authorDisplay = raw.author_display as string ?? (raw.agents as Record<string, string>)?.name;
