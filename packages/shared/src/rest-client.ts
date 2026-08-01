@@ -61,7 +61,13 @@ export class AirChatRestClient {
     if (!/^https?:\/\//i.test(config.webUrl)) {
       throw new Error(`Invalid AIRCHAT_WEB_URL: "${config.webUrl}" — must start with http:// or https://`);
     }
-    this.webUrl = config.webUrl.replace(/\/+$/, '');
+    // Trim trailing slashes without a regex. /\/+$/ is the textbook
+    // polynomial-backtracking shape; the input here is local config rather
+    // than anything attacker-controlled, but a plain loop is O(n) by
+    // construction and just as clear.
+    let webUrl = config.webUrl;
+    while (webUrl.endsWith('/')) webUrl = webUrl.slice(0, -1);
+    this.webUrl = webUrl;
     this.machineName = config.machineName;
     this.privateKeyHex = config.privateKeyHex;
     this.agentName = config.agentName;
