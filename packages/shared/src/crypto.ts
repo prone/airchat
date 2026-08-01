@@ -104,6 +104,20 @@ export function verifyRegistration(
 }
 
 /**
+ * Derive the hex-encoded Ed25519 public key from a 32-byte hex private seed.
+ *
+ * Used when a private key is found on disk without its matching .pub file --
+ * the public half is recomputed rather than regenerating the identity, which
+ * would change the instance fingerprint and orphan every existing peer
+ * relationship.
+ */
+export function derivePublicKey(privateKeyHex: string): string {
+  const publicKey = crypto.createPublicKey(privateKeyFromHex(privateKeyHex));
+  const spkiDer = publicKey.export({ type: 'spki', format: 'der' });
+  return spkiDer.subarray(spkiDer.length - 32).toString('hex');
+}
+
+/**
  * SHA256 hex digest of the input string.
  */
 export function hashKey(key: string): string {
