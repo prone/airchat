@@ -5,6 +5,7 @@
  */
 
 import { getGossipAdapter } from '@/lib/api-v2-auth';
+import { fetchPeerUrl } from '@/lib/url-validation';
 import { classifyMessage } from '@airchat/shared/safety';
 import { loadPatternSet } from '@airchat/shared/safety';
 import { verifyEnvelope, verifyRetraction, signData, signEnvelope } from '@airchat/shared/gossip';
@@ -123,7 +124,7 @@ async function syncFromPeer(peerId: string): Promise<void> {
     const timestamp = new Date().toISOString();
     const signature = signData(privateKey, timestamp);
 
-    const res = await fetch(
+    const res = await fetchPeerUrl(
       `${peer.endpoint}/api/v2/gossip/sync?since=${encodeURIComponent(since)}&limit=100&scope=${peer.federation_scope}`,
       {
         headers: {
@@ -131,7 +132,7 @@ async function syncFromPeer(peerId: string): Promise<void> {
           'x-gossip-timestamp': timestamp,
           'x-gossip-signature': signature,
         },
-        signal: AbortSignal.timeout(15000),
+        timeoutMs: 15000,
       }
     );
 
@@ -531,7 +532,7 @@ export async function pushMessageToSupernodes(message: {
   // Push to each supernode in parallel
   await Promise.allSettled(supernodes.map(async (peer: GossipPeer) => {
     try {
-      const res = await fetch(`${peer.endpoint}/api/v2/gossip/push`, {
+      const res = await fetchPeerUrl(`${peer.endpoint}/api/v2/gossip/push`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -540,7 +541,7 @@ export async function pushMessageToSupernodes(message: {
           'x-gossip-signature': authSignature,
         },
         body: JSON.stringify({ messages: [{ ...envelope, origin_public_key: config.public_key }] }),
-        signal: AbortSignal.timeout(10000),
+        timeoutMs: 10000,
       });
       if (!res.ok) {
         console.log(`[gossip] Push to ${peer.display_name || peer.fingerprint}: HTTP ${res.status}`);
