@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { authenticateAgent, isAuthError, getGossipAdapter } from '@/lib/api-v2-auth';
-import { validatePeerEndpoint } from '@/lib/url-validation';
+import { validatePeerEndpoint, fetchPeerUrl } from '@/lib/url-validation';
 
 // GET /api/v2/gossip/peers — List all peers (authenticated)
 export async function GET(request: NextRequest) {
@@ -67,7 +67,10 @@ export async function POST(request: NextRequest) {
     // Verify remote identity by fetching their public key
     let remoteIdentity: { public_key: string; fingerprint: string; display_name?: string } | null = null;
     try {
-      const res = await fetch(`${endpoint.replace(/\/$/, '')}/api/v2/gossip/identity`);
+      const res = await fetchPeerUrl(
+        `${endpoint.replace(/\/$/, '')}/api/v2/gossip/identity`,
+        { timeoutMs: 10000 },
+      );
       if (res.ok) {
         const json = await res.json();
         // Identity endpoint uses AirChat response wrapper — data is in .data

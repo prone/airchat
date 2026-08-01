@@ -2,7 +2,11 @@
  * URL validation for gossip peer endpoints.
  *
  * Prevents SSRF by blocking requests to private/internal networks.
- * Validates at peer registration time and before every outbound fetch.
+ *
+ * Use `fetchPeerUrl` for any request to a peer-controlled URL: it validates
+ * every hop, including redirect targets. `validatePeerEndpoint` on its own
+ * only judges the URL you hand it, so validating once and then calling bare
+ * `fetch` is not sufficient -- fetch follows redirects.
  */
 
 import dns from 'dns/promises';
@@ -115,24 +119,75 @@ export async function validatePeerEndpoint(endpoint: string): Promise<UrlValidat
     return { valid: true };
   }
 
+  // Note: integer/hex/octal host forms (http://2130706433, http://0x7f000001,
+  // http://127.1) need no special handling -- the WHATWG URL parser normalises
+  // all of them to dotted-quad before we get here, so the check above catches
+  // them. There are tests pinning that behaviour.
+
   // 4. DNS resolution check
-  try {
-    const addresses = await dns.resolve4(hostname).catch(() => [] as string[]);
-    const addresses6 = await dns.resolve6(hostname).catch(() => [] as string[]);
-    const allAddresses = [...addresses, ...addresses6];
+  const addresses = await dns.resolve4(hostname).catch(() => [] as string[]);
+  const addresses6 = await dns.resolve6(hostname).catch(() => [] as string[]);
+  const allAddresses = [...addresses, ...addresses6];
 
-    if (allAddresses.length === 0) {
-      // Can't resolve — allow (might be a hostname the server can reach but we can't resolve here)
-      return { valid: true };
-    }
+  // Fail closed. This previously allowed unresolvable hostnames through on the
+  // theory that the fetch would fail anyway -- but validation and fetch run on
+  // the same host, so anything genuinely unresolvable here cannot be fetched
+  // either, and treating "no answer" as "safe" is a bypass rather than a
+  // convenience.
+  if (allAddresses.length === 0) {
+    return { valid: false, error: 'Endpoint hostname could not be resolved' };
+  }
 
-    const privateAddr = allAddresses.find((addr) => isPrivateIp(addr));
-    if (privateAddr) {
-      return { valid: false, error: 'Endpoint resolves to a private address' };
-    }
-  } catch {
-    // DNS failure — allow (will fail at fetch time anyway)
+  if (allAddresses.some((addr) => isPrivateIp(addr))) {
+    return { valid: false, error: 'Endpoint resolves to a private address' };
   }
 
   return { valid: true };
+}
+
+/** Maximum redirects followed by fetchPeerUrl, each re-validated. */
+const MAX_REDIRECTS = 3;
+
+/**
+ * Fetch a peer URL with SSRF protection applied to every hop.
+ *
+ * `fetch` follows redirects itself, which defeats validating only the initial
+ * URL: a peer that passes validation can answer 302 with
+ * `Location: http://169.254.169.254/` and the request is made anyway. This
+ * disables automatic redirects and re-validates each Location before
+ * following it.
+ *
+ * Throws on an unsafe URL, on too many redirects, or on a redirect with no
+ * usable Location. Network errors propagate from fetch as usual.
+ */
+export async function fetchPeerUrl(
+  rawUrl: string,
+  init: RequestInit & { timeoutMs?: number } = {},
+): Promise<Response> {
+  const { timeoutMs = 15000, ...fetchInit } = init;
+  let current = rawUrl;
+
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const check = await validatePeerEndpoint(current);
+    if (!check.valid) {
+      throw new Error(`Blocked peer request to ${current}: ${check.error}`);
+    }
+
+    const res = await fetch(current, {
+      ...fetchInit,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (res.status < 300 || res.status > 399) return res;
+
+    const location = res.headers.get('location');
+    if (!location) {
+      throw new Error(`Peer redirect from ${current} had no Location header`);
+    }
+    // Resolve relative Locations against the current URL before re-checking.
+    current = new URL(location, current).toString();
+  }
+
+  throw new Error(`Peer request exceeded ${MAX_REDIRECTS} redirects: ${rawUrl}`);
 }
