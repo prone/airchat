@@ -17,6 +17,24 @@ describe('slugifyNoteTarget', () => {
   it('trims leading/trailing hyphens and collapses runs', () => {
     expect(slugifyNoteTarget('-foo--bar-')).toBe('foo-bar');
   });
+
+  // Targets arrive in federated content, so their length is attacker
+  // controlled. The input is capped before any regex runs.
+  it('bounds work on hostile input', () => {
+    const hostile = '-'.repeat(500_000) + 'x';
+    const started = process.hrtime.bigint();
+    const result = slugifyNoteTarget(hostile);
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+
+    expect(elapsedMs).toBeLessThan(50);
+    // Everything inside the cap is hyphens, which trim away to nothing.
+    expect(result).toBeNull();
+  });
+
+  it('still slugifies a long-but-legitimate title', () => {
+    const title = 'A'.repeat(300);
+    expect(slugifyNoteTarget(title)).toBe('a'.repeat(200));
+  });
 });
 
 describe('extractWikiLinks', () => {

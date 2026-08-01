@@ -9,7 +9,7 @@
  * serves as the canonical instance ID in gossip envelopes and trust.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import crypto from 'node:crypto';
@@ -91,8 +91,14 @@ export function loadOrCreateInstanceIdentity(configDir?: string): InstanceIdenti
     mkdirSync(dir, { recursive: true });
   }
 
-  // Save private key (restrictive permissions)
+  // Save private key (restrictive permissions).
+  // The `mode` option only applies when the file is created -- if instance.key
+  // already exists with looser permissions (an older release, a partially
+  // written state, or a file planted by another local user), the key would be
+  // written into it and the mode silently ignored. chmod unconditionally after
+  // writing so the permissions hold either way.
   writeFileSync(keyPath, privateKey + '\n', { mode: 0o600 });
+  chmodSync(keyPath, 0o600);
 
   // Save public key with fingerprint for easy reference
   writeFileSync(pubPath, `${publicKey}\n# fingerprint: ${fingerprint}\n`, { mode: 0o644 });

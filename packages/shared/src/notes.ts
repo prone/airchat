@@ -22,6 +22,14 @@ const WIKI_LINK_RE = /\[\[([^\[\]|#]+)(?:#[^\[\]|]*)?(?:\|[^\[\]]*)?\]\]/g;
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,199}$/;
 
+/**
+ * Cap on the raw target text fed through slugification, so the work is bounded
+ * before any regex sees it. 20x the 200-character slug limit -- generous enough
+ * that no real note title is affected, small enough that a hostile peer cannot
+ * hand us a megabyte to chew on.
+ */
+const MAX_TARGET_INPUT = 4000;
+
 export interface WikiLinkTarget {
   /** Channel name the link addresses, or null for "current channel scope". */
   channel: string | null;
@@ -38,7 +46,17 @@ export interface WikiLinkTarget {
  * Returns null when nothing slug-like remains.
  */
 export function slugifyNoteTarget(segment: string): string | null {
+  // Bound the input before any regex runs. Wiki-link targets arrive in
+  // federated content, so their length is attacker-controlled, and the
+  // truncation below happens after the replaces -- meaning the regexes
+  // previously ran over the full string however long it was.
+  //
+  // Measured, V8 handles these patterns linearly (200k characters in ~0.3ms),
+  // so this is not a live DoS. Bounding the input removes the class of concern
+  // regardless of engine behaviour, at no cost: the cap is 20x the 200-char
+  // output limit, far beyond any real note title.
   const slug = segment
+    .slice(0, MAX_TARGET_INPUT)
     .trim()
     .toLowerCase()
     .replace(/[\s_]+/g, '-')
