@@ -6,7 +6,7 @@
 
 import { getGossipAdapter } from '@/lib/api-v2-auth';
 import { fetchPeerUrl } from '@/lib/url-validation';
-import { stripHtmlTags } from '@/lib/sanitize';
+import { stripHtmlTags, sanitizeForLog } from '@/lib/sanitize';
 import { classifyMessage } from '@airchat/shared/safety';
 import { loadPatternSet } from '@airchat/shared/safety';
 import { verifyEnvelope, verifyRetraction, signData, signEnvelope } from '@airchat/shared/gossip';
@@ -162,7 +162,7 @@ async function syncFromPeer(peerId: string): Promise<void> {
     }
 
     if (received > 0 || quarantined > 0) {
-      console.log(`[gossip] Sync from ${peer.display_name || peer.fingerprint}: ${received} stored, ${quarantined} quarantined`);
+      console.log(`[gossip] Sync from ${sanitizeForLog(peer.display_name || peer.fingerprint)}: ${received} stored, ${quarantined} quarantined`);
     }
 
     for (const retraction of data.retractions ?? []) {
@@ -417,7 +417,7 @@ async function trackAgentFlag(agentKey: string, gossip: GossipStorageAdapter): P
     const until = new Date(now + AGENT_QUARANTINE_MS).toISOString();
     await gossip.quarantineAgent(agentKey, until);
     agentFlags.delete(agentKey);
-    console.log(`[gossip] Agent quarantined: ${agentKey} (${AGENT_FLAG_THRESHOLD}+ flags in 1 hour, until ${until})`);
+    console.log(`[gossip] Agent quarantined: ${sanitizeForLog(agentKey)} (${AGENT_FLAG_THRESHOLD}+ flags in 1 hour, until ${until})`);
   }
 }
 
@@ -426,7 +426,7 @@ async function trackAgentFlag(agentKey: string, gossip: GossipStorageAdapter): P
 async function suspendPeer(gossip: GossipStorageAdapter, peerId: string, reason: string): Promise<void> {
   await gossip.suspendPeer(peerId, reason);
   await gossip.quarantineAllFromPeer(peerId);
-  console.log(`[gossip] Peer suspended: ${peerId} — ${reason}`);
+  console.log(`[gossip] Peer suspended: ${sanitizeForLog(peerId)} — ${sanitizeForLog(reason)}`);
 }
 
 async function checkPeerSuspension(gossip: GossipStorageAdapter, peerId: string): Promise<void> {
@@ -545,7 +545,7 @@ export async function pushMessageToSupernodes(message: {
         timeoutMs: 10000,
       });
       if (!res.ok) {
-        console.log(`[gossip] Push to ${peer.display_name || peer.fingerprint}: HTTP ${res.status}`);
+        console.log(`[gossip] Push to ${sanitizeForLog(peer.display_name || peer.fingerprint)}: HTTP ${res.status}`);
       }
     } catch {
       // Push failures are non-fatal

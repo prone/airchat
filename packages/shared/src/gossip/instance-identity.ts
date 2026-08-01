@@ -13,7 +13,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'f
 import { join } from 'path';
 import { homedir } from 'os';
 import crypto from 'node:crypto';
-import { generateKeypair, hashKey } from '../crypto.js';
+import { generateKeypair, hashKey, derivePublicKey } from '../crypto.js';
 
 export interface InstanceIdentity {
   publicKey: string;    // Ed25519 public key (hex, 64 chars)
@@ -91,13 +91,48 @@ export function loadOrCreateInstanceIdentity(configDir?: string): InstanceIdenti
     mkdirSync(dir, { recursive: true });
   }
 
-  // Save private key (restrictive permissions).
-  // The `mode` option only applies when the file is created -- if instance.key
-  // already exists with looser permissions (an older release, a partially
-  // written state, or a file planted by another local user), the key would be
-  // written into it and the mode silently ignored. chmod unconditionally after
-  // writing so the permissions hold either way.
-  writeFileSync(keyPath, privateKey + '\n', { mode: 0o600 });
+  // Save private key.
+  //
+  // Written with 'wx' (O_CREAT|O_EXCL), which fails rather than writing if the
+  // path already exists. That is what closes the window between the existsSync
+  // above and this write: a plain write would happily follow a symlink planted
+  // at instance.key in the meantime and deposit the private key wherever it
+  // pointed. O_EXCL refuses to follow symlinks outright.
+  //
+  // EEXIST here means the file appeared between the check and now -- either a
+  // concurrent process created a legitimate identity, or something planted a
+  // file. Either way the safe move is to use what is on disk rather than
+  // overwrite it, so we re-read and return that identity instead.
+  //
+  // chmod after writing because `mode` applies only at creation; if the file
+  // somehow pre-existed with looser permissions the mode would be ignored.
+  try {
+    writeFileSync(keyPath, privateKey + '\n', { mode: 0o600, flag: 'wx' });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    const existingPrivate = readFileSync(keyPath, 'utf-8').trim();
+    let existingPublic: string;
+    try {
+      existingPublic = derivePublicKey(existingPrivate);
+    } catch {
+      // Raw crypto errors here read like "asn1 encoding routines::not enough
+      // data", which tells an operator nothing about what actually happened.
+      throw new Error(
+        `Instance key at ${keyPath} appeared during startup but is not a valid ` +
+          `Ed25519 private key (expected 64 hex characters). Refusing to overwrite ` +
+          `it -- inspect the file and remove it if it is not a real identity.`,
+      );
+    }
+    const existingFingerprint = deriveFingerprint(existingPublic);
+    writeFileSync(pubPath, `${existingPublic}\n# fingerprint: ${existingFingerprint}\n`, {
+      mode: 0o644,
+    });
+    return {
+      publicKey: existingPublic,
+      privateKey: existingPrivate,
+      fingerprint: existingFingerprint,
+    };
+  }
   chmodSync(keyPath, 0o600);
 
   // Save public key with fingerprint for easy reference
