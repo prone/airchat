@@ -94,16 +94,40 @@ export interface UrlValidationResult {
  * development, set ALLOW_PRIVATE_PEER_ENDPOINTS=true.
  */
 export async function validatePeerEndpoint(endpoint: string): Promise<UrlValidationResult> {
-  // Allow private endpoints in development
+  // Allow private endpoints in development.
+  //
+  // Development differs only in WHICH addresses are permitted, never in how
+  // the request is made: an address is still resolved and returned so the
+  // caller pins it exactly as in production. Keeping one code path means the
+  // transport being exercised locally is the transport that ships.
+  //
+  // dns.lookup rather than resolve4/resolve6 here because it consults
+  // /etc/hosts, and "localhost" is the whole point of this mode. Production
+  // deliberately uses resolve4/resolve6 so a hosts-file entry cannot redirect
+  // a peer hostname at an internal address.
   if (process.env.ALLOW_PRIVATE_PEER_ENDPOINTS === 'true') {
+    let url: URL;
     try {
-      const url = new URL(endpoint);
-      if (!['http:', 'https:'].includes(url.protocol)) {
-        return { valid: false, error: 'Endpoint must use http:// or https://' };
-      }
-      return { valid: true };
+      url = new URL(endpoint);
     } catch {
       return { valid: false, error: 'Invalid URL' };
+    }
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      return { valid: false, error: 'Endpoint must use http:// or https://' };
+    }
+    const bare = url.hostname.replace(/^\[|\]$/g, '');
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(bare) || bare.includes(':')) {
+      return { valid: true, address: bare, family: bare.includes(':') ? 6 : 4 };
+    }
+    try {
+      const resolved = await dns.lookup(url.hostname);
+      return {
+        valid: true,
+        address: resolved.address,
+        family: resolved.family === 6 ? 6 : 4,
+      };
+    } catch {
+      return { valid: false, error: 'Endpoint hostname could not be resolved' };
     }
   }
 
@@ -279,15 +303,19 @@ export async function fetchPeerUrl(
       throw new Error(`Blocked peer request to ${current}: ${check.error}`);
     }
 
-    // No address means ALLOW_PRIVATE_PEER_ENDPOINTS is on and nothing was
-    // resolved, so there is nothing to pin. That path is development only.
-    const res = check.address
-      ? await requestPinned(current, check.address, check.family ?? 4, requestInit, timeoutMs)
-      : await fetch(current, {
-          ...requestInit,
-          redirect: 'manual',
-          signal: AbortSignal.timeout(timeoutMs),
-        });
+    // Every accepted endpoint carries a validated address, including in
+    // development mode, so there is exactly one transport and no unpinned
+    // fallback path.
+    if (!check.address) {
+      throw new Error(`Blocked peer request to ${current}: no validated address`);
+    }
+    const res = await requestPinned(
+      current,
+      check.address,
+      check.family ?? 4,
+      requestInit,
+      timeoutMs,
+    );
 
     if (res.status < 300 || res.status > 399) return res;
 

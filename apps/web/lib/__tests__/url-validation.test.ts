@@ -6,6 +6,8 @@ vi.mock('dns/promises', () => ({
   default: {
     resolve4: vi.fn(async () => [] as string[]),
     resolve6: vi.fn(async () => [] as string[]),
+    // Only used by ALLOW_PRIVATE_PEER_ENDPOINTS mode, which needs /etc/hosts.
+    lookup: vi.fn(async () => ({ address: '127.0.0.1', family: 4 })),
   },
 }));
 
@@ -158,7 +160,26 @@ describe('validatePeerEndpoint', () => {
 
   it('allows private endpoints when ALLOW_PRIVATE_PEER_ENDPOINTS is set', async () => {
     process.env.ALLOW_PRIVATE_PEER_ENDPOINTS = 'true';
-    expect(await validatePeerEndpoint('http://127.0.0.1:3003')).toEqual({ valid: true });
+    expect(await validatePeerEndpoint('http://127.0.0.1:3003')).toEqual({
+      valid: true,
+      address: '127.0.0.1',
+      family: 4,
+    });
+  });
+
+  // Development mode differs only in which addresses are allowed -- it still
+  // returns an address, so the caller pins exactly as it does in production
+  // and there is no unpinned transport anywhere.
+  it('still returns an address to pin in development mode', async () => {
+    process.env.ALLOW_PRIVATE_PEER_ENDPOINTS = 'true';
+    const res = await validatePeerEndpoint('http://localhost:3003');
+    expect(res.valid).toBe(true);
+    expect(res.address).toBe('127.0.0.1');
+  });
+
+  it('rejects a non-http protocol even in development mode', async () => {
+    process.env.ALLOW_PRIVATE_PEER_ENDPOINTS = 'true';
+    expect((await validatePeerEndpoint('file:///etc/passwd')).valid).toBe(false);
   });
 });
 
