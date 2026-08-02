@@ -24,6 +24,17 @@ jobs:
       - name: Check RLS on all tables
         run: bash scripts/check-rls.sh
 
+      # Anything tracked in a published directory is served on airchat.work,
+      # whether or not a page links to it. Ten internal files went out that way
+      # for four and a half months because nothing checked. This runs before the
+      # build so a leak fails fast, and it needs no dependencies.
+      #
+      # To publish something this flags, add an entry with a reason to
+      # .leakcheck-allow.json. That requires a PR to main, which has no bypass
+      # actors — so the decision is recorded, not waved through.
+      - name: Check published content for leaks
+        run: node scripts/check-site-leaks.mjs
+
       # `npm audit fix --force` can resolve an advisory by moving a dependency
       # backwards (it once proposed next@9.3.3 over a transitive sharp CVE).
       # Fail the PR rather than let a downgrade land as "a dependency change".
