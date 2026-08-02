@@ -1,0 +1,29 @@
+# Keep the build context free of anything the image should not depend on.
+#
+# node_modules matters most: without this, a local `docker build` sweeps in the
+# developer's installed tree, and the build can succeed for reasons that do not
+# exist on a clean checkout. That happened — a local build passed only because
+# it picked up a nested zod 3 from the host, while the NAS build failed, since
+# its deploy directory only ever receives source. Excluding it here forces every
+# build to depend solely on `npm ci` output, so local and remote agree.
+**/node_modules
+
+# Build output — regenerated inside the image.
+**/dist
+**/.next
+**/.turbo
+
+# Never ship secrets or local state into a layer.
+.env
+.env.*
+!.env.example
+**/.claude
+.git
+.github
+
+# Noise.
+**/.DS_Store
+**/*.log
+**/coverage
+**/.vscode
+**/.idea

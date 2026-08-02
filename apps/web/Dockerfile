@@ -25,9 +25,17 @@ RUN npx tsc -p packages/shared/tsconfig.json
 FROM base AS mcp
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
+# The root tree has zod 4 (via vitest/vite); mcp-server pins zod 3, so npm ci
+# nests a copy under the package. tsc resolves that nested one, and it must
+# survive — zod 4 changed z.record() to require two arguments, so building
+# against the root copy fails with TS2554 on every z.record() call.
+COPY --from=deps /app/packages/mcp-server/node_modules packages/mcp-server/node_modules
 COPY --from=shared /app/packages/shared/dist packages/shared/dist
 COPY packages/shared/package.json packages/shared/
-COPY packages/mcp-server packages/mcp-server
+# Copy the sources individually rather than the whole directory: a directory
+# COPY would overwrite the node_modules restored just above.
+COPY packages/mcp-server/src packages/mcp-server/src
+COPY packages/mcp-server/package.json packages/mcp-server/tsconfig.json packages/mcp-server/
 COPY tsconfig.base.json ./
 RUN npx tsc -p packages/mcp-server/tsconfig.json
 
