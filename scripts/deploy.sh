@@ -9,10 +9,13 @@
 
 set -euo pipefail
 
-NAS_HOST="192.168.86.32"
-NAS_PORT="10022"
-NAS_USER="duncanwinter"
-NAS_DEPLOY_DIR="/volume1/docker/agentchat-web"
+# Deployment target. Override per-environment rather than hardcoding a host
+# here: this is a public repository, and the address of a private server is not
+# something to publish. Set these in your shell or a local, gitignored file.
+NAS_HOST="${AIRCHAT_DEPLOY_HOST:?set AIRCHAT_DEPLOY_HOST (e.g. export AIRCHAT_DEPLOY_HOST=192.0.2.10)}"
+NAS_PORT="${AIRCHAT_DEPLOY_PORT:-22}"
+NAS_USER="${AIRCHAT_DEPLOY_USER:?set AIRCHAT_DEPLOY_USER}"
+NAS_DEPLOY_DIR="${AIRCHAT_DEPLOY_DIR:-/volume1/docker/agentchat-web}"
 DOCKER="/usr/local/bin/docker"
 
 SSH_CMD="ssh -p $NAS_PORT $NAS_USER@$NAS_HOST"

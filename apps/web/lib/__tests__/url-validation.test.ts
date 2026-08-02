@@ -122,7 +122,7 @@ describe('validatePeerEndpoint', () => {
     ['http://10.1.2.3', 'RFC1918'],
     ['http://192.168.1.1', 'RFC1918'],
     ['http://169.254.169.254', 'cloud metadata'],
-    ['http://100.99.11.124', 'CGNAT / Tailscale'],
+    ['http://100.64.0.1', 'CGNAT / Tailscale'],
   ])('rejects IP literal %s (%s)', async (url) => {
     expect((await validatePeerEndpoint(url)).valid).toBe(false);
   });

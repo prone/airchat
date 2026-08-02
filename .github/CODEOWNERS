@@ -1,0 +1,10 @@
+# Changing these files changes what this repository publishes, or removes a
+# control that decides. They require review from the repository owner.
+#
+# main is protected with no bypass actors, so the leak check cannot be skipped —
+# the only way past a finding is an allowlist entry, and that lands here.
+
+/.leakcheck-allow.json          @prone
+/scripts/check-site-leaks.mjs   @prone
+/.github/workflows/             @prone
+/site/                          @prone

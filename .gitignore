@@ -37,3 +37,12 @@ apps/web/public/logo-240.svg
 .claude/settings.local.json
 .claude/projects/
 .claude/worktrees/
+
+# Working files that live in the publish root but must never be published.
+# scripts/check-site-leaks.mjs reports anything here that is not ignored.
+docs/gossip-layer-whitepaper.md
+docs/gossip-layer-whitepaper.pdf
+docs/gossip-decisions-summary.pdf
+docs/auth-rewrite-plan.pdf
+docs/generate-pdf.py
+docs/generate-gossip-decisions-pdf.py
