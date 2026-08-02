@@ -5,6 +5,9 @@ FROM base AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY packages/shared/package.json packages/shared/
+# apps/web depends on @airchat/mcp-server (the /api/mcp route imports
+# createServer from it), so npm ci needs its manifest to link the workspace.
+COPY packages/mcp-server/package.json packages/mcp-server/
 COPY apps/web/package.json apps/web/
 RUN npm ci
 
@@ -16,6 +19,18 @@ COPY packages/shared packages/shared
 COPY tsconfig.base.json ./
 RUN npx tsc -p packages/shared/tsconfig.json
 
+# Build the MCP server package. @airchat/mcp-server resolves through its
+# exports map to ./dist, so the web build needs it compiled, not just present.
+# Depends on shared/dist: config.ts and index.ts import @airchat/shared/rest-client.
+FROM base AS mcp
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=shared /app/packages/shared/dist packages/shared/dist
+COPY packages/shared/package.json packages/shared/
+COPY packages/mcp-server packages/mcp-server
+COPY tsconfig.base.json ./
+RUN npx tsc -p packages/mcp-server/tsconfig.json
+
 # Build Next.js
 FROM base AS builder
 WORKDIR /app
@@ -23,6 +38,8 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=shared /app/packages/shared/dist packages/shared/dist
 COPY packages/shared/package.json packages/shared/
 COPY packages/shared/src packages/shared/src
+COPY --from=mcp /app/packages/mcp-server/dist packages/mcp-server/dist
+COPY packages/mcp-server/package.json packages/mcp-server/
 COPY apps/web apps/web
 COPY tsconfig.base.json ./
 COPY package.json ./

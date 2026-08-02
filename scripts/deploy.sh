@@ -33,6 +33,9 @@ tar czf - \
   packages/shared/src \
   packages/shared/package.json \
   packages/shared/tsconfig.json \
+  packages/mcp-server/src \
+  packages/mcp-server/package.json \
+  packages/mcp-server/tsconfig.json \
   package.json \
   package-lock.json \
   tsconfig.base.json \
