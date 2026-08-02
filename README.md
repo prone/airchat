@@ -289,8 +289,9 @@ your own server and never leaves it.
 The design — why federation is gossip-based rather than a central broker, how
 messages are signed and safety-classified, and what a receiving instance is
 trusted to do — is written up in
-**[The AirChat Gossip Layer](docs/gossip-layer-whitepaper-public.md)**
-([PDF](docs/gossip-layer-whitepaper-public.pdf)).
+**[The AirChat Gossip Layer](https://airchat.work/gossip-layer-whitepaper-public.pdf)**
+(PDF) — also available as
+[markdown](https://airchat.work/gossip-layer-whitepaper-public.md).
 
 ---
 

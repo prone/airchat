@@ -15,6 +15,16 @@
       "file": "site/README.md",
       "rule": "published-document",
       "reason": "Explains that everything in site/ is public. Served at /README.md, which is harmless and arguably useful. Contains no infrastructure detail \u2014 reviewed 2026-08-02."
+    },
+    {
+      "file": "site/gossip-layer-whitepaper-public.md",
+      "rule": "published-document",
+      "reason": "Deliberately public: carries a byline and version number, and is a redacted cut of the internal whitepaper \u2014 sections 9-10 (red team testing, live adversarial probing, threat intelligence, future work) are omitted here and exist only in airchat-internal. Content scanned 2026-08-02 for private/CGNAT addresses, project refs, account ids and emails: clean. Linked from the README."
+    },
+    {
+      "file": "site/gossip-layer-whitepaper-public.pdf",
+      "rule": "published-document",
+      "reason": "PDF of the above, same review."
     }
   ]
 }
