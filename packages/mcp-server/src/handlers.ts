@@ -1,4 +1,4 @@
-import { AirChatRestClient } from '@airchat/shared/rest-client';
+import type { AirChatToolClient } from './client.js';
 import { getProjectName } from './utils.js';
 
 const MAX_CONTENT_LENGTH = 500;
@@ -13,16 +13,16 @@ function getMessageMetadata(): Record<string, unknown> {
   return project ? { project } : {};
 }
 
-export async function checkBoard(client: AirChatRestClient) {
+export async function checkBoard(client: AirChatToolClient) {
   return client.checkBoard();
 }
 
-export async function listChannels(client: AirChatRestClient, type?: string) {
+export async function listChannels(client: AirChatToolClient, type?: string) {
   return client.listChannels(type);
 }
 
 export async function readMessages(
-  client: AirChatRestClient,
+  client: AirChatToolClient,
   channelName: string,
   limit?: number,
   before?: string,
@@ -44,7 +44,7 @@ export async function readMessages(
 }
 
 export async function sendMessage(
-  client: AirChatRestClient,
+  client: AirChatToolClient,
   channelName: string,
   content: string,
   parentMessageId?: string,
@@ -54,7 +54,7 @@ export async function sendMessage(
 }
 
 export async function searchMessages(
-  client: AirChatRestClient,
+  client: AirChatToolClient,
   queryText: string,
   channelName?: string,
 ) {
@@ -75,7 +75,7 @@ export async function searchMessages(
 }
 
 export async function checkMentions(
-  client: AirChatRestClient,
+  client: AirChatToolClient,
   onlyUnread?: boolean,
   limit?: number,
 ) {
@@ -83,14 +83,14 @@ export async function checkMentions(
 }
 
 export async function markMentionsRead(
-  client: AirChatRestClient,
+  client: AirChatToolClient,
   mentionIds: string[],
 ) {
   return client.markMentionsRead(mentionIds);
 }
 
 export async function sendDirectMessage(
-  client: AirChatRestClient,
+  client: AirChatToolClient,
   targetAgentName: string,
   content: string,
 ) {
@@ -98,14 +98,14 @@ export async function sendDirectMessage(
 }
 
 export async function getFileUrl(
-  client: AirChatRestClient,
+  client: AirChatToolClient,
   filePath: string,
 ) {
   return client.getFileUrl(filePath);
 }
 
 export async function downloadFile(
-  client: AirChatRestClient,
+  client: AirChatToolClient,
   filePath: string,
 ) {
   return client.downloadFile(filePath);
@@ -124,7 +124,7 @@ function truncateNote(text: string, full?: boolean): { body_md: string; truncate
 }
 
 export async function readNote(
-  client: AirChatRestClient,
+  client: AirChatToolClient,
   slug: string,
   channel?: string,
   revision?: number,
@@ -155,7 +155,7 @@ export async function readNote(
 }
 
 export async function writeNote(
-  client: AirChatRestClient,
+  client: AirChatToolClient,
   slug: string,
   title: string,
   bodyMd: string,
@@ -176,7 +176,7 @@ export async function writeNote(
 }
 
 export async function listNotes(
-  client: AirChatRestClient,
+  client: AirChatToolClient,
   channel?: string,
   query?: string,
   limit?: number,
@@ -186,7 +186,7 @@ export async function listNotes(
 }
 
 export async function getBacklinks(
-  client: AirChatRestClient,
+  client: AirChatToolClient,
   slug: string,
   channel?: string,
 ) {
@@ -194,7 +194,7 @@ export async function getBacklinks(
 }
 
 export async function queryNotes(
-  client: AirChatRestClient,
+  client: AirChatToolClient,
   channel?: string,
   properties?: Record<string, unknown>,
   updatedSince?: string,
@@ -204,7 +204,7 @@ export async function queryNotes(
 }
 
 export async function summarizeChannel(
-  client: AirChatRestClient,
+  client: AirChatToolClient,
   channel: string,
   windowDays?: number,
   kind?: 'activity' | 'project',
@@ -213,7 +213,7 @@ export async function summarizeChannel(
 }
 
 export async function promoteThreadToNote(
-  client: AirChatRestClient,
+  client: AirChatToolClient,
   channel: string,
   threadRootMessageId: string,
   slug: string,
@@ -236,7 +236,7 @@ export async function promoteThreadToNote(
 }
 
 export async function uploadFile(
-  client: AirChatRestClient,
+  client: AirChatToolClient,
   filename: string,
   content: string,
   channel: string,

@@ -14,7 +14,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { AirChatRestClient } from '@airchat/shared/rest-client';
+import type { AirChatToolClient } from './client.js';
 import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, markMentionsRead, sendDirectMessage, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel } from './handlers.js';
 import { sanitizeError } from './utils.js';
 import type { ConfigDiagnostic } from './config.js';
@@ -48,6 +48,41 @@ export const CONNECTED_TOOL_NAMES = [
 ] as const;
 
 export const ALL_TOOL_NAMES = [...BASE_TOOL_NAMES, ...CONNECTED_TOOL_NAMES] as const;
+
+/**
+ * The tool surface exposed to the claude.ai connector over /api/mcp.
+ *
+ * Narrower than the stdio surface, for three reasons:
+ *
+ * - Nine reads plus two writes cover the stated use case (ask an agent what a
+ *   teammate has been working on, read and update the wiki). Files, mentions
+ *   and DMs do not serve it and each one is extra attack surface reachable from
+ *   a public endpoint.
+ * - Fewer tools means less tool-description context burned on every request.
+ * - The two writes are here because posting was explicitly approved. They are
+ *   also why connector-written content must be source-marked: content authored
+ *   by a human through claude.ai has to stay distinguishable from content an
+ *   agent wrote.
+ *
+ * `airchat_doctor` is deliberately absent — it reports on the *server's* local
+ * config, which is meaningless to a remote connector and would leak host paths.
+ */
+export const MCP_CONNECTOR_V1_TOOLS = [
+  'airchat_help',
+  // Reads
+  'check_board',
+  'list_channels',
+  'read_messages',
+  'search_messages',
+  'summarize_channel',
+  'read_note',
+  'list_notes',
+  'query_notes',
+  'get_backlinks',
+  // Writes
+  'send_message',
+  'write_note',
+] as const;
 
 export type ToolName = (typeof ALL_TOOL_NAMES)[number];
 
@@ -91,7 +126,7 @@ const NO_DIAGNOSTICS_PROVIDER: ConfigDiagnostic = {
  * are registered, which is what a user with missing or broken config gets.
  */
 export function createServer(
-  client: AirChatRestClient | null,
+  client: AirChatToolClient | null,
   options: CreateServerOptions = {},
 ): McpServer {
   const { tools, notices = [], runDiagnostics, name = 'airchat', version = '0.1.0' } = options;

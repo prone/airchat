@@ -150,6 +150,25 @@ export interface Mention {
   created_at: string;
 }
 
+/**
+ * A bearer credential for the claude.ai MCP connector.
+ *
+ * Deliberately not the agent's derived key: connector tokens are checked only
+ * by /api/mcp and by nothing under /api/v2, which is what audience-binds them.
+ * `token_hash` is SHA256 of the plaintext; the plaintext exists only at
+ * issuance and is never stored.
+ */
+export interface ConnectorToken {
+  id: string;
+  agent_id: string;
+  token_hash: string;
+  name: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+  last_used_at: string | null;
+  created_at: string;
+}
+
 export interface Database {
   public: {
     Tables: {
