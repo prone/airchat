@@ -153,7 +153,7 @@ export async function POST(request: NextRequest) {
   //    Handled inside adapter.registerAgent() — throws 'CONFLICT:...' if
   //    the agent name is owned by a different machine.
 
-  // 10. Check per-machine agent cap (50)
+  // 10. Check per-machine agent cap (500)
   try {
     const agentCount = await adapter.countAgentsByMachine(machine.id);
     if (agentCount >= MAX_AGENTS_PER_MACHINE) {
