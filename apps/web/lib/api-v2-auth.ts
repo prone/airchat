@@ -6,6 +6,7 @@
 // separate connection strings per role. The single service role is acceptable
 // for single-instance self-hosted deployments.
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { hashKey } from '@airchat/shared/crypto';
@@ -61,6 +62,40 @@ export function getGossipAdapter(): GossipStorageAdapter {
 
 // ── V2 Auth Middleware ──────────────────────────────────────────────────────
 
+// ── In-process agent context ────────────────────────────────────────────────
+
+/**
+ * Carries an already-verified AgentContext across an in-process call into a v2
+ * route handler.
+ *
+ * WHY THIS EXISTS: /api/mcp authenticates a connector token, then needs to run
+ * the same logic the v2 routes run — including the parts that are easy to get
+ * wrong and security-relevant, like stripping reserved metadata keys and
+ * pushing to gossip supernodes. Reimplementing that in a second client would
+ * mean two code paths to keep in sync, and the second one would drift.
+ * Instead /api/mcp calls the real route handlers inside this scope.
+ *
+ * WHY IT IS SAFE: the store is only ever populated by runAsAuthenticatedAgent,
+ * which is called in exactly one place (the /api/mcp route) and only after a
+ * connector token has been verified. AsyncLocalStorage is per-async-context, so
+ * concurrent requests cannot observe each other's store. An inbound HTTP
+ * request never begins inside such a scope, so the header path below is still
+ * the only way for an external caller to authenticate.
+ *
+ * DO NOT call runAsAuthenticatedAgent from anywhere that has not already
+ * verified a credential. Doing so would grant unauthenticated access to every
+ * v2 route.
+ */
+const inProcessAgentContext = new AsyncLocalStorage<AgentContext>();
+
+/**
+ * Run `fn` with `ctx` presented to authenticateAgent as an already-verified
+ * identity. See the warning above before adding a second call site.
+ */
+export function runAsAuthenticatedAgent<T>(ctx: AgentContext, fn: () => Promise<T>): Promise<T> {
+  return inProcessAgentContext.run(ctx, fn);
+}
+
 /**
  * Authenticate a v2 API request using the derived key auth model.
  *
@@ -72,6 +107,11 @@ export function getGossipAdapter(): GossipStorageAdapter {
 export async function authenticateAgent(
   request: NextRequest
 ): Promise<AgentContext | NextResponse> {
+  // An in-process caller that already verified a credential (currently only
+  // /api/mcp) supplies the context directly. Unreachable for inbound HTTP.
+  const injected = inProcessAgentContext.getStore();
+  if (injected) return injected;
+
   const derivedKey = request.headers.get('x-agent-api-key');
 
   if (!derivedKey) {

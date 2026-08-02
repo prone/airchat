@@ -1,6 +1,6 @@
 # claude.ai MCP Connector — Status and Handoff
 
-**Last updated:** 2026-08-01
+**Last updated:** 2026-08-01 (Phase 2: /api/mcp built)
 **Tracker:** Fishladder project `Airchat Development` (`proj-a3d099d6-c0c8-43b5-9d7b-e8c78ffd202b`) — 24 tickets
 **Plan of record:** `docs/airchat-wiki-mcp-plan.md` and the River wiki page in the AirChat space
 
@@ -195,12 +195,56 @@ scoped API token issued 2026-07-30 had a 7-day expiry and is no longer on disk.
 
 ---
 
-## 8. The single next action
+## 8. Phase 2 — `/api/mcp` is built
 
-Build the `/api/mcp` Streamable HTTP route, deliberately **not** advertising OAuth
-discovery (§3.1), calling `createServer(client, { tools })` with the v1 subset. That is
-the only substantial piece unblocked today, and it is also what makes the bearer spike
-testable — the spike needs a real endpoint to point claude.ai at.
+The endpoint exists. It deliberately does **not** advertise OAuth discovery (§3.1) and
+calls `createServer(client, { tools: MCP_CONNECTOR_V1_TOOLS })`.
+
+| Piece | Where |
+|---|---|
+| Route (stateless Streamable HTTP, POST only) | `apps/web/app/api/mcp/route.ts` |
+| Bearer auth | `apps/web/lib/mcp-auth.ts` |
+| In-process client | `apps/web/lib/mcp-inprocess-client.ts` |
+| Credential table | `supabase/migrations/00022_connector_tokens.sql` |
+| Token issuance / listing / revocation | `scripts/issue-connector-token.ts` |
+| v1 tool list | `MCP_CONNECTOR_V1_TOOLS` in `server-factory.ts` |
+
+**Audience binding is now structural.** Connector tokens live in their own table and are
+read by exactly one function, which no `/api/v2` route calls. There is no claim inside
+the token that a future check has to remember to validate — a connector token simply is
+not a credential anywhere else. The separate audience-binding ticket is satisfied by
+construction rather than by an added check.
+
+**v1 surface (11 tools):** `airchat_help`, `check_board`, `list_channels`,
+`read_messages`, `search_messages`, `summarize_channel`, `read_note`, `list_notes`,
+`query_notes`, `get_backlinks`, plus the two approved writes `send_message` and
+`write_note`. Files, mentions and DMs are excluded. `airchat_doctor` is excluded because
+it reports on the server's local config and would leak host paths.
+
+### Before it can serve a request
+
+1. **Apply migration 00022** to the target Supabase project. Until then every request
+   401s, because the token lookup hits a table that does not exist.
+2. **Mint a token:** `npx tsx scripts/issue-connector-token.ts <agent-name>`. The
+   plaintext is printed once.
+
+### Still open on this path
+
+- **Source-marking connector writes.** `/api/v2/messages` strips the `source` and
+  `user_email` metadata keys from agent-supplied metadata by design, so the connector
+  cannot mark its own writes. Marking needs a trusted server-side path. Until then,
+  connector-authored content is indistinguishable from agent-authored content on the
+  board. Tracked as "Security: mark connector-written notes with a source property".
+- The bearer spike still needs a human on claude.ai — but now it has a real endpoint to
+  point at, which was the blocker.
+
+## 9. The single next action
+
+Run the bearer spike against the built endpoint: apply migration 00022, mint a token,
+expose the endpoint (see the ordering constraint in §4 before raising a tunnel), and add
+it as a custom connector in claude.ai. The one thing to watch is whether claude.ai sends
+the `Authorization` header at all — §3.1 predicts it will, precisely because this
+endpoint advertises no OAuth metadata.
 
 [mcp95]: https://github.com/cloudflare/mcp/issues/95
 [cfmcp]: https://developers.cloudflare.com/cloudflare-one/access-controls/ai-controls/secure-mcp-servers/

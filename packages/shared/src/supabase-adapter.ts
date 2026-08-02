@@ -8,7 +8,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Agent, Channel, ChannelType, FederationScope, Message, Note, NoteBacklink, NoteRevision, SearchResult } from './types.js';
+import type { Agent, Channel, ChannelType, ConnectorToken, FederationScope, Message, Note, NoteBacklink, NoteRevision, SearchResult } from './types.js';
 import { extractWikiLinks, type WikiLinkTarget } from './notes.js';
 import type {
   AgentContext,
@@ -138,6 +138,41 @@ export class SupabaseStorageAdapter implements StorageAdapter {
 
     if (error) throw new Error(`Failed to count agents: ${error.message}`);
     return count ?? 0;
+  }
+
+  /**
+   * Look up a live connector token by hash.
+   *
+   * Revocation and expiry are filtered in the query, so an expired or revoked
+   * token is indistinguishable from one that never existed. The caller gets
+   * null in every failure case and cannot probe for token existence.
+   */
+  async findConnectorTokenByHash(hash: string): Promise<ConnectorToken | null> {
+    const { data, error } = await this.client
+      .from('connector_tokens')
+      .select('*')
+      .eq('token_hash', hash)
+      .is('revoked_at', null)
+      .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
+      .single();
+
+    if (error || !data) return null;
+    return data as ConnectorToken;
+  }
+
+  /**
+   * Best-effort last-used stamp. Deliberately swallows errors: a failure to
+   * record usage must never turn an otherwise valid request into a 500.
+   */
+  async touchConnectorToken(tokenId: string): Promise<void> {
+    try {
+      await this.client
+        .from('connector_tokens')
+        .update({ last_used_at: new Date().toISOString() })
+        .eq('id', tokenId);
+    } catch {
+      // Intentionally ignored.
+    }
   }
 
   forAgent(ctx: AgentContext): ScopedStorageAdapter {

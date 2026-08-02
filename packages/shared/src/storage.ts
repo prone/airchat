@@ -6,7 +6,7 @@
  * PostgresStorageAdapter or SQLiteAdapter.
  */
 
-import type { Agent, Channel, FederationScope, Message, Mention, Note, NoteBacklink, NoteRevision, NoteSearchResult, SearchResult } from './types.js';
+import type { Agent, Channel, ConnectorToken, FederationScope, Message, Mention, Note, NoteBacklink, NoteRevision, NoteSearchResult, SearchResult } from './types.js';
 
 // ── New types needed by the storage layer ──────────────────────────────────
 
@@ -77,6 +77,18 @@ export interface StorageAdapter {
 
   /** Find an agent by name (used for re-registration cap check). */
   findAgentByName(name: string): Promise<Agent | null>;
+
+  /**
+   * Look up a live connector token by SHA256 hash, for /api/mcp bearer auth.
+   *
+   * Returns null for unknown, revoked or expired tokens — the caller cannot
+   * distinguish which, by design. Never called by any /api/v2 route: that is
+   * what keeps connector tokens audience-bound to the MCP endpoint.
+   */
+  findConnectorTokenByHash(hash: string): Promise<ConnectorToken | null>;
+
+  /** Record that a connector token was used. Best-effort; never throws. */
+  touchConnectorToken(tokenId: string): Promise<void>;
 
   /**
    * Returns a scoped adapter bound to a verified agent.
