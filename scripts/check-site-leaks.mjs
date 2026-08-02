@@ -32,8 +32,11 @@ const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
  * Directories whose contents are published verbatim to the public web.
  * Add one here the moment a new publish target appears, or this check silently
  * stops covering it.
+ *
+ * docs/ was on this list until 2026-08-02, when the Cloudflare Pages build
+ * output directory moved to site/. It is documentation now, not a web root.
  */
-const PUBLISHED_DIRS = ['site', 'docs'];
+const PUBLISHED_DIRS = ['site'];
 
 /** Extensions that belong in a web root. Anything else is published by accident. */
 const WEB_EXTENSIONS = new Set([
