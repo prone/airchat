@@ -43,6 +43,27 @@ const INTERNAL_ORIGIN = 'http://mcp.internal';
  */
 const CONNECTOR_SOURCE = 'claude.ai';
 
+/**
+ * Writes to federated channels are refused from the connector.
+ *
+ * `gossip-*` propagates through supernodes to other people's instances, and
+ * `shared-*` syncs to direct peers. A leaked connector token posting there
+ * becomes a spam and prompt-injection vector into someone else's board,
+ * attributed to this instance — a far worse outcome than anything it can do
+ * locally. A person in claude.ai has no reason to broadcast to the network.
+ *
+ * Reads are unaffected: asking what a shared channel's notes say is a primary
+ * use case for the connector.
+ */
+function assertNotFederated(channel: string, tool: string): void {
+  if (channel.startsWith('gossip-') || channel.startsWith('shared-')) {
+    throw new Error(
+      `${tool} is not permitted on federated channels through the AirChat connector. ` +
+      `"${channel}" syncs to other instances; post from an agent instead.`,
+    );
+  }
+}
+
 type RouteHandler = (request: NextRequest) => Promise<NextResponse | Response>;
 
 export class InProcessToolClient implements AirChatToolClient {
@@ -128,12 +149,16 @@ export class InProcessToolClient implements AirChatToolClient {
    * stamps `source` from that. It is deliberately not passed in the body, which
    * /api/v2/messages strips so agents cannot spoof the human/agent distinction.
    */
-  sendMessage(
+  // async so the federated-channel guard surfaces as a rejection. These return
+  // Promise<unknown>; a synchronous throw would force callers to use both
+  // try/catch and .catch(), and the MCP handler only does one of those.
+  async sendMessage(
     channelName: string,
     content: string,
     parentMessageId?: string,
     metadata?: Record<string, unknown>,
   ): Promise<unknown> {
+    assertNotFederated(channelName, 'send_message');
     // `project` is dropped for the reason above. `source` and `user_email` are
     // dropped because they are server-assigned: the route strips them from any
     // body anyway, and this path should not forward a key it knows to be
@@ -169,7 +194,7 @@ export class InProcessToolClient implements AirChatToolClient {
     return this.get(notesGET, '/api/v2/notes', params);
   }
 
-  writeNote(input: {
+  async writeNote(input: {
     channel: string | null;
     slug: string;
     title: string;
@@ -178,6 +203,7 @@ export class InProcessToolClient implements AirChatToolClient {
     protect?: boolean;
     expected_revision?: number;
   }): Promise<unknown> {
+    if (input.channel) assertNotFederated(input.channel, 'write_note');
     return this.post(notesPOST, '/api/v2/notes', input);
   }
 

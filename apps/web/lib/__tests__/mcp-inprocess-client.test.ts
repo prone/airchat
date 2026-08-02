@@ -47,7 +47,7 @@ vi.mock('@/app/api/v2/notes/backlinks/route', () => ({ GET: backlinksGET }));
 vi.mock('@/app/api/v2/channels/summarize/route', () => ({ POST: summarizePOST }));
 
 const runAsAuthenticatedAgent = vi.fn(
-  <T,>(_ctx: unknown, fn: () => Promise<T>): Promise<T> => fn(),
+  (...args: [unknown, () => Promise<unknown>, (string | undefined)?]) => args[1](),
 );
 vi.mock('@/lib/api-v2-auth', () => ({ runAsAuthenticatedAgent }));
 
@@ -176,6 +176,52 @@ describe('InProcessToolClient — error propagation', () => {
   });
 });
 
+/**
+ * gossip-* propagates through supernodes to other people's instances and
+ * shared-* syncs to direct peers, so a leaked connector token posting there
+ * becomes someone else's problem, attributed to this instance. Reads stay open:
+ * asking what a shared channel's notes say is a primary use case.
+ */
+describe('InProcessToolClient — federated channels are read-only', () => {
+  it('refuses to post to a gossip channel', async () => {
+    await expect(client.sendMessage('gossip-ai', 'hello network'))
+      .rejects.toThrow(/not permitted on federated channels/);
+    expect(messagesPOST).not.toHaveBeenCalled();
+  });
+
+  it('refuses to post to a shared channel', async () => {
+    await expect(client.sendMessage('shared-team', 'hello peers'))
+      .rejects.toThrow(/not permitted on federated channels/);
+    expect(messagesPOST).not.toHaveBeenCalled();
+  });
+
+  it('refuses to write a note scoped to a federated channel', async () => {
+    await expect(client.writeNote({
+      channel: 'gossip-ai', slug: 'n', title: 'T', body_md: 'B',
+    })).rejects.toThrow(/not permitted on federated channels/);
+    expect(notesPOST).not.toHaveBeenCalled();
+  });
+
+  it('still allows posting to a local channel', async () => {
+    await client.sendMessage('project-airchat', 'hello');
+    expect(messagesPOST).toHaveBeenCalledOnce();
+  });
+
+  it('still allows READING federated channels', async () => {
+    await client.readMessages('shared-team');
+    await client.listNotes({ channel: 'gossip-ai' });
+    await client.readNote('shared-team', 'runbook');
+    expect(messagesGET).toHaveBeenCalledOnce();
+    expect(notesGET).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not block a channel merely containing the word shared or gossip', async () => {
+    await client.sendMessage('project-shared-notes', 'hi');
+    await client.sendMessage('team-gossip', 'hi');
+    expect(messagesPOST).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('InProcessToolClient — tools outside the v1 surface', () => {
   it('refuses rather than half-working', () => {
     // Only the file tools remain outside v1; messaging was added once the
@@ -223,7 +269,7 @@ describe('InProcessToolClient — trusted origin marking', () => {
     await client.sendMessage('general', 'hello');
     // 3rd argument to runAsAuthenticatedAgent is the trusted source. It is not
     // sent in the body — the route stamps it, so it cannot be spoofed.
-    expect(runAsAuthenticatedAgent.mock.calls[0][2]).toBe('claude.ai');
+    expect(runAsAuthenticatedAgent.mock.calls[0]?.[2]).toBe('claude.ai');
   });
 
   it('never puts source in the request body', async () => {

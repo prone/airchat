@@ -26,7 +26,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { createServer, MCP_CONNECTOR_V1_TOOLS } from '@airchat/mcp-server/server-factory';
+import { createServer, connectorToolsForScope } from '@airchat/mcp-server/server-factory';
 import { authenticateConnector, isConnectorAuthError } from '@/lib/mcp-auth';
 import { InProcessToolClient } from '@/lib/mcp-inprocess-client';
 import { sanitizeForLog } from '@/lib/sanitize';
@@ -42,7 +42,9 @@ export async function POST(request: NextRequest) {
 
   const client = new InProcessToolClient(auth.ctx);
   const server = createServer(client, {
-    tools: MCP_CONNECTOR_V1_TOOLS,
+    // A read-only token never gets the write tools registered at all, so they
+    // are not merely refused — they do not exist on its server.
+    tools: connectorToolsForScope(auth.scope),
     // The connector is a remote client; local-config diagnostics do not apply
     // and airchat_doctor is not in the v1 surface anyway.
     notices: [],

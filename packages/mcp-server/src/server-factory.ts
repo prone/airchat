@@ -69,9 +69,8 @@ export const ALL_TOOL_NAMES = [...BASE_TOOL_NAMES, ...CONNECTED_TOOL_NAMES] as c
  * `airchat_doctor` is deliberately absent — it reports on the *server's* local
  * config, which is meaningless to a remote connector and would leak host paths.
  */
-export const MCP_CONNECTOR_V1_TOOLS = [
+export const MCP_CONNECTOR_READ_TOOLS = [
   'airchat_help',
-  // Reads
   'check_board',
   'list_channels',
   'read_messages',
@@ -81,14 +80,34 @@ export const MCP_CONNECTOR_V1_TOOLS = [
   'list_notes',
   'query_notes',
   'get_backlinks',
-  // Writes
+  // Reading mentions is how an answer comes back, so it belongs to the
+  // read-only surface. Clearing them does not — see below.
+  'check_mentions',
+] as const;
+
+/**
+ * Added only for a read-write token.
+ *
+ * mark_mentions_read is here, not in the read set, because it mutates state a
+ * working agent depends on: clearing another agent's mentions silently
+ * suppresses its notifications.
+ */
+export const MCP_CONNECTOR_WRITE_TOOLS = [
   'send_message',
   'write_note',
-  // Agent-to-agent messaging: ask a question, hear the answer, clear it down.
   'send_direct_message',
-  'check_mentions',
   'mark_mentions_read',
 ] as const;
+
+export const MCP_CONNECTOR_V1_TOOLS = [
+  ...MCP_CONNECTOR_READ_TOOLS,
+  ...MCP_CONNECTOR_WRITE_TOOLS,
+] as const;
+
+/** The tool surface a connector token of the given scope may use. */
+export function connectorToolsForScope(scope: 'read' | 'read-write'): readonly string[] {
+  return scope === 'read-write' ? MCP_CONNECTOR_V1_TOOLS : MCP_CONNECTOR_READ_TOOLS;
+}
 
 export type ToolName = (typeof ALL_TOOL_NAMES)[number];
 
