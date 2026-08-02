@@ -450,7 +450,7 @@ export function createServer(
     title: z.string().min(1).max(300).describe('Note title'),
     body_md: z.string().max(100_000).describe('Complete markdown body. [[wiki-links]] are extracted; [[slug]] resolves in this channel, [[channel/slug]] and [[global/slug]] are explicit scopes.'),
     channel: NOTE_CHANNEL_SCHEMA,
-    properties: z.record(z.unknown()).optional().describe('YAML-frontmatter-style properties (status, project, owner, ...)'),
+    properties: z.record(z.string(), z.unknown()).optional().describe('YAML-frontmatter-style properties (status, project, owner, ...)'),
     protect: z.boolean().optional().describe('Protected notes only accept writes from their creator (use for runbooks/canonical docs)'),
     expected_revision: z.number().int().min(1).optional().describe('Fail with a conflict if the note is no longer at this revision'),
   } as any, async (args: { slug: string; title: string; body_md: string; channel?: string; properties?: Record<string, unknown>; protect?: boolean; expected_revision?: number }) => {
@@ -478,7 +478,7 @@ export function createServer(
 
   register('query_notes', 'Structured property query over notes: exact-match on frontmatter properties (JSONB containment) plus an optional updated_since bound. Use for questions like "all notes where status=unresolved and project=scanner modified this week". For text search use list_notes with query.', {
     channel: NOTE_CHANNEL_SCHEMA,
-    properties: z.record(z.unknown()).optional().describe('Property filters, matched exactly (e.g. {"status": "unresolved", "kind": "daily-digest"})'),
+    properties: z.record(z.string(), z.unknown()).optional().describe('Property filters, matched exactly (e.g. {"status": "unresolved", "kind": "daily-digest"})'),
     updated_since: z.string().max(50).optional().describe('ISO 8601 timestamp — only notes updated at or after this time'),
     limit: z.number().int().min(1).max(200).optional().describe('Max results (default 50)'),
   } as any, async (args: { channel?: string; properties?: Record<string, unknown>; updated_since?: string; limit?: number }) => {
@@ -521,7 +521,7 @@ export function createServer(
     slug: SLUG_SCHEMA.describe('Slug for the resulting note'),
     title: z.string().min(1).max(300).describe('Note title'),
     body_md: z.string().max(100_000).describe('Distilled markdown content of the thread'),
-    properties: z.record(z.unknown()).optional().describe('Additional properties for the note'),
+    properties: z.record(z.string(), z.unknown()).optional().describe('Additional properties for the note'),
   } as any, async (args: { channel: string; thread_root_message_id: string; slug: string; title: string; body_md: string; properties?: Record<string, unknown> }) => {
     try {
       const result = await promoteThreadToNote(client, args.channel, args.thread_root_message_id, args.slug, args.title, args.body_md, args.properties);

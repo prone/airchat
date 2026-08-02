@@ -271,6 +271,40 @@ describe('createServer — schema validation still applies', () => {
   });
 });
 
+/**
+ * zod 4 stopped emitting `additionalProperties: false` in the JSON Schema that
+ * zod 3 produced. That is only the advertised hint — zod still strips unknown
+ * keys at runtime, so a client cannot smuggle an extra argument into a handler.
+ * These pin the behaviour that actually matters, since the schema no longer
+ * documents it.
+ */
+describe('createServer — unknown arguments', () => {
+  it('strips unknown arguments instead of passing them to the handler', async () => {
+    const readMessages = vi.fn().mockResolvedValue({ channel: 'general', messages: [] });
+    const server = createServer(createMockClient({ readMessages }));
+    const { isError } = await callTool(server, 'read_messages', {
+      channel: 'general',
+      limit: 5,
+      bogus_extra: 'should not reach the handler',
+    });
+
+    expect(isError).toBe(false);
+    // Exactly the declared parameters, in order — nothing extra appended.
+    expect(readMessages).toHaveBeenCalledWith('general', 5, undefined);
+  });
+
+  it('still rejects a declared argument that fails validation', async () => {
+    // Stripping unknowns must not be confused with accepting anything.
+    const readNote = vi.fn();
+    const { isError } = await callTool(createServer(createMockClient({ readNote })), 'read_note', {
+      slug: 'Not A Slug',
+      bogus_extra: 'x',
+    });
+    expect(isError).toBe(true);
+    expect(readNote).not.toHaveBeenCalled();
+  });
+});
+
 describe('createServer — isolation between instances', () => {
   it('two servers built from different clients do not share state', async () => {
     const clientA = createMockClient({ checkBoard: vi.fn().mockResolvedValue({ channels: ['a'] }) });
