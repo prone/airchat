@@ -89,6 +89,80 @@ describe('401s must never advertise an auth scheme', () => {
   });
 });
 
+/**
+ * A per-token limit alone gives every rotated bearer value a fresh bucket, so a
+ * flood of random tokens would never be throttled and each attempt would still
+ * cost a database lookup. This is the endpoint we intend to expose publicly, so
+ * the IP limit has to come first and has to apply before any DB work.
+ */
+describe('rate limiting', () => {
+  it('applies the IP limit before touching the database', async () => {
+    const ip = '203.0.113.10';
+    const headers = { 'x-forwarded-for': ip, authorization: `Bearer ${VALID_TOKEN}` };
+
+    // IP_RATE_LIMIT is 120/min. Rotate the token every time so the per-token
+    // bucket never fills — only the IP limit can stop this.
+    let throttled = 0;
+    for (let i = 0; i < 130; i++) {
+      const result = await authenticateConnector(
+        req({ ...headers, authorization: `Bearer acx_${String(i).padStart(64, '0')}` }),
+      );
+      if ((result as Response).status === 429) throttled++;
+    }
+
+    expect(throttled).toBeGreaterThan(0);
+    // Once throttled, no further lookups are issued for the blocked requests.
+    expect(findConnectorTokenByHash.mock.calls.length).toBeLessThan(130);
+  });
+
+  it('sets Retry-After on a 429', async () => {
+    const headers = { 'x-forwarded-for': '203.0.113.11' };
+    let response: Response | undefined;
+    for (let i = 0; i < 130; i++) {
+      const r = await authenticateConnector(
+        req({ ...headers, authorization: `Bearer acx_${String(i).padStart(64, '1')}` }),
+      );
+      if ((r as Response).status === 429) { response = r as Response; break; }
+    }
+    expect(response).toBeDefined();
+    expect(Number(response!.headers.get('retry-after'))).toBeGreaterThan(0);
+  });
+
+  it('throttles a missing-token flood too, not just a bad-token one', async () => {
+    // A request with no Authorization at all must still be counted, otherwise
+    // the cheapest possible flood is the one that bypasses the limiter.
+    const headers = { 'x-forwarded-for': '203.0.113.12' };
+    let throttled = 0;
+    for (let i = 0; i < 130; i++) {
+      const r = await authenticateConnector(req(headers));
+      if ((r as Response).status === 429) throttled++;
+    }
+    expect(throttled).toBeGreaterThan(0);
+  });
+
+  it('does not let one IP exhaust another IP\'s budget', async () => {
+    for (let i = 0; i < 130; i++) {
+      await authenticateConnector(req({ 'x-forwarded-for': '203.0.113.20' }));
+    }
+    // The flooding IP must actually be blocked, or this asserts nothing.
+    const flooder = await authenticateConnector(req({ 'x-forwarded-for': '203.0.113.20' }));
+    expect((flooder as Response).status).toBe(429);
+
+    // A different IP is unaffected — rejected on merit (401), not throttled.
+    const other = await authenticateConnector(req({ 'x-forwarded-for': '203.0.113.21' }));
+    expect((other as Response).status).toBe(401);
+  });
+
+  it('reads the client IP from x-real-ip when x-forwarded-for is absent', async () => {
+    let throttled = 0;
+    for (let i = 0; i < 130; i++) {
+      const r = await authenticateConnector(req({ 'x-real-ip': '203.0.113.30' }));
+      if ((r as Response).status === 429) throttled++;
+    }
+    expect(throttled).toBeGreaterThan(0);
+  });
+});
+
 describe('authenticateConnector', () => {
   it('rejects a revoked or expired token indistinguishably from an unknown one', async () => {
     // The adapter filters revoked/expired in SQL and returns null for all three.

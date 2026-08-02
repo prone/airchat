@@ -23,7 +23,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { hashKey } from '@airchat/shared/crypto';
 import type { AgentContext } from '@airchat/shared';
 import { getStorageAdapter, getSupabaseClient } from '@/lib/api-v2-auth';
-import { checkRateLimit } from '@/lib/rate-limit';
+import { checkRateLimit, checkIpRateLimit } from '@/lib/rate-limit';
 
 /** Tokens are minted as `acx_` + 64 hex chars. The prefix aids leak scanning. */
 export const CONNECTOR_TOKEN_PREFIX = 'acx_';
@@ -39,6 +39,16 @@ export interface ConnectorAuth {
  */
 function unauthorized(message: string): NextResponse {
   return NextResponse.json({ error: message }, { status: 401 });
+}
+
+function rateLimited(retryAfterMs?: number): NextResponse {
+  return NextResponse.json(
+    { error: 'Rate limit exceeded' },
+    {
+      status: 429,
+      headers: { 'Retry-After': String(Math.ceil((retryAfterMs || 1000) / 1000)) },
+    },
+  );
 }
 
 /**
@@ -67,20 +77,34 @@ export function extractBearerToken(request: NextRequest): string | null {
 export async function authenticateConnector(
   request: NextRequest
 ): Promise<ConnectorAuth | NextResponse> {
+  // IP limit FIRST, before anything token-derived.
+  //
+  // A per-token limit alone is no protection here: every distinct bearer value
+  // gets its own fresh bucket, so an attacker rotating random tokens is never
+  // throttled and each attempt still costs a database lookup. The risk is not
+  // credential guessing — a 256-bit token is unguessable — it is unauthenticated
+  // DB-query amplification against an endpoint meant to face the internet.
+  // /api/v2 has no IP limit because it is LAN-only; this endpoint is not, so it
+  // follows the v1 pattern instead (see api-v1-auth.ts).
+  const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+    || request.headers.get('x-real-ip')
+    || 'unknown';
+  const ipLimited = checkIpRateLimit(ip);
+  if (!ipLimited.allowed) {
+    return rateLimited(ipLimited.retryAfterMs);
+  }
+
   const token = extractBearerToken(request);
   if (!token) {
     return unauthorized('Missing bearer token');
   }
 
-  // Rate-limit by token BEFORE the database lookup, so an attacker cannot use
-  // this endpoint to grind hashes against the tokens table. Keyed on the token
-  // itself (checkRateLimit hashes it internally, so no plaintext is retained).
+  // Then the per-token limit, which bounds a single valid credential's usage.
+  // Keyed on the token itself; checkRateLimit hashes it internally, so no
+  // plaintext is retained in the window map.
   const limited = checkRateLimit(`mcp:${token}`, 60_000, 120);
   if (!limited.allowed) {
-    return NextResponse.json(
-      { error: 'Rate limit exceeded' },
-      { status: 429, headers: { 'Retry-After': String(Math.ceil((limited.retryAfterMs || 1000) / 1000)) } }
-    );
+    return rateLimited(limited.retryAfterMs);
   }
 
   const adapter = getStorageAdapter();

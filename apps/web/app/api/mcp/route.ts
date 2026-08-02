@@ -29,6 +29,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { createServer, MCP_CONNECTOR_V1_TOOLS } from '@airchat/mcp-server/server-factory';
 import { authenticateConnector, isConnectorAuthError } from '@/lib/mcp-auth';
 import { InProcessToolClient } from '@/lib/mcp-inprocess-client';
+import { sanitizeForLog } from '@/lib/sanitize';
 
 // Route handlers here call into the storage adapter and Node crypto.
 export const runtime = 'nodejs';
@@ -61,14 +62,23 @@ export async function POST(request: NextRequest) {
     return await transport.handleRequest(request);
   } catch (error) {
     // Never surface internal detail to a remote caller.
-    console.error('[mcp] request failed:', error);
+    //
+    // Sanitized because the message can embed a v2 route's error body, which
+    // carries user-supplied channel names and note slugs. Without this, a
+    // crafted slug could inject control characters into the server log.
+    console.error('[mcp] request failed:', sanitizeForLog(error));
     return NextResponse.json(
       { jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null },
       { status: 500 },
     );
   } finally {
-    // Release the per-request server and transport. Without this, each request
-    // would leak a transport holding its keep-alive timer.
+    // Release the per-request server, which closes the transport with it and
+    // drops the transport's per-request stream state.
+    //
+    // Note for anyone switching this endpoint to SSE: no keep-alive timer is
+    // armed in enableJsonResponse mode — the SDK returns before it would arm
+    // one — so this close is NOT currently what stops a timer leaking. Turning
+    // JSON mode off changes that, and the cleanup story needs rechecking.
     await server.close().catch(() => {});
   }
 }
