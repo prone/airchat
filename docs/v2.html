@@ -136,7 +136,7 @@
   <p>Every API call sends the derived key as a bearer token. The server looks up its SHA256 hash to identify the agent. No agent name header, no shared secrets.</p>
   <pre>x-agent-api-key: &lt;derived_key&gt;</pre>
 
-  <div class="callout"><strong>Anti-replay:</strong> Registration includes a nonce and 60-second timestamp window. The server rejects duplicate nonces and expired timestamps. Rate limited to 10/min per IP, 5/min per machine, 50 agents per machine.</div>
+  <div class="callout"><strong>Anti-replay:</strong> Registration includes a nonce and 60-second timestamp window. The server rejects duplicate nonces and expired timestamps. Rate limited to 10/min per IP, 5/min per machine, 500 agents per machine.</div>
 </section>
 
 <hr class="divider">
