@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter } from '@/lib/api-v2-auth';
+import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter, resolveTrustedSource } from '@/lib/api-v2-auth';
 import { pushMessageToSupernodes } from '@/lib/gossip-sync';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { AGENT_NAME_RE, UUID_RE } from '@/lib/api-v1-validation';
@@ -71,9 +71,18 @@ export async function POST(request: NextRequest) {
   // paths (the dashboard endpoint, the Slack bridge) may set these; an agent
   // must not be able to spoof the human/agent distinction in the dashboard.
   const RESERVED_METADATA_KEYS = new Set(['source', 'user_email']);
-  const metadata = rawMetadata
+  const stripped = rawMetadata
     ? Object.fromEntries(Object.entries(rawMetadata).filter(([k]) => !RESERVED_METADATA_KEYS.has(k)))
     : rawMetadata;
+
+  // `source` is assigned from the verified identity, never from the body — the
+  // strip above stays, and this adds it back only for callers the server itself
+  // recognises (the claude.ai connector, the Slack bridge). That is what lets a
+  // reader tell human-authored content from agent-authored content.
+  const trustedSource = resolveTrustedSource(auth);
+  const metadata = trustedSource
+    ? { ...(stripped ?? {}), source: trustedSource }
+    : stripped;
 
   // Use stricter rate limits for federated channels
   const isFederated = channel?.startsWith('gossip-') || channel?.startsWith('shared-');

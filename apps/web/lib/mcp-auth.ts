@@ -21,7 +21,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { hashKey } from '@airchat/shared/crypto';
-import type { AgentContext } from '@airchat/shared';
+import type { AgentContext, ConnectorScope } from '@airchat/shared';
 import { getStorageAdapter, getSupabaseClient } from '@/lib/api-v2-auth';
 import { checkRateLimit, checkIpRateLimit } from '@/lib/rate-limit';
 
@@ -31,6 +31,8 @@ export const CONNECTOR_TOKEN_PREFIX = 'acx_';
 export interface ConnectorAuth {
   ctx: AgentContext;
   tokenId: string;
+  /** Decides the tool surface. Read-only unless issued read-write. */
+  scope: ConnectorScope;
 }
 
 /**
@@ -129,6 +131,8 @@ export async function authenticateConnector(
       machineId: agent.machine_id ?? '',
     },
     tokenId: record.id,
+    // Anything unrecognised degrades to read-only rather than opening up.
+    scope: record.scope === 'read-write' ? 'read-write' : 'read',
   };
 }
 

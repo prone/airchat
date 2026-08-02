@@ -13,6 +13,7 @@ import { hashKey } from '@airchat/shared/crypto';
 import {
   SupabaseStorageAdapter,
   DASHBOARD_ADMIN_AGENT,
+  SLACK_BRIDGE_SUFFIX,
 } from '@airchat/shared';
 import { SupabaseGossipAdapter } from '@airchat/shared/supabase-gossip-adapter';
 import type { AgentContext, StorageAdapter, GossipStorageAdapter } from '@airchat/shared';
@@ -86,14 +87,55 @@ export function getGossipAdapter(): GossipStorageAdapter {
  * verified a credential. Doing so would grant unauthenticated access to every
  * v2 route.
  */
-const inProcessAgentContext = new AsyncLocalStorage<AgentContext>();
+interface InProcessScope {
+  ctx: AgentContext;
+  /** Trusted origin marker applied to writes made inside this scope. */
+  source?: string;
+}
+
+const inProcessAgentContext = new AsyncLocalStorage<InProcessScope>();
 
 /**
  * Run `fn` with `ctx` presented to authenticateAgent as an already-verified
  * identity. See the warning above before adding a second call site.
+ *
+ * `source` marks writes made inside the scope as coming from a particular
+ * origin (e.g. the claude.ai connector). It is applied server-side by
+ * resolveTrustedSource — callers of the HTTP API cannot set it themselves.
  */
-export function runAsAuthenticatedAgent<T>(ctx: AgentContext, fn: () => Promise<T>): Promise<T> {
-  return inProcessAgentContext.run(ctx, fn);
+export function runAsAuthenticatedAgent<T>(
+  ctx: AgentContext,
+  fn: () => Promise<T>,
+  source?: string,
+): Promise<T> {
+  return inProcessAgentContext.run({ ctx, source }, fn);
+}
+
+/**
+ * The origin marker to stamp on a message, decided by WHO the caller is.
+ *
+ * `source` distinguishes human-authored content from agent-authored content on
+ * the board, so it must never be something a caller can assert about itself —
+ * /api/v2/messages strips it from request bodies for exactly that reason. This
+ * derives it instead from the verified identity:
+ *
+ * - inside an in-process trusted scope (the claude.ai connector), the source
+ *   that scope declared;
+ * - the Slack bridge, recognised by its registered agent name.
+ *
+ * Everyone else gets undefined, and their messages stay unmarked.
+ *
+ * This also repairs the Slack bridge. It sends `source: 'slack'` in metadata
+ * (slack-bridge/src/index.ts:298) via AirChatRestClient, which posts to
+ * /api/v2/messages — where the key has always been stripped. So the marking
+ * never landed, and the echo-loop guard in /api/slack/forward, which tests
+ * `metadata.source === 'slack'`, could never fire.
+ */
+export function resolveTrustedSource(ctx: AgentContext): string | undefined {
+  const inProcess = inProcessAgentContext.getStore();
+  if (inProcess?.source) return inProcess.source;
+  if (ctx.agentName?.endsWith(`-${SLACK_BRIDGE_SUFFIX}`)) return 'slack';
+  return undefined;
 }
 
 /**
@@ -110,7 +152,7 @@ export async function authenticateAgent(
   // An in-process caller that already verified a credential (currently only
   // /api/mcp) supplies the context directly. Unreachable for inbound HTTP.
   const injected = inProcessAgentContext.getStore();
-  if (injected) return injected;
+  if (injected) return injected.ctx;
 
   const derivedKey = request.headers.get('x-agent-api-key');
 

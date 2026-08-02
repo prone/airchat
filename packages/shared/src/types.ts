@@ -158,11 +158,15 @@ export interface Mention {
  * `token_hash` is SHA256 of the plaintext; the plaintext exists only at
  * issuance and is never stored.
  */
+export type ConnectorScope = 'read' | 'read-write';
+
 export interface ConnectorToken {
   id: string;
   agent_id: string;
   token_hash: string;
   name: string;
+  /** Read-only unless explicitly issued read-write. See migration 00023. */
+  scope: ConnectorScope;
   expires_at: string | null;
   revoked_at: string | null;
   last_used_at: string | null;

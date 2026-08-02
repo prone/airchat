@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest, NextResponse } from 'next/server';
-import { MCP_CONNECTOR_V1_TOOLS, ALL_TOOL_NAMES } from '@airchat/mcp-server/server-factory';
+import { MCP_CONNECTOR_V1_TOOLS, MCP_CONNECTOR_READ_TOOLS, MCP_CONNECTOR_WRITE_TOOLS, ALL_TOOL_NAMES } from '@airchat/mcp-server/server-factory';
 
 /**
  * Drives the real /api/mcp handler with real JSON-RPC over the real Streamable
@@ -11,7 +11,7 @@ import { MCP_CONNECTOR_V1_TOOLS, ALL_TOOL_NAMES } from '@airchat/mcp-server/serv
 
 const CTX = { agentId: 'agent-1', agentName: 'connector-agent', machineId: 'machine-1' };
 
-const authResult: { value: unknown } = { value: { ctx: CTX, tokenId: 'tok-1' } };
+const authResult: { value: unknown } = { value: { ctx: CTX, tokenId: 'tok-1', scope: 'read-write' } };
 
 vi.mock('@/lib/mcp-auth', () => ({
   authenticateConnector: vi.fn(async () => authResult.value),
@@ -64,7 +64,7 @@ const INIT_PARAMS = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  authResult.value = { ctx: CTX, tokenId: 'tok-1' };
+  authResult.value = { ctx: CTX, tokenId: 'tok-1', scope: 'read-write' };
 });
 
 describe('/api/mcp — protocol', () => {
@@ -88,7 +88,7 @@ describe('/api/mcp — protocol', () => {
 });
 
 describe('/api/mcp — tool surface', () => {
-  it('advertises exactly the v1 connector tools', async () => {
+  it('advertises exactly the v1 connector tools for a read-write token', async () => {
     await rpc('initialize', INIT_PARAMS);
     const { body } = await rpc('tools/list');
     const names = body.result.tools.map((t: { name: string }) => t.name).sort();
@@ -99,9 +99,20 @@ describe('/api/mcp — tool surface', () => {
     await rpc('initialize', INIT_PARAMS);
     const { body } = await rpc('tools/list');
     const names: string[] = body.result.tools.map((t: { name: string }) => t.name);
-    for (const withheld of ['upload_file', 'download_file', 'get_file_url', 'send_direct_message',
-                            'check_mentions', 'mark_mentions_read', 'promote_thread_to_note']) {
+    for (const withheld of ['upload_file', 'download_file', 'get_file_url',
+                            'promote_thread_to_note']) {
       expect(names).not.toContain(withheld);
+    }
+  });
+
+  it('includes the messaging round trip the connector exists for', async () => {
+    // Ask an agent a question, and be able to read the answer. An earlier
+    // revision shipped send_message alone, which could ask but never hear back.
+    await rpc('initialize', INIT_PARAMS);
+    const { body } = await rpc('tools/list');
+    const names: string[] = body.result.tools.map((t: { name: string }) => t.name);
+    for (const needed of ['send_direct_message', 'check_mentions', 'mark_mentions_read']) {
+      expect(names).toContain(needed);
     }
   });
 
@@ -121,6 +132,56 @@ describe('/api/mcp — tool surface', () => {
   it('includes the two approved write tools', () => {
     expect(MCP_CONNECTOR_V1_TOOLS).toContain('send_message');
     expect(MCP_CONNECTOR_V1_TOOLS).toContain('write_note');
+  });
+});
+
+/**
+ * Scope is the main limit on what a leaked token can do. A read-only token must
+ * not merely be refused the write tools — they must not be registered at all,
+ * so they are invisible to the model and unreachable by name.
+ */
+describe('/api/mcp — token scope', () => {
+  it('a read-only token gets only the read surface', async () => {
+    authResult.value = { ctx: CTX, tokenId: 'tok-1', scope: 'read' };
+    await rpc('initialize', INIT_PARAMS);
+    const { body } = await rpc('tools/list');
+    const names = body.result.tools.map((t: { name: string }) => t.name).sort();
+    expect(names).toEqual([...MCP_CONNECTOR_READ_TOOLS].sort());
+  });
+
+  it('a read-only token cannot reach a write tool even by name', async () => {
+    authResult.value = { ctx: CTX, tokenId: 'tok-1', scope: 'read' };
+    await rpc('initialize', INIT_PARAMS);
+    for (const tool of MCP_CONNECTOR_WRITE_TOOLS) {
+      const { body } = await rpc('tools/call', { name: tool, arguments: {} });
+      const text = JSON.stringify(body);
+      expect(text).toMatch(/not found/i);
+    }
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('an unrecognised scope degrades to read-only rather than opening up', async () => {
+    authResult.value = { ctx: CTX, tokenId: 'tok-1', scope: 'admin' };
+    await rpc('initialize', INIT_PARAMS);
+    const { body } = await rpc('tools/list');
+    const names: string[] = body.result.tools.map((t: { name: string }) => t.name);
+    expect(names).not.toContain('send_message');
+    expect(names).not.toContain('write_note');
+  });
+
+  it('read and write sets are disjoint and together make v1', () => {
+    const overlap = MCP_CONNECTOR_READ_TOOLS.filter(t =>
+      (MCP_CONNECTOR_WRITE_TOOLS as readonly string[]).includes(t));
+    expect(overlap).toEqual([]);
+    expect([...MCP_CONNECTOR_V1_TOOLS].sort())
+      .toEqual([...MCP_CONNECTOR_READ_TOOLS, ...MCP_CONNECTOR_WRITE_TOOLS].sort());
+  });
+
+  it('mark_mentions_read is a write, not a read', () => {
+    // It mutates state a working agent depends on: clearing its mentions
+    // silently suppresses notifications.
+    expect(MCP_CONNECTOR_WRITE_TOOLS).toContain('mark_mentions_read');
+    expect(MCP_CONNECTOR_READ_TOOLS).not.toContain('mark_mentions_read');
   });
 });
 

@@ -26,6 +26,8 @@ import { runAsAuthenticatedAgent } from '@/lib/api-v2-auth';
 import { GET as boardGET } from '@/app/api/v2/board/route';
 import { GET as channelsGET } from '@/app/api/v2/channels/route';
 import { GET as messagesGET, POST as messagesPOST } from '@/app/api/v2/messages/route';
+import { POST as dmPOST } from '@/app/api/v2/dm/route';
+import { GET as mentionsGET, POST as mentionsPOST } from '@/app/api/v2/mentions/route';
 import { GET as searchGET } from '@/app/api/v2/search/route';
 import { GET as notesGET, POST as notesPOST } from '@/app/api/v2/notes/route';
 import { GET as backlinksGET } from '@/app/api/v2/notes/backlinks/route';
@@ -33,6 +35,34 @@ import { POST as summarizePOST } from '@/app/api/v2/channels/summarize/route';
 
 /** Origin is irrelevant — nothing leaves the process — but NextRequest needs one. */
 const INTERNAL_ORIGIN = 'http://mcp.internal';
+
+/**
+ * Stamped on every message this client writes, so a receiving agent can tell a
+ * human asked. Assigned server-side from the verified scope (see
+ * resolveTrustedSource); a caller cannot set it in a request body.
+ */
+const CONNECTOR_SOURCE = 'claude.ai';
+
+/**
+ * Writes to federated channels are refused from the connector.
+ *
+ * `gossip-*` propagates through supernodes to other people's instances, and
+ * `shared-*` syncs to direct peers. A leaked connector token posting there
+ * becomes a spam and prompt-injection vector into someone else's board,
+ * attributed to this instance — a far worse outcome than anything it can do
+ * locally. A person in claude.ai has no reason to broadcast to the network.
+ *
+ * Reads are unaffected: asking what a shared channel's notes say is a primary
+ * use case for the connector.
+ */
+function assertNotFederated(channel: string, tool: string): void {
+  if (channel.startsWith('gossip-') || channel.startsWith('shared-')) {
+    throw new Error(
+      `${tool} is not permitted on federated channels through the AirChat connector. ` +
+      `"${channel}" syncs to other instances; post from an agent instead.`,
+    );
+  }
+}
 
 type RouteHandler = (request: NextRequest) => Promise<NextResponse | Response>;
 
@@ -59,7 +89,7 @@ export class InProcessToolClient implements AirChatToolClient {
           }),
     });
 
-    const response = await runAsAuthenticatedAgent(this.ctx, () => handler(request));
+    const response = await runAsAuthenticatedAgent(this.ctx, () => handler(request), CONNECTOR_SOURCE);
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
@@ -114,20 +144,28 @@ export class InProcessToolClient implements AirChatToolClient {
    * user posts to a project they have never heard of, and the dashboard groups
    * by exactly this field.
    *
-   * Marking connector-authored content positively (rather than merely not
-   * mislabelling it) needs the `source` key, which /api/v2/messages strips from
-   * agent-supplied metadata by design so agents cannot spoof the human/agent
-   * distinction. That needs a trusted server-side path — tracked separately as
-   * "Security: mark connector-written notes with a source property".
+   * Positive marking is handled separately and server-side: every call this
+   * client makes runs inside a scope declaring CONNECTOR_SOURCE, and the route
+   * stamps `source` from that. It is deliberately not passed in the body, which
+   * /api/v2/messages strips so agents cannot spoof the human/agent distinction.
    */
-  sendMessage(
+  // async so the federated-channel guard surfaces as a rejection. These return
+  // Promise<unknown>; a synchronous throw would force callers to use both
+  // try/catch and .catch(), and the MCP handler only does one of those.
+  async sendMessage(
     channelName: string,
     content: string,
     parentMessageId?: string,
     metadata?: Record<string, unknown>,
   ): Promise<unknown> {
+    assertNotFederated(channelName, 'send_message');
+    // `project` is dropped for the reason above. `source` and `user_email` are
+    // dropped because they are server-assigned: the route strips them from any
+    // body anyway, and this path should not forward a key it knows to be
+    // spoofable — if the route's strip is ever relaxed, this still holds.
+    const DROPPED = new Set(['project', 'source', 'user_email']);
     const rest = Object.fromEntries(
-      Object.entries(metadata ?? {}).filter(([key]) => key !== 'project'),
+      Object.entries(metadata ?? {}).filter(([key]) => !DROPPED.has(key)),
     );
     const forwarded = Object.keys(rest).length > 0 ? rest : null;
 
@@ -156,7 +194,7 @@ export class InProcessToolClient implements AirChatToolClient {
     return this.get(notesGET, '/api/v2/notes', params);
   }
 
-  writeNote(input: {
+  async writeNote(input: {
     channel: string | null;
     slug: string;
     title: string;
@@ -165,6 +203,7 @@ export class InProcessToolClient implements AirChatToolClient {
     protect?: boolean;
     expected_revision?: number;
   }): Promise<unknown> {
+    if (input.channel) assertNotFederated(input.channel, 'write_note');
     return this.post(notesPOST, '/api/v2/notes', input);
   }
 
@@ -217,6 +256,27 @@ export class InProcessToolClient implements AirChatToolClient {
     });
   }
 
+  // ── Agent-to-agent messaging ──────────────────────────────────────────────
+  //
+  // The point of the connector: a person asks an agent something and reads the
+  // reply. send_direct_message posts to #direct-messages with the @mention that
+  // notifies the target; check_mentions is how the answer comes back.
+
+  sendDirectMessage(targetAgent: string, content: string): Promise<unknown> {
+    return this.post(dmPOST, '/api/v2/dm', { target_agent: targetAgent, content });
+  }
+
+  checkMentions(unreadOnly?: boolean, limit?: number): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (unreadOnly !== undefined) params.set('unread', String(unreadOnly));
+    if (limit !== undefined) params.set('limit', String(limit));
+    return this.get(mentionsGET, '/api/v2/mentions', params);
+  }
+
+  markMentionsRead(mentionIds: string[]): Promise<unknown> {
+    return this.post(mentionsPOST, '/api/v2/mentions', { mention_ids: mentionIds });
+  }
+
   // ── Not exposed in the v1 connector surface ───────────────────────────────
   //
   // These exist to satisfy AirChatToolClient. None of their tools are in
@@ -228,9 +288,6 @@ export class InProcessToolClient implements AirChatToolClient {
     throw new Error(`${name} is not available through the AirChat connector`);
   }
 
-  checkMentions(): Promise<unknown> { return this.notInV1('check_mentions'); }
-  markMentionsRead(): Promise<unknown> { return this.notInV1('mark_mentions_read'); }
-  sendDirectMessage(): Promise<unknown> { return this.notInV1('send_direct_message'); }
   getFileUrl(): Promise<unknown> { return this.notInV1('get_file_url'); }
   downloadFile(): Promise<unknown> { return this.notInV1('download_file'); }
   uploadFile(): Promise<unknown> { return this.notInV1('upload_file'); }
