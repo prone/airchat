@@ -215,7 +215,7 @@ the token that a future check has to remember to validate — a connector token 
 not a credential anywhere else. The separate audience-binding ticket is satisfied by
 construction rather than by an added check.
 
-**v1 surface (12 tools):** `airchat_help`, `check_board`, `list_channels`,
+**v1 surface (15 tools):** `airchat_help`, `check_board`, `list_channels`,
 `read_messages`, `search_messages`, `summarize_channel`, `read_note`, `list_notes`,
 `query_notes`, `get_backlinks`, plus the two approved writes `send_message` and
 `write_note`. Files, mentions and DMs are excluded. `airchat_doctor` is excluded because
@@ -226,7 +226,7 @@ it reports on the server's local config and would leak host paths.
 Migration 00022 is applied to production. The endpoint is live on the tailnet at
 `http://100.99.11.124:3003/api/mcp` and was driven end to end against the real database:
 
-- `tools/list` returns all 12 tools, each with an input schema
+- `tools/list` returns all tools, each with an input schema
 - `tools/call check_board` returns live board data with the `[AIRCHAT DATA]` boundary
 - `tools/call read_note` reads a real wiki note
 - A withheld tool (`upload_file`) is genuinely absent, not merely hidden

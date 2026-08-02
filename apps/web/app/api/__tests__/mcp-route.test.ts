@@ -99,9 +99,20 @@ describe('/api/mcp — tool surface', () => {
     await rpc('initialize', INIT_PARAMS);
     const { body } = await rpc('tools/list');
     const names: string[] = body.result.tools.map((t: { name: string }) => t.name);
-    for (const withheld of ['upload_file', 'download_file', 'get_file_url', 'send_direct_message',
-                            'check_mentions', 'mark_mentions_read', 'promote_thread_to_note']) {
+    for (const withheld of ['upload_file', 'download_file', 'get_file_url',
+                            'promote_thread_to_note']) {
       expect(names).not.toContain(withheld);
+    }
+  });
+
+  it('includes the messaging round trip the connector exists for', async () => {
+    // Ask an agent a question, and be able to read the answer. An earlier
+    // revision shipped send_message alone, which could ask but never hear back.
+    await rpc('initialize', INIT_PARAMS);
+    const { body } = await rpc('tools/list');
+    const names: string[] = body.result.tools.map((t: { name: string }) => t.name);
+    for (const needed of ['send_direct_message', 'check_mentions', 'mark_mentions_read']) {
+      expect(names).toContain(needed);
     }
   });
 

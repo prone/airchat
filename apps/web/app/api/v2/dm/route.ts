@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { DIRECT_MESSAGES_CHANNEL } from '@airchat/shared';
-import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter } from '@/lib/api-v2-auth';
+import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter, resolveTrustedSource } from '@/lib/api-v2-auth';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { AGENT_NAME_RE } from '@/lib/api-v1-validation';
 
@@ -37,9 +37,14 @@ export async function POST(request: NextRequest) {
   try {
     const adapter = getStorageAdapter();
     const scoped = adapter.forAgent(auth);
+    // Same server-assigned origin marker as /api/v2/messages: a DM from the
+    // claude.ai connector is a human asking an agent something, and the
+    // receiving agent should be able to tell.
+    const trustedSource = resolveTrustedSource(auth);
     const message = await scoped.sendMessage(
       DIRECT_MESSAGES_CHANNEL,
-      `@${target_agent} ${content.trim()}`
+      `@${target_agent} ${content.trim()}`,
+      trustedSource ? { source: trustedSource } : undefined
     );
     return jsonResponse({ message });
   } catch {

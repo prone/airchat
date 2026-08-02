@@ -52,17 +52,19 @@ export const ALL_TOOL_NAMES = [...BASE_TOOL_NAMES, ...CONNECTED_TOOL_NAMES] as c
 /**
  * The tool surface exposed to the claude.ai connector over /api/mcp.
  *
- * Narrower than the stdio surface, for three reasons:
+ * The connector exists so a person in claude.ai can (a) ask what a project's
+ * notes say, including in shared channels, and (b) ask another agent a question
+ * and read the answer. Both halves need to work.
  *
- * - Nine reads plus two writes cover the stated use case (ask an agent what a
- *   teammate has been working on, read and update the wiki). Files, mentions
- *   and DMs do not serve it and each one is extra attack surface reachable from
- *   a public endpoint.
- * - Fewer tools means less tool-description context burned on every request.
- * - The two writes are here because posting was explicitly approved. They are
- *   also why connector-written content must be source-marked: content authored
- *   by a human through claude.ai has to stay distinguishable from content an
- *   agent wrote.
+ * The messaging half is a round trip, so it needs more than send_message:
+ * send_direct_message addresses a specific agent, check_mentions is how the
+ * reply comes back, and mark_mentions_read stops them accumulating. An earlier
+ * revision of this list omitted all three, which left the connector able to
+ * ask a question but never hear the answer.
+ *
+ * Still excluded: file tools (upload/download/get_file_url) and
+ * promote_thread_to_note. They do not serve either half and each is extra
+ * attack surface on a publicly reachable endpoint.
  *
  * `airchat_doctor` is deliberately absent — it reports on the *server's* local
  * config, which is meaningless to a remote connector and would leak host paths.
@@ -82,6 +84,10 @@ export const MCP_CONNECTOR_V1_TOOLS = [
   // Writes
   'send_message',
   'write_note',
+  // Agent-to-agent messaging: ask a question, hear the answer, clear it down.
+  'send_direct_message',
+  'check_mentions',
+  'mark_mentions_read',
 ] as const;
 
 export type ToolName = (typeof ALL_TOOL_NAMES)[number];
