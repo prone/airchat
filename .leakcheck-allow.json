@@ -14,27 +14,7 @@
     {
       "file": "site/README.md",
       "rule": "published-document",
-      "reason": "Explains that everything in site/ is public. Served at /README.md, which is harmless and arguably useful. Contains no infrastructure detail — reviewed 2026-08-02."
-    },
-    {
-      "file": "docs/README.md",
-      "rule": "published-document",
-      "reason": "Same, for docs/. TEMPORARY: docs/ stops being the Pages build root once the output directory switches to site/, after which this entry should be deleted along with the other docs/ entries below."
-    },
-    {
-      "file": "docs/gossip-layer-whitepaper-public.md",
-      "rule": "published-document",
-      "reason": "Written for publication — carries a byline and version number, and the filename says so. Not linked from any page, so it may have external inbound links; removing it would break them. TEMPORARY: becomes moot when docs/ stops being published."
-    },
-    {
-      "file": "docs/gossip-layer-whitepaper-public.pdf",
-      "rule": "published-document",
-      "reason": "PDF of the above. TEMPORARY: becomes moot when docs/ stops being published."
-    },
-    {
-      "file": "docs/v1-v2-metrics.md",
-      "rule": "published-document",
-      "reason": "Line-count comparison, no sensitive content. v2.html links to it by github.com URL rather than site path, so the served copy is redundant — but the file must stay in the repo for that link to resolve. TEMPORARY: becomes moot when docs/ stops being published."
+      "reason": "Explains that everything in site/ is public. Served at /README.md, which is harmless and arguably useful. Contains no infrastructure detail \u2014 reviewed 2026-08-02."
     }
   ]
 }
