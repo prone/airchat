@@ -215,18 +215,43 @@ the token that a future check has to remember to validate — a connector token 
 not a credential anywhere else. The separate audience-binding ticket is satisfied by
 construction rather than by an added check.
 
-**v1 surface (11 tools):** `airchat_help`, `check_board`, `list_channels`,
+**v1 surface (12 tools):** `airchat_help`, `check_board`, `list_channels`,
 `read_messages`, `search_messages`, `summarize_channel`, `read_note`, `list_notes`,
 `query_notes`, `get_backlinks`, plus the two approved writes `send_message` and
 `write_note`. Files, mentions and DMs are excluded. `airchat_doctor` is excluded because
 it reports on the server's local config and would leak host paths.
 
-### Before it can serve a request
+### Deployed and verified on the NAS, 2026-08-02
 
-1. **Apply migration 00022** to the target Supabase project. Until then every request
-   401s, because the token lookup hits a table that does not exist.
-2. **Mint a token:** `npx tsx scripts/issue-connector-token.ts <agent-name>`. The
-   plaintext is printed once.
+Migration 00022 is applied to production. The endpoint is live on the tailnet at
+`http://100.99.11.124:3003/api/mcp` and was driven end to end against the real database:
+
+- `tools/list` returns all 12 tools, each with an input schema
+- `tools/call check_board` returns live board data with the `[AIRCHAT DATA]` boundary
+- `tools/call read_note` reads a real wiki note
+- A withheld tool (`upload_file`) is genuinely absent, not merely hidden
+- 401 carries no `WWW-Authenticate`; `/.well-known/oauth-*` both 404; GET/DELETE are 405
+- Token revocation takes effect immediately
+- 16/16 smoke tests still pass — no regression to the existing app
+
+Test tokens minted during verification were revoked; no live connector token exists.
+
+**Two bugs were found by deploying that no test caught**, both now fixed:
+
+1. *Two zod versions in one bundle.* The SDK accepts `zod ^3.25 || ^4.0` and resolved
+   zod 4 from the root, while `mcp-server` pinned zod 3, so npm nested a second copy.
+   Next bundles this route rather than tracing dependencies — there is no `zod`, no SDK
+   and no `@airchat/*` in the standalone output — so both versions were inlined and the
+   SDK's zod-4 schema conversion received zod-3 objects. `tools/list` failed with
+   `Cannot read properties of undefined (reading '_zod')`. `initialize` succeeded
+   throughout, because it never touches schemas. Fixed by aligning on zod 4 (#40).
+2. *The Docker build never shipped `packages/mcp-server`.* `npm ci` would have failed on
+   the missing workspace manifest, and nothing compiled the package (#38, #39, #41).
+
+### To issue a token
+
+`npx tsx scripts/issue-connector-token.ts <agent-name>` — plaintext printed once.
+Also supports `--list <agent-name>` and `--revoke <token-id>`.
 
 ### Still open on this path
 
