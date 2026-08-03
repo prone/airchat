@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createHash, randomBytes } from 'node:crypto';
 import {
+  resolveScope,
   verifyPkce,
   isRegisteredRedirectUri,
   isSecureRedirectUri,
@@ -166,5 +167,49 @@ describe('scopes', () => {
     // Not a second vocabulary: an OAuth grant maps onto the same read /
     // read-write distinction the CLI issues.
     expect([...SUPPORTED_SCOPES]).toEqual(['read', 'read-write']);
+  });
+});
+
+/**
+ * RFC 6749 §3.3: scope is a space-delimited LIST, not a single value.
+ *
+ * These exist because treating it as one string is what broke the first
+ * end-to-end attempt: claude.ai sent "read read-write" and the authorize
+ * endpoint answered invalid_scope, stopping the flow at the last step.
+ */
+describe('scope resolution', () => {
+  it('accepts a single scope', () => {
+    expect(resolveScope('read')).toBe('read');
+    expect(resolveScope('read-write')).toBe('read-write');
+  });
+
+  it('accepts the space-delimited list claude.ai actually sends', () => {
+    expect(resolveScope('read read-write')).toBe('read-write');
+  });
+
+  it('grants the superset when both are asked for, in either order', () => {
+    expect(resolveScope('read-write read')).toBe('read-write');
+  });
+
+  it('tolerates extra whitespace', () => {
+    expect(resolveScope('  read   read-write  ')).toBe('read-write');
+  });
+
+  it('defaults to read when absent or empty', () => {
+    expect(resolveScope(null)).toBe('read');
+    expect(resolveScope('')).toBe('read');
+    expect(resolveScope('   ')).toBe('read');
+  });
+
+  it('rejects an unknown scope rather than ignoring it', () => {
+    // A client that asked for something it did not get should be told, not
+    // left believing it has access it does not.
+    expect(resolveScope('admin')).toBeNull();
+    expect(resolveScope('read admin')).toBeNull();
+  });
+
+  it('does not grant read-write from a lookalike', () => {
+    expect(resolveScope('read-write-all')).toBeNull();
+    expect(resolveScope('readwrite')).toBeNull();
   });
 });
