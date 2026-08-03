@@ -23,6 +23,7 @@ import {
   isRegisteredRedirectUri,
   SUPPORTED_SCOPES,
 } from '@/lib/oauth-server';
+import { publicOrigin } from '@/lib/oauth-metadata';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -117,8 +118,12 @@ export async function GET(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
 
   if (!user) {
+    // publicOrigin, not request.nextUrl.origin. Inside the container the
+    // request's own origin is the bind address — http://0.0.0.0:3002 — which a
+    // browser cannot reach. These redirects are followed by a person, so they
+    // have to name the address the instance is reachable at.
     const next = encodeURIComponent(request.nextUrl.pathname + request.nextUrl.search);
-    return NextResponse.redirect(new URL(`/login?next=${next}`, request.nextUrl.origin));
+    return NextResponse.redirect(new URL(`/login?next=${next}`, publicOrigin(request)));
   }
 
   if (!(await isDashboardAdmin(user.id))) {
@@ -130,7 +135,7 @@ export async function GET(request: NextRequest) {
   }
 
   // The consent screen itself is a page, not this route handler.
-  const consent = new URL('/oauth/consent', request.nextUrl.origin);
+  const consent = new URL('/oauth/consent', publicOrigin(request));
   consent.search = request.nextUrl.search;
   return NextResponse.redirect(consent);
 }
