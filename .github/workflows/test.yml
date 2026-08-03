@@ -62,3 +62,18 @@ jobs:
 
       - name: Run unit tests
         run: npm test
+
+      # The integration tier (npm run test:integration, 105 tests) is NOT run
+      # here, and that is deliberate rather than an oversight: it reads
+      # ~/.airchat credentials and talks to a live AirChat server, neither of
+      # which exists on a GitHub runner.
+      #
+      # It is stated here because the alternative is worse. That tier sat
+      # broken for two refactors — 43 of 104 tests asserting a response shape
+      # the REST client had stopped returning — precisely because nothing ran
+      # it and nothing said so. A tier nobody runs implies coverage that does
+      # not exist.
+      #
+      # It runs instead as part of ./scripts/deploy.sh, which has both the
+      # server and the credentials. Run it by hand with:
+      #   npm run test:integration

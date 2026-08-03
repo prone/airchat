@@ -18,6 +18,7 @@ import { AirChatRestClient } from '../../rest-client.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { rateLimitTolerant } from './rate-limit-tolerant.js';
 
 // Use a dedicated test channel to avoid polluting real channels
 const TEST_CHANNEL = 'integration-test';
@@ -50,9 +51,9 @@ async function rawFetch(
 }
 
 beforeAll(() => {
-  client = AirChatRestClient.fromConfig({
+  client = rateLimitTolerant(AirChatRestClient.fromConfig({
     agentName: 'macbook-integration-test',
-  });
+  }));
 });
 
 // ── Health: can we reach the server? ──────────────────────────────────────
@@ -61,9 +62,7 @@ describe('server connectivity', () => {
   it('board endpoint responds', async () => {
     const result = (await client.checkBoard()) as any;
     expect(result).toBeDefined();
-    expect(result._airchat).toBe('response');
-    expect(result.data).toBeDefined();
-    expect(result.data.channels).toBeInstanceOf(Array);
+    expect(result.channels).toBeInstanceOf(Array);
   });
 });
 
@@ -74,18 +73,15 @@ describe('messages', () => {
 
   it('sends a message', async () => {
     const result = (await client.sendMessage(TEST_CHANNEL, content)) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data).toBeDefined();
-    expect(result.data.message).toBeDefined();
-    expect(result.data.message.content).toBe(content);
+    expect(result.message).toBeDefined();
+    expect(result.message.content).toBe(content);
   });
 
   it('reads the message back', async () => {
     const result = (await client.readMessages(TEST_CHANNEL, 10)) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data.messages).toBeInstanceOf(Array);
+    expect(result.messages).toBeInstanceOf(Array);
 
-    const found = result.data.messages.find(
+    const found = result.messages.find(
       (m: any) => m.content === content,
     );
     expect(found).toBeDefined();
@@ -100,13 +96,12 @@ describe('messages', () => {
       undefined,
       metadata,
     )) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data.message.metadata).toMatchObject(metadata);
+    expect(result.message.metadata).toMatchObject(metadata);
   });
 
   it('respects limit parameter', async () => {
     const result = (await client.readMessages(TEST_CHANNEL, 1)) as any;
-    expect(result.data.messages).toHaveLength(1);
+    expect(result.messages).toHaveLength(1);
   });
 });
 
@@ -120,7 +115,7 @@ describe('thread replies', () => {
       TEST_CHANNEL,
       `Thread parent [${UNIQUE_TAG}]`,
     )) as any;
-    parentId = result.data.message.id;
+    parentId = result.message.id;
     expect(parentId).toBeDefined();
   });
 
@@ -130,8 +125,7 @@ describe('thread replies', () => {
       `Thread reply [${UNIQUE_TAG}]`,
       parentId,
     )) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data.message.parent_message_id).toBe(parentId);
+    expect(result.message.parent_message_id).toBe(parentId);
   });
 
   it('rejects invalid parent_message_id format', async () => {
@@ -146,18 +140,16 @@ describe('thread replies', () => {
 describe('channels', () => {
   it('lists channels including the test channel', async () => {
     const result = (await client.listChannels()) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data.channels).toBeInstanceOf(Array);
+    expect(result.channels).toBeInstanceOf(Array);
 
-    const names = result.data.channels.map((c: any) => c.name ?? c.channel);
+    const names = result.channels.map((c: any) => c.name ?? c.channel);
     expect(names).toContain(TEST_CHANNEL);
   });
 
   it('filters channels by type', async () => {
     // Should not throw even if no channels match
     const result = (await client.listChannels('global')) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data.channels).toBeInstanceOf(Array);
+    expect(result.channels).toBeInstanceOf(Array);
   });
 
   it('rejects invalid channel type filter', async () => {
@@ -176,11 +168,10 @@ describe('channels', () => {
 describe('board', () => {
   it('returns board overview with channel data', async () => {
     const result = (await client.checkBoard()) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data.channels).toBeInstanceOf(Array);
-    expect(result.data.channels.length).toBeGreaterThan(0);
+    expect(result.channels).toBeInstanceOf(Array);
+    expect(result.channels.length).toBeGreaterThan(0);
 
-    const ch = result.data.channels[0];
+    const ch = result.channels[0];
     expect(ch).toHaveProperty('channel');
   });
 });
@@ -192,11 +183,10 @@ describe('search', () => {
     await new Promise((r) => setTimeout(r, 1000));
 
     const result = (await client.searchMessages(UNIQUE_TAG)) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data.results).toBeInstanceOf(Array);
-    expect(result.data.results.length).toBeGreaterThanOrEqual(1);
+    expect(result.results).toBeInstanceOf(Array);
+    expect(result.results.length).toBeGreaterThanOrEqual(1);
 
-    const match = result.data.results.find((r: any) =>
+    const match = result.results.find((r: any) =>
       r.content?.includes(UNIQUE_TAG),
     );
     expect(match).toBeDefined();
@@ -207,14 +197,14 @@ describe('search', () => {
       UNIQUE_TAG,
       TEST_CHANNEL,
     )) as any;
-    expect(result.data.results.length).toBeGreaterThanOrEqual(1);
+    expect(result.results.length).toBeGreaterThanOrEqual(1);
   });
 
   it('returns empty for nonsense query', async () => {
     const result = (await client.searchMessages(
       'zzzznotarealquery999999',
     )) as any;
-    expect(result.data.results).toHaveLength(0);
+    expect(result.results).toHaveLength(0);
   });
 });
 
@@ -223,8 +213,7 @@ describe('search', () => {
 describe('mentions', () => {
   it('checks mentions without error', async () => {
     const result = (await client.checkMentions(false)) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data.mentions).toBeInstanceOf(Array);
+    expect(result.mentions).toBeInstanceOf(Array);
   });
 
   it('creates a mention via @agent in message content', async () => {
@@ -238,8 +227,7 @@ describe('mentions', () => {
     // Self-mentions are blocked by the DB trigger, so we won't find one.
     // But verify the endpoint still works.
     const result = (await client.checkMentions(true)) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data.mentions).toBeInstanceOf(Array);
+    expect(result.mentions).toBeInstanceOf(Array);
   });
 
   it('mark mentions read with empty array returns 400', async () => {
@@ -263,8 +251,7 @@ describe('direct messages', () => {
       client.getAgentName(),
       `DM self-test [${UNIQUE_TAG}]`,
     )) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data.message).toBeDefined();
+    expect(result.message).toBeDefined();
   });
 });
 
@@ -399,20 +386,17 @@ describe('file operations', () => {
 describe('gossip', () => {
   it('gets gossip status', async () => {
     const result = (await client.gossipStatus()) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data).toBeDefined();
-    expect(result.data).toHaveProperty('instance');
-    expect(result.data).toHaveProperty('peers');
-    expect(result.data.peers).toHaveProperty('total');
-    expect(result.data.peers).toHaveProperty('active');
-    expect(result.data.peers).toHaveProperty('supernodes');
-    expect(result.data).toHaveProperty('health');
+    expect(result).toHaveProperty('instance');
+    expect(result).toHaveProperty('peers');
+    expect(result.peers).toHaveProperty('total');
+    expect(result.peers).toHaveProperty('active');
+    expect(result.peers).toHaveProperty('supernodes');
+    expect(result).toHaveProperty('health');
   });
 
   it('lists peers', async () => {
     const result = (await client.listPeers()) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data.peers).toBeInstanceOf(Array);
+    expect(result.peers).toBeInstanceOf(Array);
   });
 
   it('rejects invalid gossip action', async () => {
@@ -438,7 +422,6 @@ describe('federated channel limits', () => {
     // May hit gossip rate limit, so we accept either success or 429
     try {
       const result = (await client.sendMessage('gossip-test', content)) as any;
-      expect(result._airchat).toBe('response');
     } catch (e: any) {
       expect(e.message).toMatch(/429/);
     }
@@ -455,7 +438,6 @@ describe('federated channel limits', () => {
     const content = `shared-test-${UNIQUE_TAG}-${'z'.repeat(1900)}`;
     try {
       const result = (await client.sendMessage('shared-test', content)) as any;
-      expect(result._airchat).toBe('response');
     } catch (e: any) {
       // May hit gossip_write rate limit
       expect(e.message).toMatch(/429/);
@@ -472,8 +454,7 @@ describe('federated channel limits', () => {
   it('accepts long messages on local channels (up to 32000)', async () => {
     const content = `local-long-${UNIQUE_TAG}-${'a'.repeat(5000)}`;
     const result = (await client.sendMessage(TEST_CHANNEL, content)) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data.message.content).toBe(content);
+    expect(result.message.content).toBe(content);
   });
 
   it('rejects messages over local limit (32000)', async () => {
@@ -564,9 +545,9 @@ describe('error handling', () => {
 describe('pagination', () => {
   it('supports before parameter for messages', async () => {
     const first = (await client.readMessages(TEST_CHANNEL, 2)) as any;
-    expect(first.data.messages.length).toBeGreaterThanOrEqual(1);
+    expect(first.messages.length).toBeGreaterThanOrEqual(1);
 
-    const messages = first.data.messages;
+    const messages = first.messages;
     const oldest = messages[messages.length - 1];
     const before = oldest.created_at;
 
@@ -575,9 +556,9 @@ describe('pagination', () => {
       5,
       before,
     )) as any;
-    expect(second.data.messages).toBeInstanceOf(Array);
+    expect(second.messages).toBeInstanceOf(Array);
 
-    for (const msg of second.data.messages) {
+    for (const msg of second.messages) {
       expect(new Date(msg.created_at).getTime()).toBeLessThan(
         new Date(before).getTime(),
       );
@@ -587,25 +568,35 @@ describe('pagination', () => {
   it('caps limit at 200', async () => {
     // Request 999 messages — server should cap at 200
     const result = (await client.readMessages(TEST_CHANNEL, 999)) as any;
-    expect(result.data.messages.length).toBeLessThanOrEqual(200);
+    expect(result.messages.length).toBeLessThanOrEqual(200);
   });
 });
 
 // ── Response wrapping (prompt injection boundary) ─────────────────────────
 
 describe('response wrapping', () => {
-  it('all v2 responses include _airchat boundary', async () => {
+  /**
+   * The envelope marks payloads as agent-generated data rather than
+   * instructions, which is a safety property worth keeping a test on.
+   *
+   * It has to be asserted over raw HTTP: AirChatRestClient unwraps the
+   * envelope centrally, so a client-based assertion would be checking the
+   * client rather than the server. These tests previously went through the
+   * client and silently stopped testing anything the day unwrapping landed.
+   */
+  it('the server still wraps v2 responses in the injection boundary', async () => {
+    for (const pathname of ['/api/v2/board', '/api/v2/channels']) {
+      const res = await rawFetch('GET', pathname);
+      expect(res.ok, `${pathname} returned ${res.status}`).toBe(true);
+
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body._airchat, `${pathname} lost the envelope marker`).toBe('response');
+    }
+  });
+
+  it('the client unwraps that envelope, so callers never see it', async () => {
     const board = (await client.checkBoard()) as any;
-    expect(board._airchat).toBe('response');
-    expect(board._notice).toContain('agent-generated content');
-
-    const channels = (await client.listChannels()) as any;
-    expect(channels._airchat).toBe('response');
-
-    const messages = (await client.readMessages(TEST_CHANNEL, 1)) as any;
-    expect(messages._airchat).toBe('response');
-
-    const search = (await client.searchMessages('test')) as any;
-    expect(search._airchat).toBe('response');
+    expect(board._airchat).toBeUndefined();
+    expect(board.channels).toBeInstanceOf(Array);
   });
 });
