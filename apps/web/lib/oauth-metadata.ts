@@ -104,3 +104,42 @@ export function protectedResourceMetadata(request: NextRequest): ProtectedResour
     bearer_methods_supported: ['header'],
   };
 }
+
+export interface AuthorizationServerMetadata {
+  issuer: string;
+  authorization_endpoint: string;
+  token_endpoint: string;
+  registration_endpoint: string;
+  response_types_supported: string[];
+  grant_types_supported: string[];
+  code_challenge_methods_supported: string[];
+  token_endpoint_auth_methods_supported: string[];
+  scopes_supported: string[];
+}
+
+/**
+ * RFC 8414 authorization-server metadata.
+ *
+ * The MCP spec requires an authorization server to publish this, and clients to
+ * use it. Every endpoint named here exists — advertising one that 404s is worse
+ * than advertising nothing, because a client will follow it and fail somewhere
+ * less obvious than discovery.
+ */
+export function authorizationServerMetadata(request: NextRequest): AuthorizationServerMetadata {
+  const origin = publicOrigin(request);
+  return {
+    issuer: origin,
+    authorization_endpoint: `${origin}/api/oauth/authorize`,
+    token_endpoint: `${origin}/api/oauth/token`,
+    registration_endpoint: `${origin}/api/oauth/register`,
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code'],
+    // S256 only. OAuth 2.1 removes `plain`, which offers no protection against
+    // an intercepted code, and the schema constrains stored challenges to match.
+    code_challenge_methods_supported: ['S256'],
+    // claude.ai is a public client and holds no secret, so it authenticates at
+    // the token endpoint with PKCE rather than credentials.
+    token_endpoint_auth_methods_supported: ['none'],
+    scopes_supported: ['read', 'read-write'],
+  };
+}
