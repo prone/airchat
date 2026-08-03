@@ -33,8 +33,30 @@ const ORIGIN_HOST = process.env.SPIKE_ORIGIN_HOST ?? '100.99.11.124';
 const ORIGIN_PORT = Number(process.env.SPIKE_ORIGIN_PORT ?? 3003);
 const LISTEN_PORT = Number(process.env.SPIKE_PORT ?? 8787);
 
-/** The only path that is forwarded. Everything else 404s. */
-const ALLOWED_PATH = '/api/mcp';
+/**
+ * The paths this proxy will forward. Everything else 404s.
+ *
+ * Deliberately a list rather than a prefix. Pointing the tunnel at the whole
+ * application would expose /api/v2, whose routes accept the derived machine key
+ * with no scope, expiry or audience binding — the exact exposure this proxy
+ * exists to avoid. Widening it costs one line and is easy to do carelessly, so
+ * each entry is here on purpose:
+ *
+ *   /api/mcp             the endpoint under test
+ *   /.well-known/*       RFC 9728 and RFC 8414 discovery documents
+ *   /api/oauth/*         registration, authorize, token
+ *   /oauth/consent       the consent screen, opened in the user's browser
+ *   /login               reached when consent requires a session
+ *   /_next/*             assets those two pages need to render
+ *
+ * Nothing else. /api/v2 in particular stays unreachable.
+ */
+const ALLOWED_EXACT = new Set(['/api/mcp', '/oauth/consent', '/login']);
+const ALLOWED_PREFIXES = ['/.well-known/', '/api/oauth/', '/_next/'];
+
+function isAllowed(path) {
+  return ALLOWED_EXACT.has(path) || ALLOWED_PREFIXES.some((p) => path.startsWith(p));
+}
 
 /**
  * Everything logged here — method, path, header — comes from a remote caller
@@ -55,11 +77,15 @@ let forwarded = 0;
 let refused = 0;
 
 const server = createServer((req, res) => {
-  // Compare only the pathname: a query string must not smuggle a different
-  // route past this check.
-  const path = (req.url ?? '').split('?')[0];
+  // Compare only the pathname, so a query string cannot smuggle a different
+  // route past this check — but forward the ORIGINAL url, query string
+  // included. Forwarding the bare pathname silently drops every parameter,
+  // which /api/mcp never noticed because it is a POST carrying a body, and
+  // which broke the OAuth authorize endpoint outright.
+  const target = req.url ?? '/';
+  const path = target.split('?')[0];
 
-  if (path !== ALLOWED_PATH) {
+  if (!isAllowed(path)) {
     refused++;
     console.log(`  refused  ${forLog(req.method, 10)} ${forLog(path)}`);
     res.writeHead(404, { 'content-type': 'application/json' });
@@ -77,9 +103,25 @@ const server = createServer((req, res) => {
   // Forwarding the Authorization header verbatim is the whole point of the
   // spike: whether claude.ai sends one at all is the question being answered.
   const upstream = httpRequest(
-    { host: ORIGIN_HOST, port: ORIGIN_PORT, path, method: req.method, headers: { ...req.headers, host: `${ORIGIN_HOST}:${ORIGIN_PORT}` } },
+    { host: ORIGIN_HOST, port: ORIGIN_PORT, path: target, method: req.method, headers: { ...req.headers, host: `${ORIGIN_HOST}:${ORIGIN_PORT}` } },
     (up) => {
-      res.writeHead(up.statusCode ?? 502, up.headers);
+      const headers = { ...up.headers };
+
+      // The origin builds redirects from AIRCHAT_PUBLIC_URL. When that is set
+      // to the tunnel hostname they are already correct; when it is not, a
+      // redirect would send the browser to an address it cannot reach. Rewrite
+      // the origin's own host to the one the request arrived on so the flow
+      // survives either configuration.
+      const location = headers.location;
+      if (typeof location === 'string' && req.headers.host) {
+        const originPrefix = `http://${ORIGIN_HOST}:${ORIGIN_PORT}`;
+        if (location.startsWith(originPrefix)) {
+          headers.location = `https://${req.headers.host}${location.slice(originPrefix.length)}`;
+          console.log(`  rewrote redirect -> ${forLog(headers.location)}`);
+        }
+      }
+
+      res.writeHead(up.statusCode ?? 502, headers);
       up.pipe(res);
     },
   );
@@ -95,7 +137,9 @@ const server = createServer((req, res) => {
 
 server.listen(LISTEN_PORT, '127.0.0.1', () => {
   console.log(`MCP spike proxy on http://127.0.0.1:${LISTEN_PORT}`);
-  console.log(`  forwarding ONLY ${ALLOWED_PATH} -> http://${ORIGIN_HOST}:${ORIGIN_PORT}`);
+  console.log(`  forwarding to http://${ORIGIN_HOST}:${ORIGIN_PORT}`);
+  console.log(`    exact:    ${[...ALLOWED_EXACT].join(', ')}`);
+  console.log(`    prefixes: ${ALLOWED_PREFIXES.join(', ')}`);
   console.log(`  everything else returns 404\n`);
 });
 
