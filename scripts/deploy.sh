@@ -42,6 +42,7 @@ tar czf - \
   package.json \
   package-lock.json \
   tsconfig.base.json \
+  docker-compose.yml \
   2>/dev/null | $SSH_CMD "cd $NAS_DEPLOY_DIR && tar xzf -"
 
 echo "==> Rebuilding Docker container..."
