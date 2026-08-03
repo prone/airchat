@@ -46,3 +46,7 @@ docs/gossip-decisions-summary.pdf
 docs/auth-rewrite-plan.pdf
 docs/generate-pdf.py
 docs/generate-gossip-decisions-pdf.py
+
+# Cloudflare Tunnel credentials. This file IS the tunnel's identity — anyone
+# holding it can serve traffic for the hostname.
+deploy/cloudflared/*.json

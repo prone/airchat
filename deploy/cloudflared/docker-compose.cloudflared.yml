@@ -1,0 +1,17 @@
+# Runs the tunnel alongside the web container.
+#
+#   docker compose -f docker-compose.yml -f deploy/cloudflared/docker-compose.cloudflared.yml up -d
+#
+# Requires the credentials file at deploy/cloudflared/<tunnel-id>.json, which is
+# produced by `cloudflared tunnel create` and is a secret — it is gitignored.
+
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./deploy/cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./deploy/cloudflared/8b40e140-0289-4e59-8f83-f5ac54924006.json:/etc/cloudflared/8b40e140-0289-4e59-8f83-f5ac54924006.json:ro
+    depends_on:
+      - agentchat-web
