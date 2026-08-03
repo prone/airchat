@@ -14,4 +14,16 @@ services:
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
       - AGENTCHAT_API_KEY=${AGENTCHAT_API_KEY}
       - INSTANCE_PRIVATE_KEY=${INSTANCE_PRIVATE_KEY}
+      - ALLOW_PRIVATE_PEER_ENDPOINTS=${ALLOW_PRIVATE_PEER_ENDPOINTS}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - AIRCHAT_DIGEST_ENABLED=${AIRCHAT_DIGEST_ENABLED}
+      # The canonical public URL of this instance. It becomes the OAuth
+      # resource identifier and the audience inside issued tokens, so it is
+      # configured rather than derived from a request — a Host header is
+      # attacker-influenceable. Unset, the server falls back to the request
+      # origin, which is acceptable for local access and not for production.
+      - AIRCHAT_PUBLIC_URL=${AIRCHAT_PUBLIC_URL}
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     restart: unless-stopped
