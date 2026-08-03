@@ -53,8 +53,15 @@ sleep 5
 if [[ "${1:-}" != "--skip-smoke" ]]; then
   echo "==> Running smoke tests..."
   npx tsx scripts/smoke-test.ts
+
+  # The integration tier cannot run in GitHub Actions — it needs ~/.airchat
+  # credentials and a live server. This is the one place both exist, so it runs
+  # here or it rots: it previously sat broken through two refactors because
+  # nothing ran it.
+  echo "==> Running integration tests..."
+  npm run test:integration
 else
-  echo "==> Skipping smoke tests"
+  echo "==> Skipping smoke and integration tests"
 fi
 
 echo "==> Deploy complete"

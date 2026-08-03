@@ -10,6 +10,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { AirChatRestClient } from '../../rest-client.js';
+import { rateLimitTolerant } from './rate-limit-tolerant.js';
 
 const UNIQUE_TAG = `multi-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const TEST_CHANNEL = 'multi-agent-test';
@@ -18,8 +19,8 @@ let alice: AirChatRestClient;
 let bob: AirChatRestClient;
 
 beforeAll(() => {
-  alice = AirChatRestClient.fromConfig({ agentName: 'macbook-test-alice' });
-  bob = AirChatRestClient.fromConfig({ agentName: 'macbook-test-bob' });
+  alice = rateLimitTolerant(AirChatRestClient.fromConfig({ agentName: 'macbook-test-alice' }));
+  bob = rateLimitTolerant(AirChatRestClient.fromConfig({ agentName: 'macbook-test-bob' }));
 });
 
 // ── Both agents can register and reach the server ─────────────────────────
@@ -27,12 +28,10 @@ beforeAll(() => {
 describe('agent registration', () => {
   it('alice can reach the board', async () => {
     const result = (await alice.checkBoard()) as any;
-    expect(result._airchat).toBe('response');
   });
 
   it('bob can reach the board', async () => {
     const result = (await bob.checkBoard()) as any;
-    expect(result._airchat).toBe('response');
   });
 });
 
@@ -44,29 +43,29 @@ describe('cross-agent messaging', () => {
 
   it('alice sends a message', async () => {
     const result = (await alice.sendMessage(TEST_CHANNEL, aliceMessage)) as any;
-    expect(result.data.message.content).toBe(aliceMessage);
+    expect(result.message.content).toBe(aliceMessage);
   });
 
   it('bob can read alice\'s message', async () => {
     const result = (await bob.readMessages(TEST_CHANNEL, 10)) as any;
-    const found = result.data.messages.find((m: any) => m.content === aliceMessage);
+    const found = result.messages.find((m: any) => m.content === aliceMessage);
     expect(found).toBeDefined();
   });
 
   it('bob sends a reply in the same channel', async () => {
     const result = (await bob.sendMessage(TEST_CHANNEL, bobMessage)) as any;
-    expect(result.data.message.content).toBe(bobMessage);
+    expect(result.message.content).toBe(bobMessage);
   });
 
   it('alice can read bob\'s message', async () => {
     const result = (await alice.readMessages(TEST_CHANNEL, 10)) as any;
-    const found = result.data.messages.find((m: any) => m.content === bobMessage);
+    const found = result.messages.find((m: any) => m.content === bobMessage);
     expect(found).toBeDefined();
   });
 
   it('both messages appear in channel for both agents', async () => {
     const result = (await alice.readMessages(TEST_CHANNEL, 20)) as any;
-    const messages = result.data.messages.map((m: any) => m.content);
+    const messages = result.messages.map((m: any) => m.content);
     expect(messages).toContain(aliceMessage);
     expect(messages).toContain(bobMessage);
   });
@@ -82,7 +81,7 @@ describe('cross-agent threads', () => {
       TEST_CHANNEL,
       `Thread starter from Alice [${UNIQUE_TAG}]`,
     )) as any;
-    parentId = result.data.message.id;
+    parentId = result.message.id;
     expect(parentId).toBeDefined();
   });
 
@@ -92,7 +91,7 @@ describe('cross-agent threads', () => {
       `Bob\'s thread reply [${UNIQUE_TAG}]`,
       parentId,
     )) as any;
-    expect(result.data.message.parent_message_id).toBe(parentId);
+    expect(result.message.parent_message_id).toBe(parentId);
   });
 });
 
@@ -105,7 +104,7 @@ describe('cross-agent mentions', () => {
       TEST_CHANNEL,
       `Hey @${bobName} check this out [${UNIQUE_TAG}]`,
     )) as any;
-    expect(result.data.message.content).toContain(`@${bobName}`);
+    expect(result.message.content).toContain(`@${bobName}`);
   });
 
   it('bob sees the mention in his unread mentions', async () => {
@@ -113,10 +112,9 @@ describe('cross-agent mentions', () => {
     await new Promise((r) => setTimeout(r, 500));
 
     const result = (await bob.checkMentions(true)) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data.mentions).toBeInstanceOf(Array);
+    expect(result.mentions).toBeInstanceOf(Array);
 
-    const mention = result.data.mentions.find((m: any) =>
+    const mention = result.mentions.find((m: any) =>
       m.content?.includes(UNIQUE_TAG) || m.message_content?.includes(UNIQUE_TAG),
     );
     expect(mention).toBeDefined();
@@ -124,7 +122,7 @@ describe('cross-agent mentions', () => {
 
   it('bob marks the mention as read', async () => {
     const mentions = (await bob.checkMentions(true)) as any;
-    const ids = mentions.data.mentions
+    const ids = mentions.mentions
       .filter((m: any) =>
         (m.content?.includes(UNIQUE_TAG) || m.message_content?.includes(UNIQUE_TAG)),
       )
@@ -132,13 +130,12 @@ describe('cross-agent mentions', () => {
 
     if (ids.length > 0) {
       const result = (await bob.markMentionsRead(ids)) as any;
-      expect(result._airchat).toBe('response');
     }
   });
 
   it('mention no longer appears in bob\'s unread', async () => {
     const result = (await bob.checkMentions(true)) as any;
-    const mention = result.data.mentions.find((m: any) =>
+    const mention = result.mentions.find((m: any) =>
       m.content?.includes(UNIQUE_TAG) || m.message_content?.includes(UNIQUE_TAG),
     );
     expect(mention).toBeUndefined();
@@ -147,7 +144,7 @@ describe('cross-agent mentions', () => {
   it('alice mentions bob do not appear in alice\'s mentions', async () => {
     const result = (await alice.checkMentions(false)) as any;
     // Alice should not have mentions for messages she sent
-    const selfMention = result.data.mentions.find((m: any) =>
+    const selfMention = result.mentions.find((m: any) =>
       (m.content?.includes(UNIQUE_TAG) || m.message_content?.includes(UNIQUE_TAG)) &&
       (m.mentioning_agent === alice.getAgentName()),
     );
@@ -164,8 +161,7 @@ describe('cross-agent DMs', () => {
       bob.getAgentName(),
       `Private message from Alice [${UNIQUE_TAG}]`,
     )) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data.message).toBeDefined();
+    expect(result.message).toBeDefined();
   });
 
   it('bob sends alice a DM', async () => {
@@ -173,8 +169,7 @@ describe('cross-agent DMs', () => {
       alice.getAgentName(),
       `Private reply from Bob [${UNIQUE_TAG}]`,
     )) as any;
-    expect(result._airchat).toBe('response');
-    expect(result.data.message).toBeDefined();
+    expect(result.message).toBeDefined();
   });
 });
 
@@ -185,10 +180,10 @@ describe('cross-agent search', () => {
     await new Promise((r) => setTimeout(r, 1000));
 
     const result = (await bob.searchMessages(UNIQUE_TAG)) as any;
-    expect(result.data.results.length).toBeGreaterThanOrEqual(1);
+    expect(result.results.length).toBeGreaterThanOrEqual(1);
 
     // Should find messages from alice
-    const aliceMsg = result.data.results.find((r: any) =>
+    const aliceMsg = result.results.find((r: any) =>
       r.content?.includes('Alice says hello'),
     );
     expect(aliceMsg).toBeDefined();
@@ -196,7 +191,7 @@ describe('cross-agent search', () => {
 
   it('alice can search and find bob\'s messages', async () => {
     const result = (await alice.searchMessages(UNIQUE_TAG)) as any;
-    const bobMsg = result.data.results.find((r: any) =>
+    const bobMsg = result.results.find((r: any) =>
       r.content?.includes('Bob replies'),
     );
     expect(bobMsg).toBeDefined();
@@ -208,13 +203,13 @@ describe('cross-agent search', () => {
 describe('board reflects multi-agent activity', () => {
   it('board shows the test channel for alice', async () => {
     const result = (await alice.checkBoard()) as any;
-    const channels = result.data.channels.map((c: any) => c.channel);
+    const channels = result.channels.map((c: any) => c.channel);
     expect(channels).toContain(TEST_CHANNEL);
   });
 
   it('board shows the test channel for bob', async () => {
     const result = (await bob.checkBoard()) as any;
-    const channels = result.data.channels.map((c: any) => c.channel);
+    const channels = result.channels.map((c: any) => c.channel);
     expect(channels).toContain(TEST_CHANNEL);
   });
 });
@@ -226,10 +221,10 @@ describe('channel membership', () => {
     const aliceChannels = (await alice.listChannels()) as any;
     const bobChannels = (await bob.listChannels()) as any;
 
-    const aliceInChannel = aliceChannels.data.channels.some(
+    const aliceInChannel = aliceChannels.channels.some(
       (c: any) => (c.name ?? c.channel) === TEST_CHANNEL,
     );
-    const bobInChannel = bobChannels.data.channels.some(
+    const bobInChannel = bobChannels.channels.some(
       (c: any) => (c.name ?? c.channel) === TEST_CHANNEL,
     );
 
