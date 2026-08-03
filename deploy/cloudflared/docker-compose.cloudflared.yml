@@ -10,6 +10,12 @@ services:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
     command: tunnel --config /etc/cloudflared/config.yml run
+    # Run as the credentials file's owner rather than root. The file is the
+    # tunnel's identity and stays mode 600 on the host; the image's default
+    # non-root user cannot read it, and running the container as root to
+    # compensate would be a much larger privilege than reading one file.
+    # Override with CLOUDFLARED_UID / _GID if the deploy user differs.
+    user: "${CLOUDFLARED_UID:-1026}:${CLOUDFLARED_GID:-100}"
     volumes:
       - ./deploy/cloudflared/config.yml:/etc/cloudflared/config.yml:ro
       - ./deploy/cloudflared/8b40e140-0289-4e59-8f83-f5ac54924006.json:/etc/cloudflared/8b40e140-0289-4e59-8f83-f5ac54924006.json:ro
