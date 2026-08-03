@@ -218,14 +218,18 @@ describe('/api/mcp — dispatch', () => {
 });
 
 /**
- * The invariant that makes a static bearer viable at all. An MCP client runs
- * OAuth discovery before it sends custom headers; any advertisement here sends
- * it down the OAuth path and it never sends Authorization.
- * See cloudflare/mcp#95.
+ * This block previously asserted that the endpoint must NOT advertise OAuth.
+ * The spike disproved that reasoning for claude.ai, which has no bearer path
+ * and fails outright when discovery 404s — see lib/__tests__/mcp-auth.test.ts
+ * for the full trace. The challenge itself is asserted there; what matters at
+ * the route level is that a failed auth still runs nothing.
  */
-describe('/api/mcp — must not advertise OAuth', () => {
-  it('returns 401 with no WWW-Authenticate challenge', async () => {
-    authResult.value = NextResponse.json({ error: 'Invalid token' }, { status: 401 });
+describe('/api/mcp — auth failure', () => {
+  it('returns the auth error unchanged, including its headers', async () => {
+    authResult.value = NextResponse.json(
+      { error: 'Invalid token' },
+      { status: 401, headers: { 'WWW-Authenticate': 'Bearer resource_metadata="https://x/.well-known/oauth-protected-resource/api/mcp"' } },
+    );
     const request = new NextRequest('http://mcp.internal/api/mcp', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -233,8 +237,7 @@ describe('/api/mcp — must not advertise OAuth', () => {
     });
     const response = await POST(request);
     expect(response.status).toBe(401);
-    expect(response.headers.get('www-authenticate')).toBeNull();
-    expect(response.headers.get('link')).toBeNull();
+    expect(response.headers.get('www-authenticate')).toContain('resource_metadata=');
   });
 
   it('does not run any tool when auth fails', async () => {

@@ -57,35 +57,59 @@ describe('extractBearerToken', () => {
 });
 
 /**
- * The single most important property of this endpoint.
+ * These tests previously asserted the OPPOSITE — that a 401 must carry no
+ * `WWW-Authenticate` — on the reasoning from cloudflare/mcp#95 that advertising
+ * discovery stops a client ever sending a bearer header.
  *
- * MCP clients run OAuth discovery before sending custom headers. A
- * `WWW-Authenticate` header on the 401 makes the client enter the OAuth flow
- * and never send `Authorization` at all — which is precisely how Cloudflare's
- * own MCP server ended up never seeing its direct API token
- * (cloudflare/mcp#95). If this test fails, the connector breaks silently.
+ * The spike on 2026-08-02 disproved that for this client. claude.ai received
+ * the challenge-less 401, then probed both protected-resource paths, the
+ * authorization-server document and POST /register. All 404'd and it failed
+ * with "Couldn't register with Airchat's sign-in service". It never sent
+ * `Authorization` once, because it has no bearer path at all.
+ *
+ * So the challenge is now required, and these assert its shape. A missing or
+ * malformed `resource_metadata` leaves a compliant client with nowhere to go,
+ * which is the failure being prevented.
  */
-describe('401s must never advertise an auth scheme', () => {
-  it('omits WWW-Authenticate when the token is missing', async () => {
+describe('401 carries the RFC 9728 discovery pointer', () => {
+  it('advertises resource_metadata when the token is missing', async () => {
     const result = await authenticateConnector(req());
     expect(isConnectorAuthError(result)).toBe(true);
     const response = result as Response;
     expect(response.status).toBe(401);
-    expect(response.headers.get('www-authenticate')).toBeNull();
+
+    const challenge = response.headers.get('www-authenticate');
+    expect(challenge).toContain('Bearer');
+    expect(challenge).toContain('resource_metadata=');
+    expect(challenge).toContain('/.well-known/oauth-protected-resource/api/mcp');
   });
 
-  it('omits WWW-Authenticate when the token is invalid', async () => {
+  it('advertises resource_metadata when the token is invalid', async () => {
     const result = await authenticateConnector(req({ authorization: `Bearer ${VALID_TOKEN}` }));
     const response = result as Response;
     expect(response.status).toBe(401);
-    expect(response.headers.get('www-authenticate')).toBeNull();
+    expect(response.headers.get('www-authenticate')).toContain('resource_metadata=');
   });
 
-  it('sends no Link or resource-metadata header either', async () => {
+  it('distinguishes a missing token from an invalid one via the error code', async () => {
+    // A client shows the user different things for "you never authenticated"
+    // and "your token is no longer good".
+    const missing = (await authenticateConnector(req())) as Response;
+    const invalid = (await authenticateConnector(
+      req({ authorization: `Bearer ${VALID_TOKEN}` }),
+    )) as Response;
+
+    expect(missing.headers.get('www-authenticate')).toContain('error="invalid_request"');
+    expect(invalid.headers.get('www-authenticate')).toContain('error="invalid_token"');
+  });
+
+  it('points at an absolute URL, since a client fetches it directly', async () => {
     const response = (await authenticateConnector(req())) as Response;
-    // RFC 9728 discovery can also be advertised via a Link header.
-    expect(response.headers.get('link')).toBeNull();
-    expect(response.headers.get('oauth-protected-resource')).toBeNull();
+    const match = /resource_metadata="([^"]+)"/.exec(
+      response.headers.get('www-authenticate') ?? '',
+    );
+    expect(match, 'no resource_metadata in the challenge').not.toBeNull();
+    expect(() => new URL(match![1])).not.toThrow();
   });
 });
 
