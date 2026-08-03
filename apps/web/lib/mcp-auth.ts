@@ -34,7 +34,7 @@ import { hashKey } from '@airchat/shared/crypto';
 import type { AgentContext, ConnectorScope } from '@airchat/shared';
 import { getStorageAdapter, getSupabaseClient } from '@/lib/api-v2-auth';
 import { checkRateLimit, checkIpRateLimit } from '@/lib/rate-limit';
-import { wwwAuthenticateValue } from '@/lib/oauth-metadata';
+import { wwwAuthenticateValue, canonicalResourceUri } from '@/lib/oauth-metadata';
 
 /** Tokens are minted as `acx_` + 64 hex chars. The prefix aids leak scanning. */
 export const CONNECTOR_TOKEN_PREFIX = 'acx_';
@@ -131,6 +131,26 @@ export async function authenticateConnector(
   // Unknown, revoked and expired tokens are all indistinguishable here.
   if (!record) {
     return unauthorized(request, 'Invalid token');
+  }
+
+  // ── Audience (RFC 8707) ───────────────────────────────────────────────
+  //
+  // The MCP spec says three separate times that a server must reject a token
+  // not issued for it, and names the failure as the confused-deputy class of
+  // vulnerability: a server that accepts tokens minted for another resource
+  // lets an attacker replay a legitimate token across services.
+  //
+  // A null audience means a CLI-issued token, where the binding is structural
+  // instead — nothing outside this endpoint reads connector_tokens, so such a
+  // token is not a credential anywhere else. An OAuth-issued token names its
+  // audience, and it must be this server.
+  if (record.audience !== null && record.audience !== undefined) {
+    if (record.audience !== canonicalResourceUri(request)) {
+      // Deliberately the same response as an unknown token. Telling a caller
+      // that their token is real but meant for somewhere else confirms the
+      // token is valid, which is information worth withholding.
+      return unauthorized(request, 'Invalid token');
+    }
   }
 
   const agent = await lookupAgent(record.agent_id);
