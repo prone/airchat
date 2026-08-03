@@ -21,6 +21,7 @@ import { getSupabaseClient, isDashboardAdmin } from '@/lib/api-v2-auth';
 import {
   oauthError,
   isRegisteredRedirectUri,
+  resolveScope,
   SUPPORTED_SCOPES,
 } from '@/lib/oauth-server';
 import { publicOrigin } from '@/lib/oauth-metadata';
@@ -89,9 +90,10 @@ export async function validateAuthorizeRequest(
     return { ok: false, response: oauthError('invalid_request', 'code_challenge_method must be S256') };
   }
 
-  const requested = params.get('scope') ?? 'read';
-  if (!(SUPPORTED_SCOPES as readonly string[]).includes(requested)) {
-    return { ok: false, response: oauthError('invalid_scope', `scope must be one of: ${SUPPORTED_SCOPES.join(', ')}`) };
+  // Space-delimited list, per RFC 6749 §3.3.
+  const scope = resolveScope(params.get('scope'));
+  if (scope === null) {
+    return { ok: false, response: oauthError('invalid_scope', `scope may contain only: ${SUPPORTED_SCOPES.join(', ')}`) };
   }
 
   return {
@@ -100,7 +102,7 @@ export async function validateAuthorizeRequest(
       clientId,
       clientName: client.client_name ?? null,
       redirectUri,
-      scope: requested as 'read' | 'read-write',
+      scope,
       state: params.get('state'),
       resource: params.get('resource'),
       codeChallenge,

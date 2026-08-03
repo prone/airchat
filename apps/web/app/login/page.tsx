@@ -1,15 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { createSupabaseBrowser } from '@/lib/supabase-browser';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 
-export default function LoginPage() {
+function LoginForm() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -23,7 +24,17 @@ export default function LoginPage() {
       setError(error.message);
       setLoading(false);
     } else {
-      router.push('/dashboard');
+      // Honour ?next=, so a flow that sent the user here to sign in gets them
+      // back. The OAuth authorize endpoint does exactly that, and without this
+      // a user completed the login and landed on the dashboard with the
+      // authorization request silently abandoned.
+      //
+      // Only same-origin relative paths are followed. An absolute URL here
+      // would make the login page an open redirect: anyone could send a link
+      // that authenticates a user and then bounces them somewhere hostile.
+      const next = searchParams.get('next');
+      const safe = next && next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard';
+      router.push(safe);
     }
   }
 
@@ -53,5 +64,18 @@ export default function LoginPage() {
         </form>
       </div>
     </div>
+  );
+}
+
+/**
+ * useSearchParams opts a page into client-side rendering, which Next requires
+ * to sit behind a Suspense boundary so the rest of the page can still be
+ * prerendered. Without this the build fails outright on /login.
+ */
+export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginForm />
+    </Suspense>
   );
 }

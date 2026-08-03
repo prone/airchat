@@ -17,6 +17,32 @@ export const ACCESS_TOKEN_TTL_DAYS = 30;
 export const SUPPORTED_SCOPES = ['read', 'read-write'] as const;
 export type OAuthScope = (typeof SUPPORTED_SCOPES)[number];
 
+/**
+ * Resolve an OAuth `scope` parameter to the single connector scope to grant.
+ *
+ * RFC 6749 §3.3 defines scope as a space-delimited LIST, not one value.
+ * claude.ai sends "read read-write" — it asks for everything it might use and
+ * expects the server to grant what it will. Treating the parameter as a single
+ * string rejected that outright with invalid_scope, which is what stopped the
+ * first end-to-end attempt.
+ *
+ * Returns null if any requested scope is unknown, rather than silently
+ * dropping it: a client that asked for something it did not get should be told,
+ * not left believing it has access it does not.
+ *
+ * Where both are requested, read-write wins — it is the superset, and the
+ * consent screen shows the user what is actually being granted.
+ */
+export function resolveScope(raw: string | null): OAuthScope | null {
+  if (!raw || !raw.trim()) return 'read';
+
+  const requested = raw.trim().split(/\s+/);
+  const known: readonly string[] = SUPPORTED_SCOPES;
+  if (!requested.every((s) => known.includes(s))) return null;
+
+  return requested.includes('read-write') ? 'read-write' : 'read';
+}
+
 export const sha256 = (value: string): string =>
   createHash('sha256').update(value).digest('hex');
 
