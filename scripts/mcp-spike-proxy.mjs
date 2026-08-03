@@ -36,6 +36,21 @@ const LISTEN_PORT = Number(process.env.SPIKE_PORT ?? 8787);
 /** The only path that is forwarded. Everything else 404s. */
 const ALLOWED_PATH = '/api/mcp';
 
+/**
+ * Everything logged here — method, path, header — comes from a remote caller
+ * over a public tunnel, and this log is the artifact the spike result is read
+ * from. Unsanitised, a crafted path containing newlines could forge log lines
+ * and make the result say whatever the caller wanted. Control characters become
+ * U+FFFD and the value is truncated, matching apps/web/lib/sanitize.ts.
+ */
+function forLog(value, max = 120) {
+  // JSON.stringify escapes newlines, carriage returns and other control
+  // characters, so a crafted value cannot start a new log line. It also quotes
+  // the result, which makes the boundary of an attacker-controlled value
+  // visible in the log rather than something a reader has to infer.
+  return JSON.stringify(String(value ?? '').slice(0, max));
+}
+
 let forwarded = 0;
 let refused = 0;
 
@@ -46,7 +61,7 @@ const server = createServer((req, res) => {
 
   if (path !== ALLOWED_PATH) {
     refused++;
-    console.log(`  refused  ${req.method} ${path}`);
+    console.log(`  refused  ${forLog(req.method, 10)} ${forLog(path)}`);
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'Not found' }));
     return;
@@ -55,8 +70,8 @@ const server = createServer((req, res) => {
   forwarded++;
   const auth = req.headers.authorization;
   console.log(
-    `  forward  ${req.method} ${path}  ` +
-    `authorization: ${auth ? auth.slice(0, 12) + '…' : 'ABSENT'}`,
+    `  forward  ${forLog(req.method, 10)} ${forLog(path)}  ` +
+    `authorization: ${auth ? forLog(auth.slice(0, 12), 12) + '…' : 'ABSENT'}`,
   );
 
   // Forwarding the Authorization header verbatim is the whole point of the
@@ -70,7 +85,7 @@ const server = createServer((req, res) => {
   );
 
   upstream.on('error', (err) => {
-    console.error(`  upstream error: ${err.message}`);
+    console.error(`  upstream error: ${forLog(err.message)}`);
     res.writeHead(502, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'Bad gateway' }));
   });
