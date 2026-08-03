@@ -105,6 +105,21 @@ export function protectedResourceMetadata(request: NextRequest): ProtectedResour
   };
 }
 
+/**
+ * 403 for a token that is valid but lacks the scope for what was attempted.
+ *
+ * The MCP spec separates this from 401: 401 means "authenticate", 403 means
+ * "you did, and it is not enough". A client that retries authentication on a
+ * scope failure loops forever, which is what conflating them causes.
+ */
+export function insufficientScopeValue(request: NextRequest, required: string): string {
+  return [
+    `Bearer resource_metadata="${resourceMetadataUrl(request)}"`,
+    'error="insufficient_scope"',
+    `scope="${required}"`,
+  ].join(', ');
+}
+
 export interface AuthorizationServerMetadata {
   issuer: string;
   authorization_endpoint: string;

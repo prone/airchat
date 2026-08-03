@@ -167,6 +167,17 @@ export interface ConnectorToken {
   name: string;
   /** Read-only unless explicitly issued read-write. See migration 00023. */
   scope: ConnectorScope;
+  /**
+   * RFC 8707 audience: the canonical URI this token was issued for.
+   *
+   * Null for CLI-issued tokens, whose audience binding is structural instead —
+   * nothing outside /api/mcp reads this table, so such a token is not a
+   * credential anywhere else. OAuth-issued tokens carry it explicitly, because
+   * an authorization server can mint tokens for more than one resource.
+   */
+  audience: string | null;
+  client_id: string | null;
+  granted_by_user_id: string | null;
   expires_at: string | null;
   revoked_at: string | null;
   last_used_at: string | null;
