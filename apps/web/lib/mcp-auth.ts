@@ -9,14 +9,24 @@
  *    this endpoint — it is a property of the code paths, not a claim inside the
  *    token that some future check has to remember to validate.
  *
- * 2. Failures return 401 with NO `WWW-Authenticate` header, and the app serves
- *    no OAuth protected-resource metadata. MCP clients begin OAuth discovery
- *    before sending custom headers; if the server advertises OAuth in any form,
- *    the client enters the OAuth flow and never sends `Authorization` at all.
- *    Cloudflare hit exactly this in their own MCP server — their direct-token
- *    check never fired because the header never arrived
- *    (https://github.com/cloudflare/mcp/issues/95). Adding a challenge header
- *    here would silently break the connector.
+ * 2. Failures return 401 WITH a `WWW-Authenticate` header pointing at this
+ *    server's RFC 9728 protected-resource metadata.
+ *
+ *    This reverses the original design, which advertised no OAuth at all. That
+ *    reasoning came from cloudflare/mcp#95: MCP clients begin OAuth discovery
+ *    before sending custom headers, so advertising discovery would stop a
+ *    client ever sending a bearer. It is correct for a client that sends
+ *    headers first, and wrong for claude.ai — which has no bearer path at all.
+ *
+ *    The spike settled it. claude.ai connected, received the challenge-less
+ *    401, then probed /.well-known/oauth-protected-resource (both path forms),
+ *    /.well-known/oauth-authorization-server and POST /register. All 404'd and
+ *    it failed. It never sent `Authorization` once. Silence did not preserve a
+ *    bearer flow; it produced an error.
+ *
+ *    Static bearer tokens remain supported here for CLI-issued credentials and
+ *    for clients that do send them. The challenge is additive: it gives a
+ *    discovery-only client somewhere to go.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -24,6 +34,7 @@ import { hashKey } from '@airchat/shared/crypto';
 import type { AgentContext, ConnectorScope } from '@airchat/shared';
 import { getStorageAdapter, getSupabaseClient } from '@/lib/api-v2-auth';
 import { checkRateLimit, checkIpRateLimit } from '@/lib/rate-limit';
+import { wwwAuthenticateValue } from '@/lib/oauth-metadata';
 
 /** Tokens are minted as `acx_` + 64 hex chars. The prefix aids leak scanning. */
 export const CONNECTOR_TOKEN_PREFIX = 'acx_';
@@ -36,11 +47,16 @@ export interface ConnectorAuth {
 }
 
 /**
- * 401 without a challenge. See note 2 above — this shape is the whole reason a
- * static bearer can work with claude.ai at all.
+ * 401 carrying the RFC 9728 discovery pointer. See note 2 above.
+ *
+ * `error` is the OAuth 2.1 code, not the human message: a client parses the
+ * former and shows the latter.
  */
-function unauthorized(message: string): NextResponse {
-  return NextResponse.json({ error: message }, { status: 401 });
+function unauthorized(request: NextRequest, message: string, error = 'invalid_token'): NextResponse {
+  return NextResponse.json(
+    { error: message },
+    { status: 401, headers: { 'WWW-Authenticate': wwwAuthenticateValue(request, error) } },
+  );
 }
 
 function rateLimited(retryAfterMs?: number): NextResponse {
@@ -98,7 +114,7 @@ export async function authenticateConnector(
 
   const token = extractBearerToken(request);
   if (!token) {
-    return unauthorized('Missing bearer token');
+    return unauthorized(request, 'Missing bearer token', 'invalid_request');
   }
 
   // Then the per-token limit, which bounds a single valid credential's usage.
@@ -114,12 +130,12 @@ export async function authenticateConnector(
 
   // Unknown, revoked and expired tokens are all indistinguishable here.
   if (!record) {
-    return unauthorized('Invalid token');
+    return unauthorized(request, 'Invalid token');
   }
 
   const agent = await lookupAgent(record.agent_id);
   if (!agent) {
-    return unauthorized('Invalid token');
+    return unauthorized(request, 'Invalid token');
   }
 
   void adapter.touchConnectorToken(record.id);
