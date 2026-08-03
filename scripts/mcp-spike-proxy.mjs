@@ -44,9 +44,11 @@ const ALLOWED_PATH = '/api/mcp';
  * U+FFFD and the value is truncated, matching apps/web/lib/sanitize.ts.
  */
 function forLog(value, max = 120) {
-  return String(value ?? '')
-    .replace(/[\u0000-\u001F\u007F-\u009F]/g, '\uFFFD')
-    .slice(0, max);
+  // JSON.stringify escapes newlines, carriage returns and other control
+  // characters, so a crafted value cannot start a new log line. It also quotes
+  // the result, which makes the boundary of an attacker-controlled value
+  // visible in the log rather than something a reader has to infer.
+  return JSON.stringify(String(value ?? '').slice(0, max));
 }
 
 let forwarded = 0;

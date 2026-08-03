@@ -50,7 +50,13 @@ export function verifyPkce(codeVerifier: string, storedChallenge: string): boole
  * on an authorization endpoint hands an attacker authorization codes.
  */
 export function isRegisteredRedirectUri(uri: string, registered: string[]): boolean {
-  return registered.includes(uri);
+  // Written as an explicit `===` rather than `registered.includes(uri)`.
+  // Array.prototype.includes is already exact-match, but it reads identically
+  // to String.prototype.includes, which is a substring test — and a substring
+  // test here would accept https://claude.ai.evil.com/... as a match for
+  // https://claude.ai/... . Static analysis flags the ambiguity, and it is a
+  // fair thing to flag: the two differ by the type of one variable.
+  return registered.some((candidate) => candidate === uri);
 }
 
 /**
