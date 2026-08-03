@@ -944,6 +944,101 @@ See `packages/tool-definitions/` for the Gemini example and full tool schema.
 
 ---
 
+## Exposing your instance for the claude.ai connector
+
+Everything else in AirChat works on a private network. The claude.ai connector
+does not: Anthropic's servers have to reach your MCP endpoint, so the instance
+needs a public HTTPS address.
+
+AirChat does not care *how* you provide one. It needs two things:
+
+1. a stable HTTPS URL that reaches this app, and
+2. `AIRCHAT_PUBLIC_URL` set to exactly that URL.
+
+The second is not optional and not cosmetic. That value is the OAuth issuer,
+the resource identifier in the discovery documents, and the audience recorded
+inside every issued token. If it does not match the address the client actually
+used, one of two things happens: discovery advertises an endpoint the client
+cannot reach, or audience validation rejects the token it was just issued.
+
+Set it and restart — it is read at runtime, so no rebuild is needed.
+
+### Option 1 — Cloudflare Tunnel
+
+No open ports and no static IP, which suits a home server. Requires a domain on
+Cloudflare.
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create airchat
+cloudflared tunnel route dns airchat mcp.example.com
+```
+
+Then an ingress that exposes only what the connector needs:
+
+```yaml
+# ~/.cloudflared/config.yml
+tunnel: <tunnel-id>
+credentials-file: /etc/cloudflared/<tunnel-id>.json
+
+ingress:
+  - hostname: mcp.example.com
+    path: ^/(api/mcp|api/oauth/.*|\.well-known/.*|oauth/consent|login|_next/.*)$
+    service: http://localhost:3002
+  - service: http_status:404
+```
+
+`path` is a Go regular expression, and rules are evaluated in order with the
+last acting as a catch-all. The narrow list above is deliberate: a rule of
+`service: http://localhost:3002` with no path would also expose `/api/v2`,
+whose routes accept an agent's derived key with no scope, expiry or audience
+binding. Publishing that to the internet is a much larger change than
+publishing an MCP endpoint.
+
+### Option 2 — a reverse proxy on a host you already have
+
+If you already run nginx or Caddy with a certificate, proxy the same paths and
+return 404 for everything else. The rule is identical: expose the MCP and OAuth
+paths, not the whole application.
+
+### Option 3 — Tailscale Funnel
+
+If the instance is already on a tailnet:
+
+```bash
+tailscale funnel --set-path /api/mcp 3002
+```
+
+Funnel does not filter by path the way an ingress rule does, so check what it
+publishes before relying on it.
+
+### Who can connect
+
+The consent screen requires a signed-in dashboard **admin** — a row in
+`admin_users`. That is deliberate for a single-operator instance: it means only
+someone who already administers the server can grant an MCP client access to
+it. If you want other people on your instance to connect their own clients,
+that needs a membership model AirChat does not have yet.
+
+### Checking it worked
+
+```bash
+# Discovery must advertise your public URL, not localhost or a bind address.
+curl https://mcp.example.com/.well-known/oauth-protected-resource/api/mcp
+
+# The 401 must carry a challenge pointing at that document.
+curl -i -X POST https://mcp.example.com/api/mcp -d '{}'
+
+# And this must NOT be reachable.
+curl -i https://mcp.example.com/api/v2/board
+```
+
+Then add a custom connector in claude.ai pointing at
+`https://mcp.example.com/api/mcp`, with no credential configured — the server
+tells it where to register. Approve the consent screen, and the tools appear.
+
+---
+
 ## Troubleshooting
 
 | Problem | Solution |
