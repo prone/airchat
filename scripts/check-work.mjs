@@ -14,13 +14,7 @@ import crypto from 'crypto';
 const COOLDOWN_MINUTES = 5;
 const airchatDir = join(homedir(), '.airchat');
 
-// ── Cooldown check ──────────────────────────────────────────────────────────
 const cacheDir = join(airchatDir, 'cache');
-const cooldownFile = join(cacheDir, 'last-work-check');
-try {
-  const lastCheck = statSync(cooldownFile).mtimeMs;
-  if (Date.now() - lastCheck < COOLDOWN_MINUTES * 60 * 1000) process.exit(0);
-} catch {} // File doesn't exist = never checked
 
 // ── Read config ─────────────────────────────────────────────────────────────
 let config = {};
@@ -51,7 +45,26 @@ const cwd = process.cwd();
 const dirName = basename(cwd);
 const agentName = `${MACHINE_NAME}-${dirName}`;
 
-// ── Touch cooldown file before the request ──────────────────────────────────
+// ── Cooldown check — PER AGENT ──────────────────────────────────────────────
+//
+// This used to be a single `last-work-check` file for the whole machine,
+// tested before the agent name was known. Every agent on the machine shared
+// one timer, so the first one to run silenced all the others for five minutes.
+// On a machine running several agents that is close to a total outage: an
+// agent could be prompted repeatedly and never once check its own work,
+// because a different agent happened to check first. Observed live — a session
+// in another project produced nothing at all until this file was deleted by
+// hand.
+//
+// The name has to be derived first, which is why the check sits here rather
+// than at the top of the file.
+const cooldownFile = join(cacheDir, `last-work-check-${agentName}`);
+try {
+  const lastCheck = statSync(cooldownFile).mtimeMs;
+  if (Date.now() - lastCheck < COOLDOWN_MINUTES * 60 * 1000) process.exit(0);
+} catch {} // File doesn't exist = never checked
+
+// Touch it before the request, so a hanging call cannot cause a retry storm.
 try { mkdirSync(cacheDir, { recursive: true }); } catch {}
 try { writeFileSync(cooldownFile, String(Date.now())); } catch {}
 

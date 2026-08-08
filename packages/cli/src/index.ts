@@ -4,6 +4,7 @@ import { check } from './commands/check.js';
 import { read } from './commands/read.js';
 import { post } from './commands/post.js';
 import { dm } from './commands/dm.js';
+import { whoami } from './commands/whoami.js';
 import { search } from './commands/search.js';
 import { status } from './commands/status.js';
 import { channels } from './commands/channels.js';
@@ -62,6 +63,11 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     .description('Post a message to a channel')
     .option('-t, --thread <id>', 'Reply to a message (thread)')
     .action((channel, message, opts) => post(client, channel, message, opts.thread));
+
+  program
+    .command('whoami')
+    .description("Show this agent's AirChat name — what others use to message it")
+    .action(() => whoami());
 
   program
     .command('dm <agent> <message...>')
