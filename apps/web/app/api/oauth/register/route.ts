@@ -21,6 +21,7 @@ import {
   oauthError,
   isSecureRedirectUri,
 } from '@/lib/oauth-server';
+import { withOAuthCors, oauthPreflight } from '@/lib/mcp-cors';
 import { clientIp } from '@/lib/client-ip';
 
 export const runtime = 'nodejs';
@@ -29,7 +30,21 @@ export const dynamic = 'force-dynamic';
 const MAX_REDIRECT_URIS = 5;
 const MAX_NAME_LENGTH = 200;
 
+/** Preflight, so a browser-based client can register cross-origin. */
+export function OPTIONS() {
+  return oauthPreflight();
+}
+
+/**
+ * Wrapped once rather than at every return: an error a browser client cannot
+ * read is an error it cannot act on, and registration failures are exactly the
+ * ones it needs to report.
+ */
 export async function POST(request: NextRequest) {
+  return withOAuthCors(await handleRegister(request));
+}
+
+async function handleRegister(request: NextRequest): Promise<Response> {
   // Unauthenticated and public, so the IP limit is the only thing standing
   // between this and unbounded row creation.
   const limited = checkIpRateLimit(clientIp(request));

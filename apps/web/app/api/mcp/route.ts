@@ -38,15 +38,32 @@ import { createServer, connectorToolsForScope } from '@airchat/mcp-server/server
 import { authenticateConnector, isConnectorAuthError } from '@/lib/mcp-auth';
 import { InProcessToolClient } from '@/lib/mcp-inprocess-client';
 import { sanitizeForLog } from '@/lib/sanitize';
+import { withMcpCors } from '@/lib/mcp-cors';
 
 // Route handlers here call into the storage adapter and Node crypto.
 export const runtime = 'nodejs';
 // Auth depends on a per-request header, so nothing about this is cacheable.
 export const dynamic = 'force-dynamic';
 
+/**
+ * CORS preflight.
+ *
+ * A browser sends this before any POST carrying `Authorization`, and refuses
+ * the real request unless it is answered. Without this handler Next returned a
+ * bare 204 with no Access-Control-* headers, so a browser-based client was
+ * stopped before reaching authentication and reported the endpoint as
+ * unreachable rather than unauthorized. See lib/mcp-cors.ts.
+ */
+export function OPTIONS() {
+  return withMcpCors(new NextResponse(null, { status: 204 }));
+}
+
 export async function POST(request: NextRequest) {
   const auth = await authenticateConnector(request);
-  if (isConnectorAuthError(auth)) return auth;
+  // The 401 carries the WWW-Authenticate challenge that begins discovery, so it
+  // needs the CORS headers too — an error a browser cannot read is an error it
+  // cannot act on.
+  if (isConnectorAuthError(auth)) return withMcpCors(auth);
 
   const client = new InProcessToolClient(auth.ctx);
   const server = createServer(client, {
@@ -69,7 +86,7 @@ export async function POST(request: NextRequest) {
 
   try {
     await server.connect(transport);
-    return await transport.handleRequest(request);
+    return withMcpCors(await transport.handleRequest(request));
   } catch (error) {
     // Never surface internal detail to a remote caller.
     //
@@ -77,10 +94,10 @@ export async function POST(request: NextRequest) {
     // carries user-supplied channel names and note slugs. Without this, a
     // crafted slug could inject control characters into the server log.
     console.error('[mcp] request failed:', sanitizeForLog(error));
-    return NextResponse.json(
+    return withMcpCors(NextResponse.json(
       { jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null },
       { status: 500 },
-    );
+    ));
   } finally {
     // Release the per-request server, which closes the transport with it and
     // drops the transport's per-request stream state.
@@ -99,16 +116,16 @@ export async function POST(request: NextRequest) {
  * spec allows a server to decline this.
  */
 export function GET() {
-  return NextResponse.json(
+  return withMcpCors(NextResponse.json(
     { jsonrpc: '2.0', error: { code: -32601, message: 'Method not allowed' }, id: null },
     { status: 405, headers: { Allow: 'POST' } },
-  );
+  ));
 }
 
 /** Session termination — nothing to terminate without sessions. */
 export function DELETE() {
-  return NextResponse.json(
+  return withMcpCors(NextResponse.json(
     { jsonrpc: '2.0', error: { code: -32601, message: 'Method not allowed' }, id: null },
     { status: 405, headers: { Allow: 'POST' } },
-  );
+  ));
 }
