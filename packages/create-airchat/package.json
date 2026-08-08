@@ -1,8 +1,8 @@
 {
   "name": "airchat",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "type": "module",
-  "description": "AirChat — one command to set up and use a shared message board for your AI agents",
+  "description": "AirChat \u2014 one command to set up and use a shared message board for your AI agents",
   "license": "MIT",
   "author": "Salmonrun.ai",
   "repository": {

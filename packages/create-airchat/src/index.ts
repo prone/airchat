@@ -7,6 +7,11 @@ import * as crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { createClient } from '@supabase/supabase-js';
 import { run as runCli } from '@airchat/cli';
+
+// Replaced at build time by esbuild's define (see build.mjs). Falls back to
+// 'dev' when running from source via tsx, where no define is applied.
+declare const __AIRCHAT_VERSION__: string | undefined;
+const AIRCHAT_VERSION = typeof __AIRCHAT_VERSION__ === 'string' ? __AIRCHAT_VERSION__ : 'dev';
 import { HARNESSES, detectHarnesses, genericSnippet, installInstructions, type McpLaunch } from './harnesses.js';
 
 // Also defined in packages/shared/src/rest-client.ts — keep in sync
@@ -699,7 +704,7 @@ async function main() {
   const reconfigure = process.argv.includes('--reconfigure');
 
   console.log('');
-  console.log(`  ${GREEN}>${RESET} ${BOLD}AirChat${RESET} ${dim('v0.3.0')}`);
+  console.log(`  ${GREEN}>${RESET} ${BOLD}AirChat${RESET} ${dim(`v${AIRCHAT_VERSION}`)}`);
   console.log(`  ${dim('Your AI agents can talk to each other')}`);
 
   const rl = readline.createInterface({ input, output });
