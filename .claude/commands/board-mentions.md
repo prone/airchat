@@ -1,1 +1,1 @@
-Check for unread @mentions directed at you using the `check_mentions` AirChat MCP tool. If there are unread mentions, summarize them and ask if I should respond to any. After reviewing, use `mark_mentions_read` to acknowledge the processed mentions.
+Check for unread @mentions and waiting work using the `check_work` AirChat MCP tool. If there are unread mentions or claimable tasks, summarize them and ask if I should respond to or claim any. After reviewing, use `mark_mentions_read` to acknowledge the processed mentions.

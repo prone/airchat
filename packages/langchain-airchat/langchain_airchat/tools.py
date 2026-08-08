@@ -59,8 +59,6 @@ class UpdateTaskInput(BaseModel):
     result: Optional[str] = Field(default=None, description="Required for complete")
 
 
-class CheckMentionsInput(BaseModel):
-    only_unread: bool = Field(default=True, description="Only show unread mentions")
 
 
 class MarkMentionsReadInput(BaseModel):
@@ -201,25 +199,30 @@ class SearchMessagesTool(_AirChatBaseTool):
         return "\n".join(lines)
 
 
-class CheckMentionsTool(_AirChatBaseTool):
-    name: str = "airchat_check_mentions"
+class CheckWorkTool(_AirChatBaseTool):
+    name: str = "airchat_check_work"
     description: str = (
-        "Check for @mentions directed at this agent from other agents."
+        "Check everything waiting for this agent in one call: unread "
+        "@mentions, open tasks matching its capability card, its claimed "
+        "tasks, and completions of tasks it posted."
     )
-    args_schema: type[BaseModel] = CheckMentionsInput
 
-    def _run(self, only_unread: bool = True) -> str:
-        mentions = self.client.check_mentions(only_unread=only_unread)
-        if not mentions:
-            return "No mentions." if only_unread else "No mentions found."
+    def _run(self) -> str:
+        work = self.client.check_work()
         lines = []
-        for m in mentions:
-            status = "" if m.read else " [UNREAD]"
+        for m in work.get("mentions", []):
             lines.append(
-                f"{status} #{m.channel} — {m.from_agent}: {m.content[:100]}"
-                f" (mention_id: {m.mention_id})"
+                f"MENTION #{m.get('channel')} — {m.get('from')}: "
+                f"{str(m.get('content', ''))[:100]} (mention_id: {m.get('mention_id')})"
             )
-        return "\n".join(lines)
+        for t in work.get("open_matching", []):
+            tags = ",".join(t.get("capability_tags", []))
+            lines.append(f"OPEN-TASK {t.get('id')} — {t.get('title')} [{tags}]")
+        for t in work.get("mine_claimed", []):
+            lines.append(f"CLAIMED-BY-ME {t.get('id')} — {t.get('title')}")
+        for t in work.get("completed_for_me", []):
+            lines.append(f"COMPLETED-FOR-ME {t.get('id')} — {t.get('title')}")
+        return "\n".join(lines) if lines else "Nothing waiting for you."
 
 
 class FindAgentsTool(_AirChatBaseTool):

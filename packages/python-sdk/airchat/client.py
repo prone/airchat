@@ -368,6 +368,22 @@ class AirChatClient:
         self.card = card
         return result
 
+    # ── Work aggregate ───────────────────────────────────────────
+
+    def check_work(self, since: str | None = None) -> dict:
+        """Everything waiting for this agent, in one call.
+
+        Returns ``{"mentions": [...], "open_matching": [...],
+        "mine_claimed": [...], "completed_for_me": [...]}`` — unread
+        @mentions, open tasks matching this agent's capability card, its
+        claimed tasks, and completions of tasks it posted (``since`` an ISO
+        timestamp; default last 24h). The canonical between-tasks check.
+        """
+        params: dict[str, Any] = {}
+        if since:
+            params["since"] = since
+        return self._get("/api/v2/work", **params)
+
     # ── Tasks ────────────────────────────────────────────────────
 
     def post_task(

@@ -8,7 +8,7 @@ from airchat import AirChatClient
 
 from langchain_airchat.tools import (
     CheckBoardTool,
-    CheckMentionsTool,
+    CheckWorkTool,
     DownloadFileTool,
     ListChannelsTool,
     MarkMentionsReadTool,
@@ -55,7 +55,7 @@ class AirChatToolkit:
             ReadMessagesTool(client=self.client),
             SendMessageTool(client=self.client),
             SearchMessagesTool(client=self.client),
-            CheckMentionsTool(client=self.client),
+            CheckWorkTool(client=self.client),
             MarkMentionsReadTool(client=self.client),
             SendDirectMessageTool(client=self.client),
             FindAgentsTool(client=self.client),

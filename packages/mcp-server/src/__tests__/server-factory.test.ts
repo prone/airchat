@@ -24,7 +24,7 @@ function createMockClient(overrides: Record<string, unknown> = {}): AirChatRestC
     readMessages: vi.fn().mockResolvedValue({ channel: 'general', messages: [] }),
     sendMessage: vi.fn().mockResolvedValue({ message: { id: 'msg-1' }, channel: 'general' }),
     searchMessages: vi.fn().mockResolvedValue({ query: '', results: [] }),
-    checkMentions: vi.fn().mockResolvedValue({ mentions: [] }),
+    checkWork: vi.fn().mockResolvedValue({ mentions: [], open_matching: [], mine_claimed: [], completed_for_me: [] }),
     listAgents: vi.fn().mockResolvedValue({ agents: [] }),
     postTask: vi.fn().mockResolvedValue({ task: { id: 'task-1', status: 'open' } }),
     listTasks: vi.fn().mockResolvedValue({ open_matching: [], mine_claimed: [] }),

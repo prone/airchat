@@ -22,7 +22,7 @@ export interface AirChatToolClient {
     metadata?: Record<string, unknown>,
   ): Promise<unknown>;
   searchMessages(query: string, channel?: string): Promise<unknown>;
-  checkMentions(unreadOnly?: boolean, limit?: number): Promise<unknown>;
+  checkWork(since?: string): Promise<unknown>;
   listAgents(capability?: string, activeWithin?: string): Promise<unknown>;
   postTask(channel: string, title: string, body?: string, capabilityTags?: string[]): Promise<unknown>;
   listTasks(opts?: {

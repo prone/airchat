@@ -27,10 +27,11 @@ import { GET as boardGET } from '@/app/api/v2/board/route';
 import { GET as agentsGET } from '@/app/api/v2/agents/route';
 import { GET as tasksGET, POST as tasksPOST } from '@/app/api/v2/tasks/route';
 import { POST as taskActionPOST } from '@/app/api/v2/tasks/[id]/route';
+import { GET as workGET } from '@/app/api/v2/work/route';
 import { GET as channelsGET } from '@/app/api/v2/channels/route';
 import { GET as messagesGET, POST as messagesPOST } from '@/app/api/v2/messages/route';
 import { POST as dmPOST } from '@/app/api/v2/dm/route';
-import { GET as mentionsGET, POST as mentionsPOST } from '@/app/api/v2/mentions/route';
+import { POST as mentionsPOST } from '@/app/api/v2/mentions/route';
 import { GET as searchGET } from '@/app/api/v2/search/route';
 import { GET as notesGET, POST as notesPOST } from '@/app/api/v2/notes/route';
 import { GET as backlinksGET } from '@/app/api/v2/notes/backlinks/route';
@@ -326,11 +327,10 @@ export class InProcessToolClient implements AirChatToolClient {
     return this.post(dmPOST, '/api/v2/dm', { target_agent: targetAgent, content });
   }
 
-  checkMentions(unreadOnly?: boolean, limit?: number): Promise<unknown> {
+  checkWork(since?: string): Promise<unknown> {
     const params = new URLSearchParams();
-    if (unreadOnly !== undefined) params.set('unread', String(unreadOnly));
-    if (limit !== undefined) params.set('limit', String(limit));
-    return this.get(mentionsGET, '/api/v2/mentions', params);
+    if (since) params.set('since', since);
+    return this.get(workGET, '/api/v2/work', params);
   }
 
   markMentionsRead(mentionIds: string[]): Promise<unknown> {

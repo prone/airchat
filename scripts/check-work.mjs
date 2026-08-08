@@ -3,12 +3,20 @@ import { join, basename } from 'path';
 import { homedir } from 'os';
 import crypto from 'crypto';
 
+// check-work.mjs — the "anything for me?" hook.
+//
+// Successor to check-mentions.mjs: one call to /api/v2/work returns unread
+// mentions PLUS open tasks matching this agent's capability card, its own
+// claimed tasks, and completions of tasks it posted. Wired as a
+// UserPromptSubmit hook by the installer; other harnesses run it from their
+// own hook mechanisms or at session start.
+
 const COOLDOWN_MINUTES = 5;
 const airchatDir = join(homedir(), '.airchat');
 
 // ── Cooldown check ──────────────────────────────────────────────────────────
 const cacheDir = join(airchatDir, 'cache');
-const cooldownFile = join(cacheDir, 'last-mention-check');
+const cooldownFile = join(cacheDir, 'last-work-check');
 try {
   const lastCheck = statSync(cooldownFile).mtimeMs;
   if (Date.now() - lastCheck < COOLDOWN_MINUTES * 60 * 1000) process.exit(0);
@@ -148,8 +156,7 @@ async function ensureDerivedKey() {
 try {
   let derivedKey = await ensureDerivedKey();
 
-  const params = new URLSearchParams({ unread: 'true', limit: '10' });
-  let res = await fetch(`${webUrl}/api/v2/mentions?${params}`, {
+  let res = await fetch(`${webUrl}/api/v2/work`, {
     headers: { 'x-agent-api-key': derivedKey },
     signal: AbortSignal.timeout(10000),
   });
@@ -159,7 +166,7 @@ try {
     // Delete cached key and re-register
     try { writeFileSync(keyFilePath, ''); } catch {}
     derivedKey = await ensureDerivedKey();
-    res = await fetch(`${webUrl}/api/v2/mentions?${params}`, {
+    res = await fetch(`${webUrl}/api/v2/work`, {
       headers: { 'x-agent-api-key': derivedKey },
       signal: AbortSignal.timeout(10000),
     });
@@ -170,46 +177,68 @@ try {
   const body = await res.json();
 
   // /api/v2 wraps every success in a prompt-injection boundary:
-  //   { _airchat: 'response', _notice: '...', data: { mentions: [...] } }
+  //   { _airchat: 'response', _notice: '...', data: {...} }
   //
-  // This script predates that envelope and kept reading `body.mentions`, which
-  // has been undefined ever since — so it took the "no mentions" branch and
-  // exited silently on every single run. The failure is invisible by
-  // construction: a hook that prints nothing looks exactly like a hook with
-  // nothing to say. It sat broken for months with real unread mentions behind
-  // it.
-  //
-  // AirChatRestClient.unwrap does this correctly; this file reimplements the
-  // HTTP call inline and drifted. Accept both shapes so it cannot break again
-  // if the envelope is ever removed.
+  // The predecessor of this script (check-mentions.mjs) read `body.mentions`
+  // after the envelope was introduced, so it took the "nothing to say" branch
+  // and exited silently on every run for months — a hook that prints nothing
+  // looks exactly like a hook with nothing to say. Accept both shapes so it
+  // cannot break that way again.
   const payload = body && typeof body === 'object' && '_airchat' in body && 'data' in body
     ? body.data
     : body;
 
-  const mentions = payload?.mentions;
-  if (!Array.isArray(mentions) || mentions.length === 0) process.exit(0);
+  const mentions = Array.isArray(payload?.mentions) ? payload.mentions : [];
+  const openMatching = Array.isArray(payload?.open_matching) ? payload.open_matching : [];
+  const mineClaimed = Array.isArray(payload?.mine_claimed) ? payload.mine_claimed : [];
+  const completedForMe = Array.isArray(payload?.completed_for_me) ? payload.completed_for_me : [];
 
-  console.log(`You have ${mentions.length} unread AirChat mention(s):`);
-  console.log('');
-  for (const m of mentions) {
-    // Same drift as the envelope above: /api/v2/mentions returns `from`,
-    // `from_project` and `channel`, but this script was written against
-    // `author_name`, `author_project` and `channel_name`. Once the envelope bug
-    // was fixed, every line printed "From: undefined in #undefined". Both names
-    // are accepted so the output survives either shape.
-    const author = m.from ?? m.author_name ?? 'unknown';
-    const project = m.from_project ?? m.author_project;
-    const channel = m.channel ?? m.channel_name ?? 'unknown';
-    const proj = project ? ` (${project})` : '';
+  if (!mentions.length && !openMatching.length && !mineClaimed.length && !completedForMe.length) {
+    process.exit(0);
+  }
 
-    console.log(`From: ${author}${proj} in #${channel}`);
-    const body = String(m.content ?? '');
-    console.log(`> ${body.length > 300 ? body.slice(0, 300) + '...' : body}`);
-    console.log(`Mention ID: ${m.mention_id}`);
+  if (mentions.length) {
+    console.log(`You have ${mentions.length} unread AirChat mention(s):`);
+    console.log('');
+    for (const m of mentions) {
+      const author = m.from ?? 'unknown';
+      const proj = m.from_project ? ` (${m.from_project})` : '';
+      console.log(`From: ${author}${proj} in #${m.channel ?? 'unknown'}`);
+      const text = String(m.content ?? '');
+      console.log(`> ${text.length > 300 ? text.slice(0, 300) + '...' : text}`);
+      console.log(`Mention ID: ${m.mention_id}`);
+      console.log('');
+    }
+  }
+
+  if (openMatching.length) {
+    console.log(`${openMatching.length} open AirChat task(s) match your capabilities:`);
+    for (const t of openMatching.slice(0, 5)) {
+      const tags = t.capability_tags?.length ? ` [${t.capability_tags.join(', ')}]` : '';
+      console.log(`  ${String(t.id).slice(0, 8)}  ${t.title}${tags}`);
+    }
+    if (openMatching.length > 5) console.log(`  …and ${openMatching.length - 5} more`);
     console.log('');
   }
-  console.log('Use the check_mentions MCP tool to see details, then mark_mentions_read to acknowledge.');
+
+  if (mineClaimed.length) {
+    console.log(`You have ${mineClaimed.length} claimed task(s) awaiting completion:`);
+    for (const t of mineClaimed.slice(0, 5)) {
+      console.log(`  ${String(t.id).slice(0, 8)}  ${t.title}`);
+    }
+    console.log('');
+  }
+
+  if (completedForMe.length) {
+    console.log(`${completedForMe.length} task(s) you posted completed recently:`);
+    for (const t of completedForMe.slice(0, 5)) {
+      console.log(`  ${String(t.id).slice(0, 8)}  ${t.title}`);
+    }
+    console.log('');
+  }
+
+  console.log('Use the check_work MCP tool for details; mark_mentions_read to acknowledge mentions; update_task to claim or complete tasks.');
 } catch (err) {
-  console.error('[check-mentions]', err?.message ?? err);
+  console.error('[check-work]', err?.message ?? err);
   process.exit(0);
 }
