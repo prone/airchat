@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { createHash, randomBytes } from 'node:crypto';
 import {
   resolveScope,
+  grantedScopeString,
   verifyPkce,
   isRegisteredRedirectUri,
   isSecureRedirectUri,
@@ -211,5 +212,39 @@ describe('scope resolution', () => {
   it('does not grant read-write from a lookalike', () => {
     expect(resolveScope('read-write-all')).toBeNull();
     expect(resolveScope('readwrite')).toBeNull();
+  });
+});
+
+/**
+ * What the token response echoes back.
+ *
+ * These exist because the connector reached the end of the flow and then
+ * discarded the grant: two tokens were issued with the right audience and both
+ * showed last_used_at NULL. The client asked for "read read-write" and was told
+ * it received "read-write", which reads as a partial grant.
+ */
+describe('granted scope echoed in the token response', () => {
+  it('names both scopes for a read-write grant, because it covers both', () => {
+    expect(grantedScopeString('read-write')).toBe('read read-write');
+  });
+
+  it('names only read for a read grant', () => {
+    expect(grantedScopeString('read')).toBe('read');
+  });
+
+  it('answers the full request claude.ai actually sends', () => {
+    // The round trip that failed: request -> resolve -> echo.
+    const granted = resolveScope('read read-write');
+    expect(granted).not.toBeNull();
+    expect(grantedScopeString(granted!)).toBe('read read-write');
+  });
+
+  it('never returns a scope the client did not ask for', () => {
+    const granted = resolveScope('read');
+    expect(grantedScopeString(granted!).split(' ')).not.toContain('read-write');
+  });
+
+  it('returns a space-delimited list, per RFC 6749 §3.3', () => {
+    expect(grantedScopeString('read-write').split(/\s+/).sort()).toEqual(['read', 'read-write']);
   });
 });

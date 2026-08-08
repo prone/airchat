@@ -43,6 +43,24 @@ export function resolveScope(raw: string | null): OAuthScope | null {
   return requested.includes('read-write') ? 'read-write' : 'read';
 }
 
+/**
+ * The granted scope as the space-delimited LIST a token response must carry.
+ *
+ * `resolveScope` collapses a request to the single scope we store, because one
+ * value decides the tool surface. But that collapsed value is the wrong thing to
+ * echo back: claude.ai asks for "read read-write" and was told it got only
+ * "read-write", so a client checking that it received everything it requested
+ * sees `read` missing.
+ *
+ * read-write is a superset of read — a read-write token can do everything a
+ * read token can — so naming both is accurate, not generous. RFC 6749 §5.1
+ * requires the response to state the granted scope whenever it differs from the
+ * request; stating it as a list is what makes it comparable to the request.
+ */
+export function grantedScopeString(scope: OAuthScope): string {
+  return scope === 'read-write' ? 'read read-write' : 'read';
+}
+
 export const sha256 = (value: string): string =>
   createHash('sha256').update(value).digest('hex');
 

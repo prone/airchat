@@ -1,19 +1,27 @@
 /**
  * Streamable HTTP MCP endpoint for the claude.ai connector.
  *
- * ── Why there is no OAuth advertisement here ────────────────────────────────
+ * ── This endpoint DOES advertise OAuth, and must keep doing so ──────────────
  *
- * MCP clients run OAuth discovery BEFORE sending custom headers. If this
- * endpoint advertised OAuth in any form — a `WWW-Authenticate` challenge on the
- * 401, or an RFC 9728 protected-resource metadata document — the client would
- * enter the OAuth flow and never send `Authorization` at all. Cloudflare hit
- * exactly this in their own MCP server; their direct-token check never fired
- * because the header never arrived (cloudflare/mcp#95).
+ * An earlier version of this comment said the opposite: that 401s deliberately
+ * carried no challenge and that no protected-resource route existed, because
+ * MCP clients run OAuth discovery before sending custom headers
+ * (cloudflare/mcp#95) and advertising discovery would stop a client ever
+ * sending a bearer.
  *
- * So: 401s carry no challenge, and there is deliberately no
- * /.well-known/oauth-protected-resource route in this app. Adding either would
- * silently break the connector. Full OAuth 2.1 remains a separate, later
- * option for third-party self-hosters.
+ * That reasoning is sound for a client that can send a static bearer. claude.ai
+ * cannot. The spike settled it: given no OAuth metadata it probed
+ * /.well-known/oauth-protected-resource (both path forms),
+ * /.well-known/oauth-authorization-server and POST /register, got four 404s and
+ * failed — without ever sending `Authorization`. Silence did not preserve a
+ * bearer flow; it produced an error. See anthropics/claude-ai-mcp#112 (closed
+ * NOT_PLANNED) and #10.
+ *
+ * So the design was reversed in #50 and the connector works *because* of it:
+ * `mcp-auth.ts` returns 401 WITH `WWW-Authenticate`, and
+ * app/.well-known/oauth-protected-resource/ exists. Removing either breaks the
+ * connector. Static bearers still work for CLI-issued tokens — the challenge is
+ * additive, giving a discovery-only client somewhere to go.
  *
  * ── Statelessness ───────────────────────────────────────────────────────────
  *
