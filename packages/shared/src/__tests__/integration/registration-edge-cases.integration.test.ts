@@ -55,7 +55,7 @@ function buildValidPayload(overrides?: Partial<RegistrationPayload & { signature
   const derivedKey = generateDerivedKey();
   const payload: RegistrationPayload = {
     machine_name: machineName,
-    agent_name: `edge-case-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    agent_name: 'edge-case-test',
     derived_key_hash: hashKey(derivedKey),
     timestamp: new Date().toISOString(),
     nonce: generateNonce(),
@@ -104,7 +104,7 @@ describe('timestamp validation', () => {
     const futureTimestamp = new Date(Date.now() + 120_000).toISOString(); // 2 min ahead
     const payload: RegistrationPayload = {
       machine_name: machineName,
-      agent_name: `future-test-${Date.now()}`,
+      agent_name: 'future-test',
       derived_key_hash: hashKey(generateDerivedKey()),
       timestamp: futureTimestamp,
       nonce: generateNonce(),
@@ -118,7 +118,7 @@ describe('timestamp validation', () => {
   it('rejects invalid timestamp format', async () => {
     const payload: RegistrationPayload = {
       machine_name: machineName,
-      agent_name: `bad-ts-${Date.now()}`,
+      agent_name: 'bad-ts-test',
       derived_key_hash: hashKey(generateDerivedKey()),
       timestamp: 'not-a-date',
       nonce: generateNonce(),
@@ -135,12 +135,11 @@ describe('timestamp validation', () => {
 describe('nonce replay', () => {
   it('rejects duplicate nonce with 409', async () => {
     const nonce = generateNonce();
-    const agentSuffix = Date.now().toString(36);
 
     // First request — should succeed
     const payload1: RegistrationPayload = {
       machine_name: machineName,
-      agent_name: `nonce-test-1-${agentSuffix}`,
+      agent_name: 'nonce-test-1',
       derived_key_hash: hashKey(generateDerivedKey()),
       timestamp: new Date().toISOString(),
       nonce,
@@ -153,7 +152,7 @@ describe('nonce replay', () => {
     // Second request with same nonce — should get 409
     const payload2: RegistrationPayload = {
       machine_name: machineName,
-      agent_name: `nonce-test-2-${agentSuffix}`,
+      agent_name: 'nonce-test-2',
       derived_key_hash: hashKey(generateDerivedKey()),
       timestamp: new Date().toISOString(),
       nonce, // same nonce
@@ -175,7 +174,7 @@ describe('signature validation', () => {
   it('rejects tampered signature with 403', async () => {
     const payload: RegistrationPayload = {
       machine_name: machineName,
-      agent_name: `sig-tamper-${Date.now()}`,
+      agent_name: 'sig-tamper-test',
       derived_key_hash: hashKey(generateDerivedKey()),
       timestamp: new Date().toISOString(),
       nonce: generateNonce(),
@@ -197,7 +196,7 @@ describe('signature validation', () => {
     const wrongKeypair = generateKeypair();
     const payload: RegistrationPayload = {
       machine_name: machineName,
-      agent_name: `wrong-key-${Date.now()}`,
+      agent_name: 'wrong-key-test',
       derived_key_hash: hashKey(generateDerivedKey()),
       timestamp: new Date().toISOString(),
       nonce: generateNonce(),
@@ -211,7 +210,7 @@ describe('signature validation', () => {
   it('rejects non-existent machine_name with 403 (same as bad signature)', async () => {
     const payload: RegistrationPayload = {
       machine_name: 'totally-fake-machine-that-does-not-exist',
-      agent_name: `fake-machine-${Date.now()}`,
+      agent_name: 'fake-machine-test',
       derived_key_hash: hashKey(generateDerivedKey()),
       timestamp: new Date().toISOString(),
       nonce: generateNonce(),
@@ -277,7 +276,7 @@ describe('valid registration', () => {
   });
 
   it('allows re-registration of the same agent (key rotation)', async () => {
-    const agentName = `reregister-test-${Date.now()}`;
+    const agentName = 'reregister-test';
 
     // First registration
     const body1 = buildValidPayload({ agent_name: agentName });
