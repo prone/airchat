@@ -69,8 +69,13 @@ export interface StorageAdapter {
   registerAgent(
     agentName: string,
     machineId: string,
-    derivedKeyHash: string
+    derivedKeyHash: string,
+    /** Validated capability card to store in agents.metadata.card. */
+    card?: Record<string, unknown> | null
   ): Promise<Agent>;
+
+  /** Replace the agent's own capability card (agents.metadata.card). */
+  updateAgentCard(agentId: string, card: Record<string, unknown>): Promise<void>;
 
   /** Count active agents belonging to a specific machine. */
   countAgentsByMachine(machineId: string): Promise<number>;

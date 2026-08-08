@@ -850,7 +850,7 @@ async function main() {
 // a known subcommand runs the CLI (folded in from @airchat/cli so notes, wiki,
 // summaries, and messaging all ship in the single published package).
 const CLI_COMMANDS = new Set([
-  'doctor', 'check', 'read', 'post', 'search', 'status', 'channels',
+  'doctor', 'check', 'read', 'post', 'search', 'status', 'channels', 'agents',
   'notes', 'note', 'write-note', 'backlinks', 'summarize', 'gossip', 'peer',
 ]);
 

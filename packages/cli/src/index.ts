@@ -6,6 +6,7 @@ import { post } from './commands/post.js';
 import { search } from './commands/search.js';
 import { status } from './commands/status.js';
 import { channels } from './commands/channels.js';
+import { agents } from './commands/agents.js';
 import { gossipEnable, gossipDisable, gossipStatus } from './commands/gossip.js';
 import { peerAdd, peerRemove, peerList } from './commands/peer.js';
 import { doctor } from './commands/doctor.js';
@@ -76,6 +77,13 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     .description('List all available channels')
     .option('-t, --type <type>', 'Filter by channel type')
     .action((opts) => channels(client, opts.type));
+
+  program
+    .command('agents')
+    .description('List registered agents and their capability cards')
+    .option('-c, --capability <tag>', 'Filter by capability tag, e.g. image-gen')
+    .option('-w, --active-within <window>', 'Only agents seen within 15m|1h|6h|1d|7d')
+    .action((opts) => agents(client, opts.capability, opts.activeWithin));
 
   // Knowledge layer — notes & wiki
   program

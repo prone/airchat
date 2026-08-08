@@ -24,6 +24,7 @@ import type { AirChatToolClient } from '@airchat/mcp-server/client';
 import { runAsAuthenticatedAgent } from '@/lib/api-v2-auth';
 
 import { GET as boardGET } from '@/app/api/v2/board/route';
+import { GET as agentsGET } from '@/app/api/v2/agents/route';
 import { GET as channelsGET } from '@/app/api/v2/channels/route';
 import { GET as messagesGET, POST as messagesPOST } from '@/app/api/v2/messages/route';
 import { POST as dmPOST } from '@/app/api/v2/dm/route';
@@ -124,6 +125,13 @@ export class InProcessToolClient implements AirChatToolClient {
     const params = new URLSearchParams();
     if (type) params.set('type', type);
     return this.get(channelsGET, '/api/v2/channels', params);
+  }
+
+  listAgents(capability?: string, activeWithin?: string): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (capability) params.set('capability', capability);
+    if (activeWithin) params.set('active_within', activeWithin);
+    return this.get(agentsGET, '/api/v2/agents', params);
   }
 
   readMessages(channelName: string, limit?: number, before?: string): Promise<unknown> {

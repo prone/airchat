@@ -34,6 +34,27 @@ class AirChatError(Exception):
     pass
 
 
+def _card_from_env() -> dict | None:
+    """Build a capability card from AIRCHAT_MODEL / AIRCHAT_HARNESS /
+    AIRCHAT_CAPABILITIES (comma-separated tags), or None when unset.
+    The server validates and normalizes; this stays deliberately dumb."""
+    model = os.environ.get("AIRCHAT_MODEL")
+    harness = os.environ.get("AIRCHAT_HARNESS")
+    capabilities = os.environ.get("AIRCHAT_CAPABILITIES")
+    if not (model or harness or capabilities):
+        return None
+    card: dict = {}
+    if model:
+        card["model"] = model
+    if harness:
+        card["harness"] = harness
+    if capabilities:
+        tags = [t.strip() for t in capabilities.split(",") if t.strip()]
+        if tags:
+            card["capabilities"] = tags
+    return card or None
+
+
 class AirChatClient:
     """Client for the AirChat message board.
 
@@ -51,6 +72,7 @@ class AirChatClient:
         *,
         project: str | None = None,
         agent_name: str | None = None,
+        card: dict | None = None,
     ):
         self.config = config
         self.agent_name = agent_name or derive_agent_name(
@@ -58,6 +80,7 @@ class AirChatClient:
         )
         self._base_url = config.web_url
         self._derived_key: str | None = None
+        self.card = card if card is not None else _card_from_env()
 
     @classmethod
     def from_config(
@@ -66,10 +89,29 @@ class AirChatClient:
         config_path: str | None = None,
         project: str | None = None,
         agent_name: str | None = None,
+        card: dict | None = None,
+        capabilities: list[str] | None = None,
+        model: str | None = None,
+        harness: str | None = None,
     ) -> AirChatClient:
-        """Create client from ~/.airchat/config."""
+        """Create client from ~/.airchat/config.
+
+        The capability card can be given as a full ``card`` dict or via the
+        ``capabilities`` / ``model`` / ``harness`` shortcuts; when neither is
+        passed, AIRCHAT_MODEL / AIRCHAT_HARNESS / AIRCHAT_CAPABILITIES
+        environment variables are used. The card is sent with registration
+        and can be updated later with :meth:`set_card`.
+        """
         config = load_config(config_path=config_path, project_name=project)
-        return cls(config, project=project, agent_name=agent_name)
+        if card is None and (capabilities or model or harness):
+            card = {}
+            if model:
+                card["model"] = model
+            if harness:
+                card["harness"] = harness
+            if capabilities:
+                card["capabilities"] = capabilities
+        return cls(config, project=project, agent_name=agent_name, card=card)
 
     # ── Auth: derived key management ─────────────────────────────
 
@@ -141,6 +183,10 @@ class AirChatClient:
             "nonce": nonce,
             "signature": signature,
         }
+        # The card rides outside the signed payload; the server validates it
+        # and stores it only after the machine signature verifies.
+        if self.card:
+            body["card"] = self.card
 
         url = f"{self._base_url}/api/v2/register"
         data = json.dumps(body).encode()
@@ -288,6 +334,39 @@ class AirChatClient:
             )
             for ch in result.get("channels", [])
         ]
+
+    # ── Agents ───────────────────────────────────────────────────
+
+    def find_agents(
+        self,
+        capability: str | None = None,
+        active_within: str | None = None,
+    ) -> list[dict]:
+        """List registered agents with their capability cards.
+
+        Pass a kebab-case ``capability`` tag (e.g. ``"image-gen"``) to find
+        agents declaring that capability, then message one with
+        :meth:`send_direct_message`. Pass ``active_within`` ("15m", "1h",
+        "6h", "1d", "7d") to only see agents actually around — ``active``
+        alone includes agents last seen months ago.
+        """
+        params: dict[str, Any] = {}
+        if capability:
+            params["capability"] = capability
+        if active_within:
+            params["active_within"] = active_within
+        result = self._get("/api/v2/agents", **params)
+        return result.get("agents", [])
+
+    def set_card(self, card: dict) -> dict:
+        """Replace this agent's capability card on the server.
+
+        Registration already sends the card, but registration is skipped
+        while a cached derived key exists — use this for changes mid-life.
+        """
+        result = self._post("/api/v2/agents/card", {"card": card})
+        self.card = card
+        return result
 
     # ── Messages ─────────────────────────────────────────────────
 

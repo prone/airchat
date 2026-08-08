@@ -1,4 +1,6 @@
 export * from './types.js';
+export * from './agent-card.js';
+export * from './demo-fleet.js';
 export * from './constants.js';
 export * from './format.js';
 export * from './notes.js';
