@@ -19,7 +19,7 @@ const CODE_ROW = {
   agent_id: 'agent-1',
   redirect_uri: 'https://claude.ai/callback',
   scope: 'read',
-  resource: 'https://mcp.airchat.work/api/mcp',
+  resource: 'https://mcp.airchat.work/mcp',
   code_challenge: CHALLENGE,
   code_challenge_method: 'S256',
   expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -111,7 +111,7 @@ describe('successful exchange', () => {
     // RFC 8707. /api/mcp validates this on every request, which is what stops a
     // token minted for another resource being replayed against this one.
     await POST(tokenRequest());
-    expect(state.inserted[0].audience).toBe('https://mcp.airchat.work/api/mcp');
+    expect(state.inserted[0].audience).toBe('https://mcp.airchat.work/mcp');
   });
 
   it('records the consenting user and the granted scope', async () => {
@@ -236,7 +236,7 @@ describe('audience is always set on an OAuth-issued token (RFC 8707)', () => {
     // be able to opt out of audience binding by dropping one parameter.
     state.code = { ...CODE_ROW, resource: null };
     await POST(tokenRequest());
-    expect(state.inserted[0].audience).toBe('https://mcp.airchat.work/api/mcp');
+    expect(state.inserted[0].audience).toBe('https://mcp.airchat.work/mcp');
   });
 
   it('never stores a null audience', async () => {
@@ -247,8 +247,8 @@ describe('audience is always set on an OAuth-issued token (RFC 8707)', () => {
   });
 
   it('still honours an explicit resource', async () => {
-    state.code = { ...CODE_ROW, resource: 'https://mcp.airchat.work/api/mcp' };
+    state.code = { ...CODE_ROW, resource: 'https://mcp.airchat.work/mcp' };
     await POST(tokenRequest());
-    expect(state.inserted[0].audience).toBe('https://mcp.airchat.work/api/mcp');
+    expect(state.inserted[0].audience).toBe('https://mcp.airchat.work/mcp');
   });
 });

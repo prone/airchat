@@ -16,8 +16,27 @@
 
 import type { NextRequest } from 'next/server';
 
-/** Path of the MCP endpoint, which is also the OAuth resource being protected. */
-export const MCP_RESOURCE_PATH = '/api/mcp';
+/**
+ * Path of the MCP endpoint, which is also the OAuth resource being protected.
+ *
+ * `/mcp`, not `/api/mcp`, and the difference is load-bearing rather than
+ * stylistic. claude.ai's custom connector silently fails the post-token
+ * handshake when the endpoint path is anything else: OAuth completes, a working
+ * token is issued, and the client then never sends an authenticated MCP request
+ * — it re-registers a fresh OAuth client and reports "Authorization with the
+ * MCP server failed" (anthropics/claude-ai-mcp#423, open).
+ *
+ * That is exactly what this server did on `/api/mcp`. A tunnel-level request
+ * log showed register → authorize → consent → approve → token, a token stored
+ * with the right audience and scope, then silence — and a brand-new client on
+ * every retry, which is the re-registration loop the issue describes.
+ *
+ * Changing this changes the advertised resource, the metadata document URL and
+ * the audience inside every issued token, so existing grants stop matching by
+ * design. `/api/mcp` still serves the same handler for CLI-issued tokens, whose
+ * audience is null and whose binding is structural.
+ */
+export const MCP_RESOURCE_PATH = '/mcp';
 
 /**
  * The public origin of this deployment, e.g. `https://mcp.airchat.work`.

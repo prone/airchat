@@ -21,7 +21,7 @@ originRequest:
 
 ingress:
   - hostname: mcp.airchat.work
-    path: ^/(api/mcp|api/oauth/.*|\.well-known/.*|oauth/consent|login|_next/.*)$
+    path: ^/(mcp|api/mcp|api/oauth/.*|\.well-known/.*|oauth/consent|login|_next/.*)$
     service: http://agentchat-web:3002
 
   # Anything else on this hostname, and anything on any other hostname.

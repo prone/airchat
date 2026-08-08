@@ -81,7 +81,7 @@ describe('401 carries the RFC 9728 discovery pointer', () => {
     const challenge = response.headers.get('www-authenticate');
     expect(challenge).toContain('Bearer');
     expect(challenge).toContain('resource_metadata=');
-    expect(challenge).toContain('/.well-known/oauth-protected-resource/api/mcp');
+    expect(challenge).toContain('/.well-known/oauth-protected-resource/mcp');
   });
 
   it('advertises resource_metadata when the token is invalid', async () => {
