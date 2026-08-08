@@ -35,6 +35,17 @@ updates:
         dependency-type: development
         update-types: ["minor", "patch"]
 
+    ignore:
+      # TypeScript 7 is the native (Go) rewrite. It does not ship the
+      # TypeScript compiler API, and `next build` requires it — so TS 7 cannot
+      # run with Next.js at all. This is not "not yet for us": it needs
+      # Next.js to ship support first.
+      #
+      # Dependabot proposed it as #64 (and inside #20 before that). Left
+      # unignored it returns every week, and it reads like a routine bump.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

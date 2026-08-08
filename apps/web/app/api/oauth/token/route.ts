@@ -12,11 +12,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/lib/api-v2-auth';
 import { checkIpRateLimit } from '@/lib/rate-limit';
 import { CONNECTOR_TOKEN_PREFIX } from '@/lib/mcp-auth';
+import { canonicalResourceUri } from '@/lib/oauth-metadata';
 import {
   sha256,
   randomToken,
   verifyPkce,
   oauthError,
+  grantedScopeString,
   ACCESS_TOKEN_TTL_DAYS,
 } from '@/lib/oauth-server';
 
@@ -105,7 +107,14 @@ export async function POST(request: NextRequest) {
     client_id: stored.client_id,
     // RFC 8707 audience. /api/mcp validates it on every request, which is what
     // stops a token minted for another resource being replayed here.
-    audience: stored.resource,
+    //
+    // `resource` is optional in the authorization request, so it can be null.
+    // Storing that null would make the token skip audience validation entirely
+    // (mcp-auth treats a null audience as CLI-issued, where the binding is
+    // structural instead). An OAuth-issued token has no such structural
+    // binding, so it must always name an audience — default it to this server
+    // rather than letting a client opt out by omitting one parameter.
+    audience: stored.resource ?? canonicalResourceUri(request),
     granted_by_user_id: stored.user_id,
     expires_at: expiresAt.toISOString(),
   });
@@ -120,7 +129,10 @@ export async function POST(request: NextRequest) {
       access_token: accessToken,
       token_type: 'Bearer',
       expires_in: ACCESS_TOKEN_TTL_DAYS * 86_400,
-      scope: stored.scope,
+      // The granted set as a list, not the single stored value. See
+      // grantedScopeString: echoing "read-write" to a client that asked for
+      // "read read-write" reads as a partial grant.
+      scope: grantedScopeString(stored.scope),
     },
     // A token response must never be cached — by the client, or anything between.
     { headers: { 'cache-control': 'no-store', pragma: 'no-cache' } },

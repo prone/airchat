@@ -82,6 +82,7 @@ function tokenRequest(overrides: Record<string, string> = {}) {
 }
 
 beforeEach(() => {
+  vi.stubEnv('AIRCHAT_PUBLIC_URL', 'https://mcp.airchat.work');
   state.code = { ...CODE_ROW };
   state.consumeSucceeds = true;
   state.inserted = [];
@@ -203,5 +204,51 @@ describe('grant type', () => {
     const res = await POST(tokenRequest({ code: '' }));
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe('invalid_request');
+  });
+});
+
+describe('the granted scope is echoed as a list', () => {
+  it('answers "read read-write" for a read-write grant', async () => {
+    // The client asked for "read read-write". Replying "read-write" alone reads
+    // as a partial grant, which is what stopped it using the token.
+    state.code = { ...CODE_ROW, scope: 'read-write' };
+    const body = await (await POST(tokenRequest())).json();
+    expect(body.scope).toBe('read read-write');
+  });
+
+  it('answers "read" for a read grant', async () => {
+    const body = await (await POST(tokenRequest())).json();
+    expect(body.scope).toBe('read');
+  });
+
+  it('stores the single collapsed scope, not the echoed list', async () => {
+    // The stored value drives the tool surface and must stay one value.
+    state.code = { ...CODE_ROW, scope: 'read-write' };
+    await POST(tokenRequest());
+    expect(state.inserted[0].scope).toBe('read-write');
+  });
+});
+
+describe('audience is always set on an OAuth-issued token (RFC 8707)', () => {
+  it('defaults to this server when the client omitted `resource`', async () => {
+    // A null audience makes /api/mcp skip validation entirely — that carve-out
+    // is for CLI tokens, whose binding is structural. An OAuth client must not
+    // be able to opt out of audience binding by dropping one parameter.
+    state.code = { ...CODE_ROW, resource: null };
+    await POST(tokenRequest());
+    expect(state.inserted[0].audience).toBe('https://mcp.airchat.work/api/mcp');
+  });
+
+  it('never stores a null audience', async () => {
+    state.code = { ...CODE_ROW, resource: null };
+    await POST(tokenRequest());
+    expect(state.inserted[0].audience).not.toBeNull();
+    expect(state.inserted[0].audience).toBeTruthy();
+  });
+
+  it('still honours an explicit resource', async () => {
+    state.code = { ...CODE_ROW, resource: 'https://mcp.airchat.work/api/mcp' };
+    await POST(tokenRequest());
+    expect(state.inserted[0].audience).toBe('https://mcp.airchat.work/api/mcp');
   });
 });
