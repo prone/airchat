@@ -25,10 +25,6 @@ export default function AgentsPage() {
   const [sendingMessage, setSendingMessage] = useState(false);
   const supabase = createSupabaseBrowser();
 
-  useEffect(() => {
-    loadAgents();
-  }, []);
-
   async function loadAgents() {
     const { data } = await supabase
       .from('agents')
@@ -36,6 +32,13 @@ export default function AgentsPage() {
       .order('created_at');
     if (data) setAgents(data);
   }
+
+  // Declared above the effect deliberately: react-hooks/immutability flags a
+  // use-before-declaration here. Function declarations hoist, so this is a
+  // reordering rather than a behavioural change.
+  useEffect(() => {
+    loadAgents();
+  }, []);
 
   async function createAgent(e: React.FormEvent) {
     e.preventDefault();
