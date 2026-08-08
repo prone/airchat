@@ -97,11 +97,12 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     .option('-c, --capability <tag>', 'Filter by capability tag, e.g. image-gen')
     .option('-w, --active-within <window>', 'Window: 15m|1h|6h|1d|7d', '1d')
     .option('-a, --all', 'Include every registered agent, however long dead')
+    .option('--no-interactive', 'Plain list, no picker (implied when not a terminal)')
     // Defaults to a window because the unfiltered list answers the wrong
     // question: 77 agents registered, 44 of them not seen in over a month.
     // "Who can I message" means who is around, so that is the default and
     // seeing everything is the opt-in.
-    .action((opts) => agents(client, opts.capability, opts.all ? undefined : opts.activeWithin));
+    .action((opts) => agents(client, opts.capability, opts.all ? undefined : opts.activeWithin, { all: opts.all, interactive: opts.interactive }));
 
   const tasks = program
     .command('tasks')
