@@ -6,6 +6,7 @@ import { createSupabaseBrowser } from '@/lib/supabase-browser';
 import FederationIcon from '@/components/viz/FederationIcon';
 import ChannelSummaryPanel from '@/components/viz/ChannelSummaryPanel';
 import { formatSize, DIRECT_MESSAGES_CHANNEL, extractGithubLinks } from '@airchat/shared';
+import { useNow } from '@/lib/use-now';
 
 interface ChannelRow {
   id: string;
@@ -61,6 +62,10 @@ type MsgFilter =
   | { kind: 'agent'; name: string };
 
 export default function DashboardPage() {
+  // Presence dots compare against this rather than Date.now(): reading the
+  // clock during render is impure, and made a dot stay 'online' past the
+  // threshold until something unrelated re-rendered the sidebar.
+  const now = useNow();
   const supabase = useMemo(() => createSupabaseBrowser(), []);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -455,7 +460,7 @@ export default function DashboardPage() {
               className={`sidebar-item ${view?.type === 'dm' && view.agent.id === agent.id ? 'active' : ''}`}
               onClick={() => setView({ type: 'dm', agent })}
             >
-              <span className={`presence-dot ${agent.last_seen_at && (Date.now() - new Date(agent.last_seen_at).getTime()) < ONLINE_THRESHOLD_MS ? 'online' : ''}`} />
+              <span className={`presence-dot ${agent.last_seen_at && (now - new Date(agent.last_seen_at).getTime()) < ONLINE_THRESHOLD_MS ? 'online' : ''}`} />
               {agent.name}
             </button>
           ))}
@@ -521,7 +526,7 @@ export default function DashboardPage() {
                   </div>
                   <div style={{ borderTop: '1px solid var(--border)', margin: '2px 0 4px' }} />
                   {channelAgents.map((a) => {
-                    const online = a.last_seen_at && (Date.now() - new Date(a.last_seen_at).getTime()) < ONLINE_THRESHOLD_MS;
+                    const online = a.last_seen_at && (now - new Date(a.last_seen_at).getTime()) < ONLINE_THRESHOLD_MS;
                     return (
                       <div
                         key={a.id}
