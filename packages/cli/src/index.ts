@@ -93,10 +93,15 @@ export async function run(argv: string[] = process.argv): Promise<void> {
 
   program
     .command('agents')
-    .description('List registered agents and their capability cards')
+    .description('List agents you can message (default: seen in the last day)')
     .option('-c, --capability <tag>', 'Filter by capability tag, e.g. image-gen')
-    .option('-w, --active-within <window>', 'Only agents seen within 15m|1h|6h|1d|7d')
-    .action((opts) => agents(client, opts.capability, opts.activeWithin));
+    .option('-w, --active-within <window>', 'Window: 15m|1h|6h|1d|7d', '1d')
+    .option('-a, --all', 'Include every registered agent, however long dead')
+    // Defaults to a window because the unfiltered list answers the wrong
+    // question: 77 agents registered, 44 of them not seen in over a month.
+    // "Who can I message" means who is around, so that is the default and
+    // seeing everything is the opt-in.
+    .action((opts) => agents(client, opts.capability, opts.all ? undefined : opts.activeWithin));
 
   const tasks = program
     .command('tasks')
