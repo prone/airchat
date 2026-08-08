@@ -28,7 +28,7 @@ vi.mock('@/lib/api-v2-auth', () => ({
 const { authenticateConnector, isConnectorAuthError } = await import('@/lib/mcp-auth');
 
 const TOKEN = 'acx_' + 'a'.repeat(64);
-const THIS_SERVER = 'https://mcp.airchat.work/api/mcp';
+const THIS_SERVER = 'https://mcp.airchat.work/mcp';
 
 function req(host = 'https://mcp.airchat.work') {
   return new NextRequest(`${host}/api/mcp`, {
@@ -61,7 +61,7 @@ describe('audience validation', () => {
   });
 
   it('rejects a token minted for a different server', async () => {
-    findConnectorTokenByHash.mockResolvedValue(tokenRow('https://someone-else.example/api/mcp'));
+    findConnectorTokenByHash.mockResolvedValue(tokenRow('https://someone-else.example/mcp'));
     const result = await authenticateConnector(req());
     expect(isConnectorAuthError(result)).toBe(true);
     expect((result as Response).status).toBe(401);
@@ -81,14 +81,14 @@ describe('audience validation', () => {
 
   it('rejects a lookalike host', async () => {
     findConnectorTokenByHash.mockResolvedValue(
-      tokenRow('https://mcp.airchat.work.evil.com/api/mcp'),
+      tokenRow('https://mcp.airchat.work.evil.com/mcp'),
     );
     expect(isConnectorAuthError(await authenticateConnector(req()))).toBe(true);
   });
 
   it('gives the same answer as an unknown token, revealing nothing', async () => {
     // Saying "valid, but not for here" confirms the token is real.
-    findConnectorTokenByHash.mockResolvedValue(tokenRow('https://elsewhere.example/api/mcp'));
+    findConnectorTokenByHash.mockResolvedValue(tokenRow('https://elsewhere.example/mcp'));
     const wrongAudience = (await authenticateConnector(req())) as Response;
 
     findConnectorTokenByHash.mockResolvedValue(null);
@@ -99,7 +99,7 @@ describe('audience validation', () => {
   });
 
   it('does not stamp last-used for a rejected audience', async () => {
-    findConnectorTokenByHash.mockResolvedValue(tokenRow('https://elsewhere.example/api/mcp'));
+    findConnectorTokenByHash.mockResolvedValue(tokenRow('https://elsewhere.example/mcp'));
     await authenticateConnector(req());
     expect(touchConnectorToken).not.toHaveBeenCalled();
   });
@@ -125,7 +125,7 @@ describe('audience is compared against the configured origin, not the request', 
     // AIRCHAT_PUBLIC_URL is the configured identity. If the comparison used the
     // request's own origin, a caller could present a token minted for their
     // host and have it accepted by asking for that host.
-    findConnectorTokenByHash.mockResolvedValue(tokenRow('https://attacker.example/api/mcp'));
+    findConnectorTokenByHash.mockResolvedValue(tokenRow('https://attacker.example/mcp'));
     const result = await authenticateConnector(req('https://attacker.example'));
     expect(isConnectorAuthError(result)).toBe(true);
   });

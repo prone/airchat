@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import {
+  MCP_RESOURCE_PATH,
   canonicalResourceUri,
   protectedResourceMetadata,
   resourceMetadataUrl,
@@ -8,7 +9,7 @@ import {
   publicOrigin,
 } from '@/lib/oauth-metadata';
 
-const req = (url = 'https://mcp.airchat.work/api/mcp') => new NextRequest(url);
+const req = (url = 'https://mcp.airchat.work/mcp') => new NextRequest(url);
 
 beforeEach(() => {
   vi.unstubAllEnvs();
@@ -16,7 +17,7 @@ beforeEach(() => {
 
 describe('canonical resource URI', () => {
   it('is the origin plus the MCP path', () => {
-    expect(canonicalResourceUri(req())).toBe('https://mcp.airchat.work/api/mcp');
+    expect(canonicalResourceUri(req())).toBe('https://mcp.airchat.work/mcp');
   });
 
   it('has no trailing slash', () => {
@@ -32,8 +33,8 @@ describe('canonical resource URI', () => {
   });
 
   it('preserves a non-default port', () => {
-    expect(canonicalResourceUri(req('http://100.99.11.124:3003/api/mcp')))
-      .toBe('http://100.99.11.124:3003/api/mcp');
+    expect(canonicalResourceUri(req('http://100.99.11.124:3003/mcp')))
+      .toBe('http://100.99.11.124:3003/mcp');
   });
 });
 
@@ -42,13 +43,13 @@ describe('public origin', () => {
     // The audience ends up inside issued tokens, and Host is
     // attacker-influenceable. Configuration is the only unspoofable source.
     vi.stubEnv('AIRCHAT_PUBLIC_URL', 'https://mcp.airchat.work');
-    expect(publicOrigin(req('https://attacker.example/api/mcp')))
+    expect(publicOrigin(req('https://attacker.example/mcp')))
       .toBe('https://mcp.airchat.work');
   });
 
   it('strips a trailing slash from the configured value', () => {
     vi.stubEnv('AIRCHAT_PUBLIC_URL', 'https://mcp.airchat.work/');
-    expect(canonicalResourceUri(req())).toBe('https://mcp.airchat.work/api/mcp');
+    expect(canonicalResourceUri(req())).toBe('https://mcp.airchat.work/mcp');
   });
 
   it('falls back to the request origin when unset', () => {
@@ -60,7 +61,7 @@ describe('public origin', () => {
 describe('protected-resource metadata (RFC 9728)', () => {
   it('names itself as the resource', () => {
     expect(protectedResourceMetadata(req()).resource)
-      .toBe('https://mcp.airchat.work/api/mcp');
+      .toBe('https://mcp.airchat.work/mcp');
   });
 
   it('lists at least one authorization server, as the MCP spec requires', () => {
@@ -87,7 +88,7 @@ describe('protected-resource metadata (RFC 9728)', () => {
 describe('metadata URL', () => {
   it('inserts the resource path after the well-known segment (RFC 9728 §3.1)', () => {
     expect(resourceMetadataUrl(req()))
-      .toBe('https://mcp.airchat.work/.well-known/oauth-protected-resource/api/mcp');
+      .toBe('https://mcp.airchat.work/.well-known/oauth-protected-resource/mcp');
   });
 });
 
@@ -95,7 +96,7 @@ describe('WWW-Authenticate challenge (RFC 9728 §5.1)', () => {
   it('uses the Bearer scheme and points at the metadata', () => {
     const v = wwwAuthenticateValue(req());
     expect(v).toMatch(/^Bearer /);
-    expect(v).toContain('resource_metadata="https://mcp.airchat.work/.well-known/oauth-protected-resource/api/mcp"');
+    expect(v).toContain('resource_metadata="https://mcp.airchat.work/.well-known/oauth-protected-resource/mcp"');
   });
 
   it('includes an OAuth error code when given one', () => {
@@ -110,5 +111,36 @@ describe('WWW-Authenticate challenge (RFC 9728 §5.1)', () => {
     const v = wwwAuthenticateValue(req(), 'invalid_token');
     // Both parameters quoted, comma-separated after the scheme.
     expect(v).toMatch(/^Bearer resource_metadata="[^"]+", error="[^"]+"$/);
+  });
+});
+
+/**
+ * The endpoint path is a compatibility constraint, not a naming preference.
+ *
+ * claude.ai's custom connector silently fails the post-token handshake when the
+ * MCP endpoint is served anywhere other than `/mcp`: OAuth completes, a working
+ * token is issued, and the client then never sends an authenticated request —
+ * it re-registers and reports "Authorization with the MCP server failed"
+ * (anthropics/claude-ai-mcp#423). This server did exactly that on `/api/mcp`.
+ *
+ * If someone renames the path, these fail before a person has to rediscover
+ * that from a tunnel log.
+ */
+describe('the advertised resource path is /mcp', () => {
+  it('is exactly /mcp', () => {
+    expect(MCP_RESOURCE_PATH).toBe('/mcp');
+  });
+
+  it('is not the /api-prefixed path that broke the connector', () => {
+    expect(MCP_RESOURCE_PATH).not.toBe('/api/mcp');
+  });
+
+  it('puts /mcp in the token audience', () => {
+    expect(canonicalResourceUri(req())).toBe('https://mcp.airchat.work/mcp');
+  });
+
+  it('points the metadata document at /mcp', () => {
+    expect(resourceMetadataUrl(req()))
+      .toBe('https://mcp.airchat.work/.well-known/oauth-protected-resource/mcp');
   });
 });
