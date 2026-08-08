@@ -51,7 +51,14 @@ if (serverUnreachable) {
   notices.push(`[WARNING: Server ${config?.AIRCHAT_WEB_URL} was unreachable at startup. Check network/VPN.]`);
 }
 
-const server = createServer(restClient, { notices, runDiagnostics });
+// Tell the server who this agent is, so airchat_help can lead with it. Same
+// derivation the REST client registers under, so the name reported to the agent
+// is the name other agents actually message.
+const server = createServer(restClient, {
+  notices,
+  runDiagnostics,
+  agentName: config ? deriveAgentName(config.MACHINE_NAME) : undefined,
+});
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
