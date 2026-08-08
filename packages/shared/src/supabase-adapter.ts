@@ -327,6 +327,12 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     return data as Task;
   }
 
+  async resolveOrCreateChannel(name: string): Promise<string> {
+    const channelId = await this.findOrCreateChannel(name);
+    await this.ensureChannelMembership(channelId);
+    return channelId;
+  }
+
   async findChannelById(id: string): Promise<Channel | null> {
     const { data, error } = await this.client
       .from('channels')

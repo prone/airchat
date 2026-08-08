@@ -120,11 +120,12 @@ export async function POST(request: NextRequest) {
 
   try {
     const scoped = getStorageAdapter().forAgent(auth);
-    const ch = await scoped.findChannelByName(channel);
-    if (!ch) return errorResponse('Channel not found', 404);
+    // First-post auto-creation, same convention as send_message: posting a
+    // task to a channel that does not exist yet creates it.
+    const channelId = await scoped.resolveOrCreateChannel(channel);
 
     const task = await scoped.createTask({
-      channelId: ch.id,
+      channelId,
       title: input.title,
       body: input.body,
       capability_tags: input.capability_tags,
