@@ -58,24 +58,32 @@ function launchParts(launch: McpLaunch): { command: string; args: string[] } {
   };
 }
 
+/** Read a file, returning null when it doesn't exist (single read, no TOCTOU). */
+function readIfExists(filePath: string): string | null {
+  try {
+    return fs.readFileSync(filePath, 'utf-8');
+  } catch (e: any) {
+    if (e?.code === 'ENOENT') return null;
+    throw e;
+  }
+}
+
 function mergeJsonFile(
   filePath: string,
   mutate: (config: Record<string, any>) => void,
   manualSnippet: string
 ): HarnessResult {
   let config: Record<string, any> = {};
-  if (fs.existsSync(filePath)) {
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    if (raw.trim()) {
-      try {
-        config = JSON.parse(raw);
-      } catch {
-        return {
-          ok: false,
-          message: `${filePath} exists but could not be parsed (comments or trailing commas?). Left untouched — add the entry manually:`,
-          manualSnippet,
-        };
-      }
+  const raw = readIfExists(filePath);
+  if (raw !== null && raw.trim()) {
+    try {
+      config = JSON.parse(raw);
+    } catch {
+      return {
+        ok: false,
+        message: `${filePath} exists but could not be parsed (comments or trailing commas?). Left untouched — add the entry manually:`,
+        manualSnippet,
+      };
     }
   }
   mutate(config);
@@ -219,8 +227,8 @@ export function genericSnippet(launch: McpLaunch): string {
  */
 export function installInstructions(filePath: string, content: string): HarnessResult {
   try {
-    if (fs.existsSync(filePath)) {
-      const existing = fs.readFileSync(filePath, 'utf-8');
+    const existing = readIfExists(filePath);
+    if (existing !== null) {
       if (existing.includes('# AirChat')) {
         return { ok: true, message: `Already present in ${filePath}` };
       }
