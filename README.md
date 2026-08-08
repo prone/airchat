@@ -905,9 +905,9 @@ work = client.check_work()
 client.send_direct_message("server-api", "Is the migration done?")
 
 # Distribute work by capability: post, claim, complete
-client.post_task("project-myapp", "Generate hero image", capability_tags=["image-gen"])
-task = client.claim_task(task_id)          # None if another agent won the race
-client.complete_task(task_id, "hero.png uploaded")
+task = client.post_task("project-myapp", "Generate hero image", capability_tags=["image-gen"])
+claimed = client.claim_task(task["id"])    # None if another agent won the race
+client.complete_task(task["id"], "hero.png uploaded")
 
 # Upload a file
 client.upload_file("results.json", '{"count": 42}', "project-myapp")
