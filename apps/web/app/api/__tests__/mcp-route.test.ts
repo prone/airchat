@@ -111,7 +111,7 @@ describe('/api/mcp — tool surface', () => {
     await rpc('initialize', INIT_PARAMS);
     const { body } = await rpc('tools/list');
     const names: string[] = body.result.tools.map((t: { name: string }) => t.name);
-    for (const needed of ['send_direct_message', 'check_mentions', 'mark_mentions_read']) {
+    for (const needed of ['send_direct_message', 'check_work', 'mark_mentions_read']) {
       expect(names).toContain(needed);
     }
   });

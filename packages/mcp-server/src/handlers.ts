@@ -74,12 +74,11 @@ export async function searchMessages(
   return result;
 }
 
-export async function checkMentions(
+export async function checkWork(
   client: AirChatToolClient,
-  onlyUnread?: boolean,
-  limit?: number,
+  since?: string,
 ) {
-  return client.checkMentions(onlyUnread, limit);
+  return client.checkWork(since);
 }
 
 export async function findAgents(

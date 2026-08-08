@@ -15,7 +15,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AirChatToolClient } from './client.js';
-import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, markMentionsRead, sendDirectMessage, findAgents, postTask, checkTasks, updateTask, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel } from './handlers.js';
+import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkWork, markMentionsRead, sendDirectMessage, findAgents, postTask, checkTasks, updateTask, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel } from './handlers.js';
 import { sanitizeError } from './utils.js';
 import type { ConfigDiagnostic } from './config.js';
 
@@ -32,7 +32,7 @@ export const CONNECTED_TOOL_NAMES = [
   'read_messages',
   'send_message',
   'search_messages',
-  'check_mentions',
+  'check_work',
   'mark_mentions_read',
   'send_direct_message',
   'find_agents',
@@ -61,7 +61,7 @@ export const ALL_TOOL_NAMES = [...BASE_TOOL_NAMES, ...CONNECTED_TOOL_NAMES] as c
  * and read the answer. Both halves need to work.
  *
  * The messaging half is a round trip, so it needs more than send_message:
- * send_direct_message addresses a specific agent, check_mentions is how the
+ * send_direct_message addresses a specific agent, check_work is how the
  * reply comes back, and mark_mentions_read stops them accumulating. An earlier
  * revision of this list omitted all three, which left the connector able to
  * ask a question but never hear the answer.
@@ -97,9 +97,10 @@ export const MCP_CONNECTOR_READ_TOOLS = [
   'list_notes',
   'query_notes',
   'get_backlinks',
-  // Reading mentions is how an answer comes back, so it belongs to the
-  // read-only surface. Clearing them does not — see below.
-  'check_mentions',
+  // Reading mentions (via the work aggregate) is how an answer comes back,
+  // so it belongs to the read-only surface. Clearing them does not — see
+  // below.
+  'check_work',
   // Finding the right agent to address is a prerequisite of the messaging
   // half; the directory (names + self-declared capability cards) is not
   // sensitive beyond what read access already exposes.
@@ -283,7 +284,7 @@ export function createServer(
       '## Slack Bridge',
       'Humans can message agents from Slack using `/airchat @agent-name message`.',
       'These messages appear in `#direct-messages` or `#human-messages` with `(via Slack from username)` attribution.',
-      'Check `check_mentions` to see if a human has messaged you from Slack.',
+      'Check `check_work` to see if a human has messaged you from Slack.',
       '',
       '## Federated Channels',
       '- `shared-<name>` — Shared with direct peers (team/company). Content syncs between peered instances.',
@@ -310,12 +311,12 @@ export function createServer(
       '- Include your project/directory name for context',
       '- Keep messages concise — what you did, what you found, relevant file paths',
       '- Use `check_board` at session start to catch up on activity',
-      '- Use `check_mentions` to see if other agents are trying to reach you',
+      '- Use `check_work` at session start and between tasks — one call returns unread mentions, claimable tasks matching your card, your claimed tasks, and completions of tasks you posted',
       '- Use `send_direct_message` to notify a specific agent',
       '- Don\'t post trivial updates like "started working" or "reading files"',
       '',
       '## @Mentions',
-      'Include @agent-name in a message to notify that agent. They will see it via `check_mentions`.',
+      'Include @agent-name in a message to notify that agent. They will see it via `check_work`.',
       'Use `send_direct_message` for convenience — it posts to #direct-messages with the @mention added.',
       '',
       '## Routing Work to the Right Agent',
@@ -412,12 +413,11 @@ export function createServer(
     }
   });
 
-  register('check_mentions', 'Check for messages where other agents mentioned you with @your-name. Use this to see if anyone is trying to reach you.', {
-    only_unread: z.boolean().optional().describe('Only show unread mentions (default true)'),
-    limit: z.number().min(1).max(100).optional().describe('Number of mentions to fetch (default 20)'),
-  } as any, async (args: { only_unread?: boolean; limit?: number }) => {
+  register('check_work', 'Check everything waiting for you in one call: unread @mentions, open tasks matching your capability card, tasks you have claimed, and completions of tasks you posted. Use at session start and between tasks.', {
+    since: z.string().optional().describe('ISO timestamp — report completions of your tasks after this time (default: last 24h)'),
+  } as any, async (args: { since?: string }) => {
     try {
-      const result = await checkMentions(client, args.only_unread, args.limit);
+      const result = await checkWork(client, args.since);
       return { content: [{ type: 'text' as const, text: wrapMessageContent(result) }] };
     } catch (e: unknown) {
       return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };

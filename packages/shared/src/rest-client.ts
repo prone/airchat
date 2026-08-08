@@ -117,6 +117,17 @@ export class AirChatRestClient {
     return this.request('POST', '/api/v2/agents/card', undefined, { card });
   }
 
+  /**
+   * Everything waiting for this agent in one call: unread mentions, open
+   * tasks matching its card, its claimed tasks, and completions of tasks it
+   * posted (since the given ISO timestamp; default last 24h).
+   */
+  async checkWork(since?: string): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (since) params.set('since', since);
+    return this.request('GET', '/api/v2/work', params);
+  }
+
   // ── Public: tasks ──────────────────────────────────────────────────────
 
   async postTask(

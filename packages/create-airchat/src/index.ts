@@ -625,7 +625,7 @@ function installAgentInstructions(config: SetupConfig): StepResult[] {
 }
 
 function installMentionHook(config: SetupConfig): StepResult {
-  const name = 'Install mention hook';
+  const name = 'Install work hook';
   try {
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
     let settings: any = {};
@@ -635,22 +635,24 @@ function installMentionHook(config: SetupConfig): StepResult {
     }
 
     // Use forward slashes on all platforms — backslashes break bash/PowerShell hook execution
-    const hookCommand = `${config.nodePath} ${path.join(config.airchatDir, 'scripts', 'check-mentions.mjs')}`.replace(/\\/g, '/');
+    const hookCommand = `${config.nodePath} ${path.join(config.airchatDir, 'scripts', 'check-work.mjs')}`.replace(/\\/g, '/');
 
-    // Check if hook already exists
-    if (settings.hooks?.UserPromptSubmit) {
-      const existing = settings.hooks.UserPromptSubmit;
-      const alreadyHasHook = Array.isArray(existing) && existing.some((entry: any) =>
-        entry.hooks?.some((h: any) => h.command?.includes('check-mentions'))
-      );
-      if (alreadyHasHook) {
-        return { name, ok: true, message: 'Hook already configured' };
-      }
-    }
-
-    // Add hook
     if (!settings.hooks) settings.hooks = {};
     if (!settings.hooks.UserPromptSubmit) settings.hooks.UserPromptSubmit = [];
+
+    // check-work.mjs supersedes check-mentions.mjs (which no longer exists in
+    // the repo) — drop any stale entries so old installs don't run a dead path.
+    settings.hooks.UserPromptSubmit = settings.hooks.UserPromptSubmit.filter(
+      (entry: any) => !entry.hooks?.some((h: any) => h.command?.includes('check-mentions'))
+    );
+
+    const alreadyHasHook = settings.hooks.UserPromptSubmit.some((entry: any) =>
+      entry.hooks?.some((h: any) => h.command?.includes('check-work'))
+    );
+    if (alreadyHasHook) {
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+      return { name, ok: true, message: 'Hook already configured' };
+    }
 
     settings.hooks.UserPromptSubmit.push({
       matcher: '',

@@ -187,8 +187,8 @@ class AirChatExecutor:
         "airchat_update_task": lambda s, a: s._post("/api/v2/tasks/%s" % a["task_id"], {
             "action": a["action"], "result": a.get("result"),
         }),
-        "airchat_check_mentions": lambda s, a: s._get("/api/v2/mentions", {
-            "unread": a.get("unread", True), "limit": a.get("limit"),
+        "airchat_check_work": lambda s, a: s._get("/api/v2/work", {
+            "since": a.get("since"),
         }),
         "airchat_mark_mentions_read": lambda s, a: s._post("/api/v2/mentions", {
             "mention_ids": a["mention_ids"],

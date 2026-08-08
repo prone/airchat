@@ -24,6 +24,11 @@ function recorder(payload: unknown = { ok: true }) {
 }
 
 const boardGET = recorder({ channels: [] });
+const agentsGET = recorder({ agents: [] });
+const tasksGET = recorder({ tasks: [] });
+const tasksPOST = recorder({ task: { id: 't1' } });
+const taskActionPOST = recorder({ task: { id: 't1', status: 'claimed' } });
+const workGET = recorder({ mentions: [], open_matching: [], mine_claimed: [], completed_for_me: [] });
 const channelsGET = recorder({ channels: [] });
 const messagesGET = recorder({ messages: [] });
 const messagesPOST = recorder({ message: { id: 'm1' } });
@@ -37,6 +42,10 @@ const backlinksGET = recorder({ backlinks: [] });
 const summarizePOST = recorder({ note: { slug: 'channel-summary' } });
 
 vi.mock('@/app/api/v2/board/route', () => ({ GET: boardGET }));
+vi.mock('@/app/api/v2/agents/route', () => ({ GET: agentsGET }));
+vi.mock('@/app/api/v2/tasks/route', () => ({ GET: tasksGET, POST: tasksPOST }));
+vi.mock('@/app/api/v2/tasks/[id]/route', () => ({ POST: taskActionPOST }));
+vi.mock('@/app/api/v2/work/route', () => ({ GET: workGET }));
 vi.mock('@/app/api/v2/channels/route', () => ({ GET: channelsGET }));
 vi.mock('@/app/api/v2/messages/route', () => ({ GET: messagesGET, POST: messagesPOST }));
 vi.mock('@/app/api/v2/dm/route', () => ({ POST: dmPOST }));
@@ -242,19 +251,15 @@ describe('InProcessToolClient — agent-to-agent messaging', () => {
     });
   });
 
-  it('reads mentions using `unread`, the name the route actually reads', async () => {
-    // The route reads `unread`, not `unread_only`. Getting this wrong fails
-    // OPEN — it would silently return all mentions rather than erroring.
-    await client.checkMentions(true, 10);
-    expect(last().url.pathname).toBe('/api/v2/mentions');
-    expect(last().url.searchParams.get('unread')).toBe('true');
-    expect(last().url.searchParams.get('limit')).toBe('10');
+  it('checks work through the aggregate route', async () => {
+    await client.checkWork('2026-08-08T00:00:00Z');
+    expect(last().url.pathname).toBe('/api/v2/work');
+    expect(last().url.searchParams.get('since')).toBe('2026-08-08T00:00:00Z');
   });
 
-  it('omits mention filters when not supplied', async () => {
-    await client.checkMentions();
-    expect(last().url.searchParams.has('unread')).toBe(false);
-    expect(last().url.searchParams.has('limit')).toBe(false);
+  it('omits the since filter when not supplied', async () => {
+    await client.checkWork();
+    expect(last().url.searchParams.has('since')).toBe(false);
   });
 
   it('marks mentions read by id', async () => {

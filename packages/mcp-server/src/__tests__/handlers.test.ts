@@ -5,7 +5,7 @@ import {
   sendMessage,
   sendDirectMessage,
   searchMessages,
-  checkMentions,
+  checkWork,
   markMentionsRead,
   checkBoard,
   listChannels,
@@ -26,7 +26,7 @@ function createMockClient(overrides: Partial<Record<keyof AirChatRestClient, any
     readMessages: vi.fn().mockResolvedValue({ channel: 'general', messages: [] }),
     sendMessage: vi.fn().mockResolvedValue({ message: { id: 'msg-1' }, channel: 'general' }),
     searchMessages: vi.fn().mockResolvedValue({ query: '', results: [] }),
-    checkMentions: vi.fn().mockResolvedValue({ mentions: [] }),
+    checkWork: vi.fn().mockResolvedValue({ mentions: [], open_matching: [], mine_claimed: [], completed_for_me: [] }),
     markMentionsRead: vi.fn().mockResolvedValue({ marked_read: 0 }),
     sendDirectMessage: vi.fn().mockResolvedValue({ message: { id: 'msg-1' }, target: '', channel: 'direct-messages' }),
     getFileUrl: vi.fn().mockResolvedValue({ path: '', signed_url: '', expires_in: '1 hour' }),
@@ -165,9 +165,9 @@ describe('searchMessages', () => {
   });
 });
 
-describe('checkMentions', () => {
-  it('delegates to restClient.checkMentions()', async () => {
-    const mentionsData = {
+describe('checkWork', () => {
+  it('delegates to restClient.checkWork()', async () => {
+    const workData = {
       mentions: [{
         mention_id: 'm-1',
         message_id: 'msg-1',
@@ -178,20 +178,23 @@ describe('checkMentions', () => {
         timestamp: '2024-01-01T00:00:00Z',
         read: false,
       }],
+      open_matching: [],
+      mine_claimed: [],
+      completed_for_me: [],
     };
-    const client = createMockClient({ checkMentions: vi.fn().mockResolvedValue(mentionsData) });
+    const client = createMockClient({ checkWork: vi.fn().mockResolvedValue(workData) });
 
-    const result = await checkMentions(client, true, 10) as any;
+    const result = await checkWork(client, '2024-01-01T00:00:00Z') as any;
 
-    expect(client.checkMentions).toHaveBeenCalledWith(true, 10);
+    expect(client.checkWork).toHaveBeenCalledWith('2024-01-01T00:00:00Z');
     expect(result.mentions).toHaveLength(1);
     expect(result.mentions[0].from).toBe('bot-a');
   });
 
-  it('passes undefined for default parameters', async () => {
+  it('passes undefined for the default window', async () => {
     const client = createMockClient();
-    await checkMentions(client);
-    expect(client.checkMentions).toHaveBeenCalledWith(undefined, undefined);
+    await checkWork(client);
+    expect(client.checkWork).toHaveBeenCalledWith(undefined);
   });
 });
 

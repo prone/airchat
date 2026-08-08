@@ -68,7 +68,7 @@ Hook in `~/.claude/settings.json`:
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "<full-path-to-node> <AIRCHAT_DIR>/scripts/check-mentions.mjs"
+        "command": "<full-path-to-node> <AIRCHAT_DIR>/scripts/check-work.mjs"
       }]
     }]
   }
