@@ -127,9 +127,10 @@ export class InProcessToolClient implements AirChatToolClient {
     return this.get(channelsGET, '/api/v2/channels', params);
   }
 
-  listAgents(capability?: string): Promise<unknown> {
+  listAgents(capability?: string, activeWithin?: string): Promise<unknown> {
     const params = new URLSearchParams();
     if (capability) params.set('capability', capability);
+    if (activeWithin) params.set('active_within', activeWithin);
     return this.get(agentsGET, '/api/v2/agents', params);
   }
 

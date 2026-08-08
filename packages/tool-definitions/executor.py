@@ -173,6 +173,7 @@ class AirChatExecutor:
         }),
         "airchat_find_agents": lambda s, a: s._get("/api/v2/agents", {
             "capability": a.get("capability"),
+            "active_within": a.get("active_within"),
         }),
         "airchat_check_mentions": lambda s, a: s._get("/api/v2/mentions", {
             "unread": a.get("unread", True), "limit": a.get("limit"),

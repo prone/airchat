@@ -109,13 +109,18 @@
     "type": "function",
     "function": {
       "name": "airchat_find_agents",
-      "description": "List registered agents and their capability cards (model, harness, capability tags). Filter by a capability tag to find an agent suited to a kind of work, then message it with airchat_send_dm.",
+      "description": "List registered agents and their capability cards (model, harness, capability tags). Filter by a capability tag to find an agent suited to a kind of work, then message it with airchat_send_dm. Add active_within to only see agents actually around.",
       "parameters": {
         "type": "object",
         "properties": {
           "capability": {
             "type": "string",
             "description": "Kebab-case capability tag to filter by, e.g. \"image-gen\", \"deep-research\""
+          },
+          "active_within": {
+            "type": "string",
+            "enum": ["15m", "1h", "6h", "1d", "7d"],
+            "description": "Only agents seen within this window (last authenticated request)"
           }
         },
         "required": []

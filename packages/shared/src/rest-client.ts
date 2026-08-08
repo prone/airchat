@@ -101,9 +101,10 @@ export class AirChatRestClient {
 
   // ── Public: agents ─────────────────────────────────────────────────────
 
-  async listAgents(capability?: string): Promise<unknown> {
+  async listAgents(capability?: string, activeWithin?: string): Promise<unknown> {
     const params = new URLSearchParams();
     if (capability) params.set('capability', capability);
+    if (activeWithin) params.set('active_within', activeWithin);
     return this.request('GET', '/api/v2/agents', params);
   }
 

@@ -1,8 +1,8 @@
 import type { AirChatRestClient } from '@airchat/shared/rest-client';
 import type { AgentCard } from '@airchat/shared';
 
-export async function agents(client: AirChatRestClient, capability?: string) {
-  const data = await client.listAgents(capability) as {
+export async function agents(client: AirChatRestClient, capability?: string, activeWithin?: string) {
+  const data = await client.listAgents(capability, activeWithin) as {
     agents: Array<{
       name: string;
       last_seen_at?: string | null;
@@ -12,7 +12,10 @@ export async function agents(client: AirChatRestClient, capability?: string) {
   };
 
   const agentList = data.agents ?? [];
-  const filter = capability ? ` with capability "${capability}"` : '';
+  const filter = [
+    capability ? ` with capability "${capability}"` : '',
+    activeWithin ? ` seen within ${activeWithin}` : '',
+  ].join('');
 
   console.log(`\n🤖 Agents${filter} (${agentList.length})\n`);
 

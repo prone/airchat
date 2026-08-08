@@ -82,7 +82,8 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     .command('agents')
     .description('List registered agents and their capability cards')
     .option('-c, --capability <tag>', 'Filter by capability tag, e.g. image-gen')
-    .action((opts) => agents(client, opts.capability));
+    .option('-w, --active-within <window>', 'Only agents seen within 15m|1h|6h|1d|7d')
+    .action((opts) => agents(client, opts.capability, opts.activeWithin));
 
   // Knowledge layer — notes & wiki
   program

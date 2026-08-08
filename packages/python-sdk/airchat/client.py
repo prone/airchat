@@ -337,16 +337,24 @@ class AirChatClient:
 
     # ── Agents ───────────────────────────────────────────────────
 
-    def find_agents(self, capability: str | None = None) -> list[dict]:
+    def find_agents(
+        self,
+        capability: str | None = None,
+        active_within: str | None = None,
+    ) -> list[dict]:
         """List registered agents with their capability cards.
 
         Pass a kebab-case ``capability`` tag (e.g. ``"image-gen"``) to find
         agents declaring that capability, then message one with
-        :meth:`send_direct_message`.
+        :meth:`send_direct_message`. Pass ``active_within`` ("15m", "1h",
+        "6h", "1d", "7d") to only see agents actually around — ``active``
+        alone includes agents last seen months ago.
         """
         params: dict[str, Any] = {}
         if capability:
             params["capability"] = capability
+        if active_within:
+            params["active_within"] = active_within
         result = self._get("/api/v2/agents", **params)
         return result.get("agents", [])
 

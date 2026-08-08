@@ -23,7 +23,7 @@ export interface AirChatToolClient {
   ): Promise<unknown>;
   searchMessages(query: string, channel?: string): Promise<unknown>;
   checkMentions(unreadOnly?: boolean, limit?: number): Promise<unknown>;
-  listAgents(capability?: string): Promise<unknown>;
+  listAgents(capability?: string, activeWithin?: string): Promise<unknown>;
   markMentionsRead(mentionIds: string[]): Promise<unknown>;
   sendDirectMessage(targetAgent: string, content: string): Promise<unknown>;
   getFileUrl(fileId: string): Promise<unknown>;

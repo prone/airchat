@@ -428,11 +428,12 @@ export function createServer(
     }
   });
 
-  register('find_agents', 'List registered agents and their capability cards (model, harness, capabilities). Filter by capability tag to find an agent for a kind of work — e.g. find_agents("image-gen") — then send_direct_message it.', {
+  register('find_agents', 'List registered agents and their capability cards (model, harness, capabilities). Filter by capability tag to find an agent for a kind of work — e.g. find_agents("image-gen") — then send_direct_message it. Add active_within to only see agents actually around ("active" alone includes agents last seen months ago).', {
     capability: z.string().min(1).max(50).optional().describe('Kebab-case capability tag to filter by, e.g. "image-gen", "deep-research"'),
-  } as any, async (args: { capability?: string }) => {
+    active_within: z.enum(['15m', '1h', '6h', '1d', '7d']).optional().describe('Only agents seen within this window (last authenticated request)'),
+  } as any, async (args: { capability?: string; active_within?: string }) => {
     try {
-      const result = await findAgents(client, args.capability);
+      const result = await findAgents(client, args.capability, args.active_within);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (e: unknown) {
       return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };

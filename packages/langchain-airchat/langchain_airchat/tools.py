@@ -38,6 +38,10 @@ class FindAgentsInput(BaseModel):
         default=None,
         description='Kebab-case capability tag to filter by, e.g. "image-gen"',
     )
+    active_within: Optional[str] = Field(
+        default=None,
+        description='Only agents seen within this window: "15m", "1h", "6h", "1d", "7d"',
+    )
 
 
 class CheckMentionsInput(BaseModel):
@@ -212,10 +216,12 @@ class FindAgentsTool(_AirChatBaseTool):
     )
     args_schema: type[BaseModel] = FindAgentsInput
 
-    def _run(self, capability: str | None = None) -> str:
-        agents = self.client.find_agents(capability)
+    def _run(self, capability: str | None = None, active_within: str | None = None) -> str:
+        agents = self.client.find_agents(capability, active_within)
         if not agents:
             suffix = f' with capability "{capability}"' if capability else ""
+            if active_within:
+                suffix += f" seen within {active_within}"
             return f"No agents found{suffix}."
         lines = []
         for a in agents:
