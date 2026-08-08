@@ -44,6 +44,21 @@ class FindAgentsInput(BaseModel):
     )
 
 
+class PostTaskInput(BaseModel):
+    channel: str = Field(description="Channel to post the task in (not gossip-*/shared-*)")
+    title: str = Field(description="Short imperative title")
+    body: Optional[str] = Field(default=None, description="Details: inputs, constraints, delivery")
+    capability_tags: Optional[list[str]] = Field(
+        default=None, description='Kebab-case capabilities needed, e.g. ["image-gen"]'
+    )
+
+
+class UpdateTaskInput(BaseModel):
+    task_id: str = Field(description="The task id")
+    action: str = Field(description='One of "claim", "complete", "cancel"')
+    result: Optional[str] = Field(default=None, description="Required for complete")
+
+
 class CheckMentionsInput(BaseModel):
     only_unread: bool = Field(default=True, description="Only show unread mentions")
 
@@ -235,6 +250,68 @@ class FindAgentsTool(_AirChatBaseTool):
                 parts.append(f"capabilities={','.join(card['capabilities'])}")
             lines.append(" ".join(parts))
         return "\n".join(lines)
+
+
+class PostTaskTool(_AirChatBaseTool):
+    name: str = "airchat_post_task"
+    description: str = (
+        "Post a capability-tagged task to a channel for another agent to "
+        "claim asynchronously. Find candidates with airchat_find_agents."
+    )
+    args_schema: type[BaseModel] = PostTaskInput
+
+    def _run(
+        self,
+        channel: str,
+        title: str,
+        body: str | None = None,
+        capability_tags: list[str] | None = None,
+    ) -> str:
+        task = self.client.post_task(channel, title, body, capability_tags)
+        return f"Task posted: {task.get('id')} ({task.get('status')})"
+
+
+class CheckTasksTool(_AirChatBaseTool):
+    name: str = "airchat_check_tasks"
+    description: str = (
+        "Check the task queue: open tasks matching this agent's capability "
+        "card, plus tasks it has already claimed."
+    )
+
+    def _run(self) -> str:
+        work = self.client.check_tasks()
+        lines = []
+        for t in work.get("open_matching", []):
+            tags = ",".join(t.get("capability_tags", []))
+            lines.append(f"OPEN {t.get('id')} — {t.get('title')} [{tags}]")
+        for t in work.get("mine_claimed", []):
+            lines.append(f"CLAIMED-BY-ME {t.get('id')} — {t.get('title')}")
+        return "\n".join(lines) if lines else "No tasks for you right now."
+
+
+class UpdateTaskTool(_AirChatBaseTool):
+    name: str = "airchat_update_task"
+    description: str = (
+        "Transition a task: claim (atomic, one winner), complete with a "
+        "result (claimant only), or cancel (creator only)."
+    )
+    args_schema: type[BaseModel] = UpdateTaskInput
+
+    def _run(self, task_id: str, action: str, result: str | None = None) -> str:
+        if action == "claim":
+            task = self.client.claim_task(task_id)
+            if task is None:
+                return "Claim failed: another agent won the race (or the task is no longer open)."
+            return f"Claimed task {task.get('id')}."
+        if action == "complete":
+            if not result:
+                return "complete requires a result."
+            task = self.client.complete_task(task_id, result)
+            return f"Completed task {task.get('id')}; result posted to the channel."
+        if action == "cancel":
+            task = self.client.cancel_task(task_id)
+            return f"Cancelled task {task.get('id')}."
+        return f'Unknown action "{action}" — expected claim, complete, or cancel.'
 
 
 class MarkMentionsReadTool(_AirChatBaseTool):

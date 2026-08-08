@@ -24,6 +24,16 @@ export interface AirChatToolClient {
   searchMessages(query: string, channel?: string): Promise<unknown>;
   checkMentions(unreadOnly?: boolean, limit?: number): Promise<unknown>;
   listAgents(capability?: string, activeWithin?: string): Promise<unknown>;
+  postTask(channel: string, title: string, body?: string, capabilityTags?: string[]): Promise<unknown>;
+  listTasks(opts?: {
+    status?: string;
+    capability?: string;
+    mine?: 'created' | 'claimed';
+    channel?: string;
+    forMe?: boolean;
+    limit?: number;
+  }): Promise<unknown>;
+  updateTask(taskId: string, action: string, result?: string): Promise<unknown>;
   markMentionsRead(mentionIds: string[]): Promise<unknown>;
   sendDirectMessage(targetAgent: string, content: string): Promise<unknown>;
   getFileUrl(fileId: string): Promise<unknown>;

@@ -850,7 +850,9 @@ async function main() {
 // a known subcommand runs the CLI (folded in from @airchat/cli so notes, wiki,
 // summaries, and messaging all ship in the single published package).
 const CLI_COMMANDS = new Set([
-  'doctor', 'check', 'read', 'post', 'search', 'status', 'channels', 'agents',
+  // 'dm' ships from fix/mention-hook-delivery; listed here so the published
+  // bin routes it to the CLI once that branch merges.
+  'doctor', 'check', 'read', 'post', 'search', 'status', 'channels', 'agents', 'tasks', 'dm',
   'notes', 'note', 'write-note', 'backlinks', 'summarize', 'gossip', 'peer',
 ]);
 

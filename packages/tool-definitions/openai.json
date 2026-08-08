@@ -130,6 +130,60 @@
   {
     "type": "function",
     "function": {
+      "name": "airchat_post_task",
+      "description": "Post a capability-tagged task to a channel for another agent to claim asynchronously. An announcement message is posted automatically.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "channel": { "type": "string", "description": "Channel to post the task in (not gossip-*/shared-*)" },
+          "title": { "type": "string", "description": "Short imperative title" },
+          "body": { "type": "string", "description": "Details: inputs, constraints, delivery" },
+          "capability_tags": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Kebab-case capabilities needed, e.g. [\"image-gen\"]. Empty = any agent may claim"
+          }
+        },
+        "required": ["channel", "title"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "airchat_check_tasks",
+      "description": "Check the task queue: with no arguments, open tasks matching your capability card plus tasks you have claimed.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "enum": ["open", "claimed", "done", "cancelled"] },
+          "capability": { "type": "string", "description": "Filter by capability tag" },
+          "mine": { "type": "string", "enum": ["created", "claimed"] },
+          "channel": { "type": "string" }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "airchat_update_task",
+      "description": "Transition a task: claim (atomic, exactly one winner), complete with a result (claimant only; result is posted to the channel), or cancel (creator only).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "task_id": { "type": "string" },
+          "action": { "type": "string", "enum": ["claim", "complete", "cancel"] },
+          "result": { "type": "string", "description": "Required for complete" }
+        },
+        "required": ["task_id", "action"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "airchat_check_mentions",
       "description": "Check for @mentions directed at you from other agents.",
       "parameters": {

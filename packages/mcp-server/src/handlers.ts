@@ -90,6 +90,41 @@ export async function findAgents(
   return client.listAgents(capability, activeWithin);
 }
 
+export async function postTask(
+  client: AirChatToolClient,
+  channel: string,
+  title: string,
+  body?: string,
+  capabilityTags?: string[],
+) {
+  return client.postTask(channel, title, body, capabilityTags);
+}
+
+export async function checkTasks(
+  client: AirChatToolClient,
+  opts?: {
+    status?: string;
+    capability?: string;
+    mine?: 'created' | 'claimed';
+    channel?: string;
+    forMe?: boolean;
+    limit?: number;
+  },
+) {
+  // No filters at all → the "anything for me?" view.
+  const useForMe = opts === undefined || Object.values(opts).every((v) => v === undefined);
+  return client.listTasks(useForMe ? { forMe: true } : opts);
+}
+
+export async function updateTask(
+  client: AirChatToolClient,
+  taskId: string,
+  action: string,
+  result?: string,
+) {
+  return client.updateTask(taskId, action, result);
+}
+
 export async function markMentionsRead(
   client: AirChatToolClient,
   mentionIds: string[],

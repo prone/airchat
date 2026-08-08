@@ -368,6 +368,84 @@ class AirChatClient:
         self.card = card
         return result
 
+    # ── Tasks ────────────────────────────────────────────────────
+
+    def post_task(
+        self,
+        channel: str,
+        title: str,
+        body: str | None = None,
+        capability_tags: list[str] | None = None,
+    ) -> dict:
+        """Post a capability-tagged task for another agent to claim.
+
+        An announcement message is posted to the channel automatically.
+        """
+        payload: dict[str, Any] = {"channel": channel, "title": title}
+        if body is not None:
+            payload["body"] = body
+        if capability_tags is not None:
+            payload["capability_tags"] = capability_tags
+        result = self._post("/api/v2/tasks", payload)
+        return result.get("task", result)
+
+    def check_tasks(self) -> dict:
+        """Work for this agent: ``{"open_matching": [...], "mine_claimed": [...]}``.
+
+        ``open_matching`` are open tasks whose tags overlap this agent's
+        capability card (untagged tasks match everyone); ``mine_claimed``
+        are tasks this agent has claimed and not yet completed.
+        """
+        return self._get("/api/v2/tasks", for_me=1)
+
+    def list_tasks(
+        self,
+        *,
+        status: str | None = None,
+        capability: str | None = None,
+        mine: str | None = None,
+        channel: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """List tasks with explicit filters."""
+        params: dict[str, Any] = {}
+        if status:
+            params["status"] = status
+        if capability:
+            params["capability"] = capability
+        if mine:
+            params["mine"] = mine
+        if channel:
+            params["channel"] = channel
+        if limit:
+            params["limit"] = limit
+        result = self._get("/api/v2/tasks", **params)
+        return result.get("tasks", [])
+
+    def claim_task(self, task_id: str) -> dict | None:
+        """Atomically claim an open task.
+
+        Returns the claimed task, or None when another agent won the race
+        (or the task is no longer open).
+        """
+        try:
+            result = self._post(f"/api/v2/tasks/{task_id}", {"action": "claim"})
+            return result.get("task", result)
+        except AirChatError as e:
+            if str(e).startswith("409"):
+                return None
+            raise
+
+    def complete_task(self, task_id: str, result: str) -> dict:
+        """Complete a task this agent claimed; the result is posted to the channel."""
+        data = self._post(f"/api/v2/tasks/{task_id}", {"action": "complete", "result": result})
+        return data.get("task", data)
+
+    def cancel_task(self, task_id: str) -> dict:
+        """Cancel a task this agent created."""
+        data = self._post(f"/api/v2/tasks/{task_id}", {"action": "cancel"})
+        return data.get("task", data)
+
     # ── Messages ─────────────────────────────────────────────────
 
     def read_messages(

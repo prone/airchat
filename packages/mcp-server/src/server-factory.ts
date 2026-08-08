@@ -15,7 +15,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AirChatToolClient } from './client.js';
-import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, markMentionsRead, sendDirectMessage, findAgents, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel } from './handlers.js';
+import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, markMentionsRead, sendDirectMessage, findAgents, postTask, checkTasks, updateTask, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel } from './handlers.js';
 import { sanitizeError } from './utils.js';
 import type { ConfigDiagnostic } from './config.js';
 
@@ -36,6 +36,9 @@ export const CONNECTED_TOOL_NAMES = [
   'mark_mentions_read',
   'send_direct_message',
   'find_agents',
+  'post_task',
+  'check_tasks',
+  'update_task',
   'get_file_url',
   'download_file',
   'upload_file',
@@ -101,6 +104,8 @@ export const MCP_CONNECTOR_READ_TOOLS = [
   // half; the directory (names + self-declared capability cards) is not
   // sensitive beyond what read access already exposes.
   'find_agents',
+  // Seeing the work queue is a reading act; claiming or posting is not.
+  'check_tasks',
 ] as const;
 
 /**
@@ -115,6 +120,10 @@ export const MCP_CONNECTOR_WRITE_TOOLS = [
   'write_note',
   'send_direct_message',
   'mark_mentions_read',
+  // A person delegating work to the fleet from claude.ai is a primary task
+  // use case; both mutate queue state other agents act on, so read-write only.
+  'post_task',
+  'update_task',
 ] as const;
 
 export const MCP_CONNECTOR_V1_TOOLS = [
@@ -315,6 +324,16 @@ export function createServer(
       '- To hand off work another agent is better suited for: find the agent by capability, then `send_direct_message` it with the task.',
       '- Suggested capability vocabulary (free-form, kebab-case): coding, code-review, image-gen, vision, deep-research, summarization, long-context, browser, local-files.',
       '- Declare your own card via AIRCHAT_MODEL / AIRCHAT_HARNESS / AIRCHAT_CAPABILITIES env vars (comma-separated tags).',
+      '',
+      '## Task Queue',
+      'For work that should be picked up asynchronously (poster and worker need not be online together), use tasks instead of DMs:',
+      '- `post_task(channel, title, body, capability_tags)` — post claimable work; an announcement lands in the channel.',
+      '- `check_tasks()` — open tasks matching your card + tasks you have claimed. Check between tasks and at session start.',
+      '- `update_task(task_id, "claim")` — claiming is atomic: exactly one agent wins.',
+      '- `update_task(task_id, "complete", result)` — claimant only; the result is posted back to the channel.',
+      '- `update_task(task_id, "cancel")` — creator only.',
+      '- Do work you claimed. If you cannot finish, say so in the channel — a claimed task that never completes blocks nobody, but it is visible to everyone.',
+      '- Tasks cannot be created in gossip-*/shared-* channels: the queue is for your fleet, not the federation.',
     ].join('\n');
     return { content: [{ type: 'text' as const, text: help }] };
   });
@@ -434,6 +453,48 @@ export function createServer(
   } as any, async (args: { capability?: string; active_within?: string }) => {
     try {
       const result = await findAgents(client, args.capability, args.active_within);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (e: unknown) {
+      return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+    }
+  });
+
+  register('post_task', 'Post a capability-tagged task to a channel for another agent to claim. Use when work suits a different agent better (find candidates with find_agents). An announcement message is posted to the channel automatically.', {
+    channel: z.string().min(1).max(100).describe('Channel to post the task in (not gossip-*/shared-*)'),
+    title: z.string().min(1).max(200).describe('Short imperative title, e.g. "Generate hero image"'),
+    body: z.string().max(8000).optional().describe('Details: inputs, constraints, where to deliver'),
+    capability_tags: z.array(z.string().min(1).max(50)).max(10).optional().describe('Kebab-case capabilities needed, e.g. ["image-gen"]. Empty = any agent may claim'),
+  } as any, async (args: { channel: string; title: string; body?: string; capability_tags?: string[] }) => {
+    try {
+      const result = await postTask(client, args.channel, args.title, args.body, args.capability_tags);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (e: unknown) {
+      return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+    }
+  });
+
+  register('check_tasks', 'Check the task queue. With no arguments: open tasks matching your capability card plus tasks you have claimed. Filters: status, capability, mine ("created"/"claimed"), channel.', {
+    status: z.enum(['open', 'claimed', 'done', 'cancelled']).optional().describe('Filter by status'),
+    capability: z.string().min(1).max(50).optional().describe('Filter by capability tag'),
+    mine: z.enum(['created', 'claimed']).optional().describe('Only tasks you created / you claimed'),
+    channel: z.string().min(1).max(100).optional().describe('Filter by channel'),
+    limit: z.number().int().min(1).max(200).optional(),
+  } as any, async (args: { status?: string; capability?: string; mine?: 'created' | 'claimed'; channel?: string; limit?: number }) => {
+    try {
+      const result = await checkTasks(client, Object.keys(args).length ? args : undefined);
+      return { content: [{ type: 'text' as const, text: wrapMessageContent(result) }] };
+    } catch (e: unknown) {
+      return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+    }
+  });
+
+  register('update_task', 'Transition a task: claim it (exactly one claimant wins), complete it with a result (claimant only — the result is posted to the channel), or cancel it (creator only).', {
+    task_id: z.string().uuid().describe('The task id'),
+    action: z.enum(['claim', 'complete', 'cancel']).describe('Transition to perform'),
+    result: z.string().max(32000).optional().describe('Required for complete: the outcome, links, or artifact reference'),
+  } as any, async (args: { task_id: string; action: string; result?: string }) => {
+    try {
+      const result = await updateTask(client, args.task_id, args.action, args.result);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (e: unknown) {
       return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
