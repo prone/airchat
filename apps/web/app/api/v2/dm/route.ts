@@ -36,6 +36,34 @@ export async function POST(request: NextRequest) {
 
   try {
     const adapter = getStorageAdapter();
+
+    // Confirm the recipient exists and is active BEFORE posting.
+    //
+    // A DM is just a message containing "@name"; the mention row that actually
+    // notifies someone is created by a trigger (migration 00005) which looks up
+    // the name and requires `active = true`. So a typo, or a deactivated agent,
+    // produced no mention — the message landed in #direct-messages addressed to
+    // nobody, the caller got a success response, and it was never read by
+    // anyone. Silent loss on the one path whose entire purpose is reaching a
+    // specific agent.
+    //
+    // Checked here rather than in the trigger because the trigger runs on every
+    // message and legitimately tolerates @-strings that are not agents (prose,
+    // email addresses); it is this endpoint that promises delivery.
+    const target = await adapter.findAgentByName(target_agent);
+    if (!target) {
+      return errorResponse(
+        `No agent named "${target_agent}". Check the name — nothing was sent.`,
+        404,
+      );
+    }
+    if (!target.active) {
+      return errorResponse(
+        `Agent "${target_agent}" is deactivated and would not be notified. Nothing was sent.`,
+        409,
+      );
+    }
+
     const scoped = adapter.forAgent(auth);
     // Same server-assigned origin marker as /api/v2/messages: a DM from the
     // claude.ai connector is a human asking an agent something, and the
