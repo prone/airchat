@@ -22,11 +22,25 @@ import {
   ACCESS_TOKEN_TTL_DAYS,
 } from '@/lib/oauth-server';
 import { clientIp } from '@/lib/client-ip';
+import { withOAuthCors, oauthPreflight } from '@/lib/mcp-cors';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+/** Preflight, so a browser-based client can exchange its code cross-origin. */
+export function OPTIONS() {
+  return oauthPreflight();
+}
+
+/**
+ * Wrapped once rather than at every return. The `cache-control: no-store` on
+ * the success path is set inside and survives, since this only adds headers.
+ */
 export async function POST(request: NextRequest) {
+  return withOAuthCors(await handleToken(request));
+}
+
+async function handleToken(request: NextRequest): Promise<Response> {
   const limited = checkIpRateLimit(clientIp(request));
   if (!limited.allowed) {
     return NextResponse.json(
