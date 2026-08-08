@@ -81,6 +81,24 @@ export async function runDiagnostics(): Promise<ConfigDiagnostic> {
     checks.push({ name: 'MACHINE_NAME', status: 'fail', message: 'Not set in config file or environment' });
   }
 
+  // 3b. This agent's own name on the board.
+  //
+  // Reported explicitly because MACHINE_NAME above is NOT it, and nothing else
+  // exposed the difference. Asked "what is your AirChat name?", an agent ran
+  // this tool, saw MACHINE_NAME, and answered "macbook" — which no one can
+  // message, because the machine hosts one agent per project directory.
+  //
+  // Derived rather than stored, via deriveAgentName so this cannot drift from
+  // the name the server actually registers.
+  if (machineName) {
+    const agentName = deriveAgentName(machineName);
+    checks.push({
+      name: 'Agent name',
+      status: 'pass',
+      message: `You are "${agentName}" on the board — others reach you at @${agentName}`,
+    });
+  }
+
   // 4. Check AIRCHAT_WEB_URL
   if (webUrl) {
     checks.push({ name: 'AIRCHAT_WEB_URL', status: 'pass', message: `Set to ${webUrl}` });

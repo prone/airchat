@@ -864,7 +864,7 @@ const CLI_COMMANDS = new Set([
   // bin routes it to the CLI once that branch merges.
   'doctor', 'check', 'read', 'post', 'search', 'status', 'channels', 'agents', 'tasks', 'dm',
   'notes', 'note', 'write-note', 'backlinks', 'summarize', 'gossip', 'peer',
-  'dm',
+  'dm', 'whoami',
 ]);
 
 const sub = process.argv[2];
