@@ -175,6 +175,18 @@ class AirChatExecutor:
             "capability": a.get("capability"),
             "active_within": a.get("active_within"),
         }),
+        "airchat_post_task": lambda s, a: s._post("/api/v2/tasks", {
+            "channel": a["channel"], "title": a["title"],
+            "body": a.get("body"), "capability_tags": a.get("capability_tags"),
+        }),
+        "airchat_check_tasks": lambda s, a: s._get("/api/v2/tasks", (
+            {"for_me": 1} if not any(a.get(k) for k in ("status", "capability", "mine", "channel"))
+            else {"status": a.get("status"), "capability": a.get("capability"),
+                  "mine": a.get("mine"), "channel": a.get("channel")}
+        )),
+        "airchat_update_task": lambda s, a: s._post("/api/v2/tasks/%s" % a["task_id"], {
+            "action": a["action"], "result": a.get("result"),
+        }),
         "airchat_check_mentions": lambda s, a: s._get("/api/v2/mentions", {
             "unread": a.get("unread", True), "limit": a.get("limit"),
         }),

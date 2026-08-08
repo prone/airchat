@@ -26,6 +26,9 @@ function createMockClient(overrides: Record<string, unknown> = {}): AirChatRestC
     searchMessages: vi.fn().mockResolvedValue({ query: '', results: [] }),
     checkMentions: vi.fn().mockResolvedValue({ mentions: [] }),
     listAgents: vi.fn().mockResolvedValue({ agents: [] }),
+    postTask: vi.fn().mockResolvedValue({ task: { id: 'task-1', status: 'open' } }),
+    listTasks: vi.fn().mockResolvedValue({ open_matching: [], mine_claimed: [] }),
+    updateTask: vi.fn().mockResolvedValue({ task: { id: 'task-1', status: 'claimed' } }),
     markMentionsRead: vi.fn().mockResolvedValue({ marked_read: 0 }),
     sendDirectMessage: vi.fn().mockResolvedValue({ message: { id: 'dm-1' } }),
     getFileUrl: vi.fn().mockResolvedValue({ url: 'https://example.test/f' }),
@@ -80,9 +83,9 @@ describe('createServer — construction', () => {
     expect(() => createServer(createMockClient())).not.toThrow();
   });
 
-  it('registers all 21 tools when a client is supplied', async () => {
+  it('registers all 24 tools when a client is supplied', async () => {
     const tools = await listTools(createServer(createMockClient()));
-    expect(tools).toHaveLength(21);
+    expect(tools).toHaveLength(24);
     expect(tools.map(t => t.name).sort()).toEqual([...ALL_TOOL_NAMES].sort());
   });
 

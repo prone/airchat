@@ -10,6 +10,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Agent, Channel, ChannelType, ConnectorToken, FederationScope, Message, Note, NoteBacklink, NoteRevision, SearchResult } from './types.js';
 import { extractWikiLinks, type WikiLinkTarget } from './notes.js';
+import type { Task, TaskStatus } from './tasks.js';
 import type {
   AgentContext,
   BoardChannel,
@@ -206,6 +207,146 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     private readonly ctx: AgentContext,
     private readonly patternSet: PatternSet | null = null
   ) {}
+
+  // ── Tasks ────────────────────────────────────────────────────────────────
+
+  async createTask(input: {
+    channelId: string;
+    title: string;
+    body: string | null;
+    capability_tags: string[];
+  }): Promise<Task> {
+    const { data, error } = await this.client
+      .from('tasks')
+      .insert({
+        channel_id: input.channelId,
+        title: input.title,
+        body: input.body,
+        capability_tags: input.capability_tags,
+        created_by: this.ctx.agentId,
+      })
+      .select('*')
+      .single();
+    if (error || !data) throw new Error(`Failed to create task: ${error?.message ?? 'unknown'}`);
+    return data as Task;
+  }
+
+  async getTask(id: string): Promise<Task | null> {
+    const { data, error } = await this.client
+      .from('tasks')
+      .select('*')
+      .eq('id', id)
+      .single();
+    if (error || !data) return null;
+    return data as Task;
+  }
+
+  async listTasks(opts: {
+    status?: TaskStatus;
+    capability?: string;
+    matchingCapabilities?: string[];
+    mine?: 'created' | 'claimed';
+    channelId?: string;
+    limit?: number;
+  }): Promise<Task[]> {
+    let query = this.client
+      .from('tasks')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(Math.min(opts.limit ?? 50, 200));
+
+    if (opts.status) query = query.eq('status', opts.status);
+    if (opts.channelId) query = query.eq('channel_id', opts.channelId);
+    if (opts.capability) query = query.contains('capability_tags', [opts.capability]);
+    if (opts.mine === 'created') query = query.eq('created_by', this.ctx.agentId);
+    if (opts.mine === 'claimed') query = query.eq('claimed_by', this.ctx.agentId);
+
+    if (opts.matchingCapabilities) {
+      // Tags overlap the agent's capabilities, or the task is untagged
+      // (anyone may claim). Tags are validated kebab-case, so embedding them
+      // in the PostgREST or() expression cannot break its syntax.
+      const caps = opts.matchingCapabilities;
+      if (caps.length > 0) {
+        query = query.or(`capability_tags.ov.{${caps.join(',')}},capability_tags.eq.{}`);
+      } else {
+        query = query.eq('capability_tags', '{}');
+      }
+    }
+
+    const { data, error } = await query;
+    if (error) throw new Error(`Failed to list tasks: ${error.message}`);
+    return (data ?? []) as Task[];
+  }
+
+  async claimTask(id: string): Promise<Task | null> {
+    // The whole point: a single conditional UPDATE guarded on status='open'.
+    // Two racing claimants both run this; the row matches for exactly one.
+    const { data, error } = await this.client
+      .from('tasks')
+      .update({
+        status: 'claimed',
+        claimed_by: this.ctx.agentId,
+        claimed_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .eq('status', 'open')
+      .select('*')
+      .single();
+    if (error || !data) return null;
+    return data as Task;
+  }
+
+  async completeTask(id: string, result: string, resultMessageId?: string): Promise<Task> {
+    const { data, error } = await this.client
+      .from('tasks')
+      .update({
+        status: 'done',
+        result,
+        result_message_id: resultMessageId ?? null,
+        completed_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .eq('status', 'claimed')
+      .eq('claimed_by', this.ctx.agentId)
+      .select('*')
+      .single();
+    if (error || !data) throw new Error('Failed to complete task (not claimed by you, or state changed)');
+    return data as Task;
+  }
+
+  async cancelTask(id: string): Promise<Task> {
+    const { data, error } = await this.client
+      .from('tasks')
+      .update({ status: 'cancelled' })
+      .eq('id', id)
+      .eq('created_by', this.ctx.agentId)
+      .in('status', ['open', 'claimed'])
+      .select('*')
+      .single();
+    if (error || !data) throw new Error('Failed to cancel task (not yours, or state changed)');
+    return data as Task;
+  }
+
+  async findChannelById(id: string): Promise<Channel | null> {
+    const { data, error } = await this.client
+      .from('channels')
+      .select('*')
+      .eq('id', id)
+      .single();
+    if (error || !data) return null;
+    return data as Channel;
+  }
+
+  async getOwnCard(): Promise<Record<string, unknown> | null> {
+    const { data, error } = await this.client
+      .from('agents')
+      .select('metadata')
+      .eq('id', this.ctx.agentId)
+      .single();
+    if (error || !data) return null;
+    const card = (data.metadata as Record<string, unknown> | null)?.card;
+    return card && typeof card === 'object' ? (card as Record<string, unknown>) : null;
+  }
 
   async getChannels(type?: string): Promise<Channel[]> {
     let query = this.client

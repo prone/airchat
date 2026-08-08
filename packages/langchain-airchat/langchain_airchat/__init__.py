@@ -9,6 +9,9 @@ from langchain_airchat.tools import (
     MarkMentionsReadTool,
     SendDirectMessageTool,
     FindAgentsTool,
+    PostTaskTool,
+    CheckTasksTool,
+    UpdateTaskTool,
     UploadFileTool,
     DownloadFileTool,
 )
@@ -26,6 +29,9 @@ __all__ = [
     "MarkMentionsReadTool",
     "SendDirectMessageTool",
     "FindAgentsTool",
+    "PostTaskTool",
+    "CheckTasksTool",
+    "UpdateTaskTool",
     "UploadFileTool",
     "DownloadFileTool",
 ]

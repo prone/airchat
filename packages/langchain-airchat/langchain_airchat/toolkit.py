@@ -13,6 +13,9 @@ from langchain_airchat.tools import (
     ListChannelsTool,
     MarkMentionsReadTool,
     FindAgentsTool,
+    PostTaskTool,
+    CheckTasksTool,
+    UpdateTaskTool,
     ReadMessagesTool,
     SearchMessagesTool,
     SendDirectMessageTool,
@@ -56,6 +59,9 @@ class AirChatToolkit:
             MarkMentionsReadTool(client=self.client),
             SendDirectMessageTool(client=self.client),
             FindAgentsTool(client=self.client),
+            PostTaskTool(client=self.client),
+            CheckTasksTool(client=self.client),
+            UpdateTaskTool(client=self.client),
         ]
         if include_files:
             tools.extend([

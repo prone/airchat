@@ -117,6 +117,44 @@ export class AirChatRestClient {
     return this.request('POST', '/api/v2/agents/card', undefined, { card });
   }
 
+  // ── Public: tasks ──────────────────────────────────────────────────────
+
+  async postTask(
+    channel: string,
+    title: string,
+    body?: string,
+    capabilityTags?: string[],
+  ): Promise<unknown> {
+    return this.request('POST', '/api/v2/tasks', undefined, {
+      channel,
+      title,
+      body,
+      capability_tags: capabilityTags,
+    });
+  }
+
+  async listTasks(opts?: {
+    status?: string;
+    capability?: string;
+    mine?: 'created' | 'claimed';
+    channel?: string;
+    forMe?: boolean;
+    limit?: number;
+  }): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (opts?.status) params.set('status', opts.status);
+    if (opts?.capability) params.set('capability', opts.capability);
+    if (opts?.mine) params.set('mine', opts.mine);
+    if (opts?.channel) params.set('channel', opts.channel);
+    if (opts?.forMe) params.set('for_me', '1');
+    if (opts?.limit !== undefined) params.set('limit', String(opts.limit));
+    return this.request('GET', '/api/v2/tasks', params);
+  }
+
+  async updateTask(taskId: string, action: 'claim' | 'complete' | 'cancel', result?: string): Promise<unknown> {
+    return this.request('POST', `/api/v2/tasks/${encodeURIComponent(taskId)}`, undefined, { action, result });
+  }
+
   // ── Public: channels ────────────────────────────────────────────────────
 
   async listChannels(type?: string): Promise<unknown> {

@@ -7,6 +7,7 @@
  */
 
 import type { Agent, Channel, ConnectorToken, FederationScope, Message, Mention, Note, NoteBacklink, NoteRevision, NoteSearchResult, SearchResult } from './types.js';
+import type { Task, TaskStatus } from './tasks.js';
 
 // ── New types needed by the storage layer ──────────────────────────────────
 
@@ -126,6 +127,38 @@ export interface ScopedStorageAdapter {
 
   /** Find a channel by name (queries directly, auto-joins if found). */
   findChannelByName(name: string): Promise<Channel | null>;
+
+  /** Find a channel by id. Plain lookup — no membership side effects. */
+  findChannelById(id: string): Promise<Channel | null>;
+
+  // Tasks (see tasks.ts for the state machine; created_by/claimed_by are
+  // always the bound agent — never caller-supplied)
+  createTask(input: {
+    channelId: string;
+    title: string;
+    body: string | null;
+    capability_tags: string[];
+  }): Promise<Task>;
+  getTask(id: string): Promise<Task | null>;
+  listTasks(opts: {
+    status?: TaskStatus;
+    capability?: string;
+    /** Open tasks whose tags overlap these capabilities OR are untagged. */
+    matchingCapabilities?: string[];
+    mine?: 'created' | 'claimed';
+    channelId?: string;
+    limit?: number;
+  }): Promise<Task[]>;
+  /**
+   * Atomically claim an open task. Returns the claimed task, or null when
+   * the guard failed (already claimed / not open) — the caller distinguishes
+   * "lost the race" from "gone" by re-reading.
+   */
+  claimTask(id: string): Promise<Task | null>;
+  completeTask(id: string, result: string, resultMessageId?: string): Promise<Task>;
+  cancelTask(id: string): Promise<Task>;
+  /** The bound agent's own capability card, or null when none declared. */
+  getOwnCard(): Promise<Record<string, unknown> | null>;
 
   // Mentions
   getMentions(unreadOnly: boolean): Promise<MentionWithContext[]>;

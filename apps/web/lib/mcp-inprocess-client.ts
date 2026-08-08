@@ -25,6 +25,8 @@ import { runAsAuthenticatedAgent } from '@/lib/api-v2-auth';
 
 import { GET as boardGET } from '@/app/api/v2/board/route';
 import { GET as agentsGET } from '@/app/api/v2/agents/route';
+import { GET as tasksGET, POST as tasksPOST } from '@/app/api/v2/tasks/route';
+import { POST as taskActionPOST } from '@/app/api/v2/tasks/[id]/route';
 import { GET as channelsGET } from '@/app/api/v2/channels/route';
 import { GET as messagesGET, POST as messagesPOST } from '@/app/api/v2/messages/route';
 import { POST as dmPOST } from '@/app/api/v2/dm/route';
@@ -66,6 +68,12 @@ function assertNotFederated(channel: string, tool: string): void {
 }
 
 type RouteHandler = (request: NextRequest) => Promise<NextResponse | Response>;
+
+/** Dynamic-segment route handlers ([id]) also receive their route params. */
+type DynamicRouteHandler = (
+  request: NextRequest,
+  context: { params: Promise<{ id: string }> },
+) => Promise<NextResponse | Response>;
 
 export class InProcessToolClient implements AirChatToolClient {
   constructor(private readonly ctx: AgentContext) {}
@@ -115,6 +123,11 @@ export class InProcessToolClient implements AirChatToolClient {
     return this.call(handler, path, { body: body ?? {} });
   }
 
+  private postDynamic(handler: DynamicRouteHandler, path: string, id: string, body: unknown) {
+    const bound: RouteHandler = (request) => handler(request, { params: Promise.resolve({ id }) });
+    return this.call(bound, path, { body: body ?? {} });
+  }
+
   // ── Messaging ─────────────────────────────────────────────────────────────
 
   checkBoard(): Promise<unknown> {
@@ -132,6 +145,45 @@ export class InProcessToolClient implements AirChatToolClient {
     if (capability) params.set('capability', capability);
     if (activeWithin) params.set('active_within', activeWithin);
     return this.get(agentsGET, '/api/v2/agents', params);
+  }
+
+  listTasks(opts?: {
+    status?: string;
+    capability?: string;
+    mine?: 'created' | 'claimed';
+    channel?: string;
+    forMe?: boolean;
+    limit?: number;
+  }): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (opts?.status) params.set('status', opts.status);
+    if (opts?.capability) params.set('capability', opts.capability);
+    if (opts?.mine) params.set('mine', opts.mine);
+    if (opts?.channel) params.set('channel', opts.channel);
+    if (opts?.forMe) params.set('for_me', '1');
+    if (opts?.limit !== undefined) params.set('limit', String(opts.limit));
+    return this.get(tasksGET, '/api/v2/tasks', params);
+  }
+
+  postTask(
+    channel: string,
+    title: string,
+    body?: string,
+    capabilityTags?: string[],
+  ): Promise<unknown> {
+    // The route refuses federated channels; assertNotFederated would also
+    // fire for connector writes, keeping the two message paths consistent.
+    assertNotFederated(channel, 'post_task');
+    return this.post(tasksPOST, '/api/v2/tasks', {
+      channel,
+      title,
+      body,
+      capability_tags: capabilityTags,
+    });
+  }
+
+  updateTask(taskId: string, action: string, result?: string): Promise<unknown> {
+    return this.postDynamic(taskActionPOST, `/api/v2/tasks/${taskId}`, taskId, { action, result });
   }
 
   readMessages(channelName: string, limit?: number, before?: string): Promise<unknown> {

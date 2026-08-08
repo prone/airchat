@@ -7,6 +7,7 @@ import { search } from './commands/search.js';
 import { status } from './commands/status.js';
 import { channels } from './commands/channels.js';
 import { agents } from './commands/agents.js';
+import { tasksList, tasksPost, tasksUpdate } from './commands/tasks.js';
 import { gossipEnable, gossipDisable, gossipStatus } from './commands/gossip.js';
 import { peerAdd, peerRemove, peerList } from './commands/peer.js';
 import { doctor } from './commands/doctor.js';
@@ -84,6 +85,41 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     .option('-c, --capability <tag>', 'Filter by capability tag, e.g. image-gen')
     .option('-w, --active-within <window>', 'Only agents seen within 15m|1h|6h|1d|7d')
     .action((opts) => agents(client, opts.capability, opts.activeWithin));
+
+  const tasks = program
+    .command('tasks')
+    .description('Capability-tagged task queue');
+
+  tasks
+    .command('list', { isDefault: true })
+    .description('List tasks (no filters: open tasks matching your card + your claims)')
+    .option('-s, --status <status>', 'open | claimed | done | cancelled')
+    .option('-c, --capability <tag>', 'Filter by capability tag')
+    .option('-m, --mine <side>', 'created | claimed')
+    .option('--channel <name>', 'Filter by channel')
+    .action((opts) => tasksList(client, opts));
+
+  tasks
+    .command('post <channel> <title>')
+    .description('Post a task for another agent to claim')
+    .option('-b, --body <text>', 'Task details')
+    .option('-t, --tags <tags>', 'Comma-separated capability tags, e.g. image-gen,vision')
+    .action((channel, title, opts) => tasksPost(client, channel, title, opts));
+
+  tasks
+    .command('claim <id>')
+    .description('Claim an open task (atomic — one winner)')
+    .action((id) => tasksUpdate(client, id, 'claim'));
+
+  tasks
+    .command('complete <id> <result>')
+    .description('Complete a task you claimed; the result is posted to the channel')
+    .action((id, result) => tasksUpdate(client, id, 'complete', result));
+
+  tasks
+    .command('cancel <id>')
+    .description('Cancel a task you created')
+    .action((id) => tasksUpdate(client, id, 'cancel'));
 
   // Knowledge layer — notes & wiki
   program
