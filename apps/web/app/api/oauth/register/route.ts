@@ -21,6 +21,7 @@ import {
   oauthError,
   isSecureRedirectUri,
 } from '@/lib/oauth-server';
+import { clientIp } from '@/lib/client-ip';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -31,10 +32,7 @@ const MAX_NAME_LENGTH = 200;
 export async function POST(request: NextRequest) {
   // Unauthenticated and public, so the IP limit is the only thing standing
   // between this and unbounded row creation.
-  const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-    || request.headers.get('x-real-ip')
-    || 'unknown';
-  const limited = checkIpRateLimit(ip);
+  const limited = checkIpRateLimit(clientIp(request));
   if (!limited.allowed) {
     return NextResponse.json(
       { error: 'temporarily_unavailable', error_description: 'Rate limit exceeded' },

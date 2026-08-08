@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyRegistration } from '@airchat/shared/crypto';
 import { getStorageAdapter } from '@/lib/api-v2-auth';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { clientIp } from '@/lib/client-ip';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -40,11 +41,7 @@ function cleanupNonces(): void {
 const FORBIDDEN_RESPONSE = { error: 'Registration failed' };
 
 function getIp(request: NextRequest): string {
-  return (
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip') ||
-    'unknown'
-  );
+  return clientIp(request);
 }
 
 // ── POST /api/v2/register ───────────────────────────────────────────────────

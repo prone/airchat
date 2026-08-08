@@ -35,6 +35,7 @@ import type { AgentContext, ConnectorScope } from '@airchat/shared';
 import { getStorageAdapter, getSupabaseClient } from '@/lib/api-v2-auth';
 import { checkRateLimit, checkIpRateLimit } from '@/lib/rate-limit';
 import { wwwAuthenticateValue, canonicalResourceUri } from '@/lib/oauth-metadata';
+import { clientIp } from '@/lib/client-ip';
 
 /** Tokens are minted as `acx_` + 64 hex chars. The prefix aids leak scanning. */
 export const CONNECTOR_TOKEN_PREFIX = 'acx_';
@@ -104,10 +105,7 @@ export async function authenticateConnector(
   // DB-query amplification against an endpoint meant to face the internet.
   // /api/v2 has no IP limit because it is LAN-only; this endpoint is not, so it
   // follows the v1 pattern instead (see api-v1-auth.ts).
-  const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-    || request.headers.get('x-real-ip')
-    || 'unknown';
-  const ipLimited = checkIpRateLimit(ip);
+  const ipLimited = checkIpRateLimit(clientIp(request));
   if (!ipLimited.allowed) {
     return rateLimited(ipLimited.retryAfterMs);
   }

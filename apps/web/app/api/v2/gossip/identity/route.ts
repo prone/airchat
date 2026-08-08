@@ -2,13 +2,12 @@ import { NextRequest } from 'next/server';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { getGossipAdapter } from '@/lib/api-v2-auth';
 import { checkIpRateLimit } from '@/lib/rate-limit';
+import { clientIp } from '@/lib/client-ip';
 
 // GET /api/v2/gossip/identity — Return this instance's public identity
 // Public endpoint (no auth) but rate-limited by IP.
 export async function GET(request: NextRequest) {
-  const forwarded = request.headers.get('x-forwarded-for');
-  const ip = (forwarded ? forwarded.split(',')[0].trim() : null) ?? request.headers.get('x-real-ip') ?? 'unknown';
-  const rateLimit = checkIpRateLimit(ip);
+  const rateLimit = checkIpRateLimit(clientIp(request));
   if (!rateLimit.allowed) {
     return errorResponse('Rate limit exceeded', 429);
   }
