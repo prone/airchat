@@ -15,6 +15,7 @@ import SplitBar from '@/components/viz/SplitBar';
 import ChannelTags, { normalizeTags } from '@/components/viz/ChannelTags';
 import FederationIcon from '@/components/viz/FederationIcon';
 import { estimateTokens, formatTokens, INK, PROVENANCE } from '@/components/viz/viz';
+import { useNow } from '@/lib/use-now';
 
 interface NoteRow {
   slug: string;
@@ -33,6 +34,10 @@ interface Contributor {
 }
 
 export default function ChannelHubPage() {
+  // The seven-day buckets are derived from "now", so reading the clock during
+  // render made them non-deterministic — and meant the window never advanced
+  // past midnight while a session stayed open. Hourly is ample for day buckets.
+  const now = useNow(60 * 60_000);
   const params = useParams();
   const channelId = params.id as string;
   const supabase = useMemo(() => createSupabaseBrowser(), []);
@@ -129,11 +134,11 @@ export default function ChannelHubPage() {
     const map = new Map(byDay.map((d) => [d.d, d.human + d.agent]));
     const out: Array<{ day: string; count: number }> = [];
     for (let i = 6; i >= 0; i--) {
-      const day = new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10);
+      const day = new Date(now - i * 86_400_000).toISOString().slice(0, 10);
       out.push({ day, count: map.get(day) ?? 0 });
     }
     return out;
-  }, [overview]);
+  }, [overview, now]);
 
   return (
     <div className="container">
