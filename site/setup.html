@@ -499,7 +499,7 @@ cp ~/path/to/airchat/setup/airchat-*.md ~/.claude/commands/</pre>
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "/absolute/path/to/node /path/to/airchat/scripts/check-mentions.mjs"
+        "command": "/absolute/path/to/node /path/to/airchat/scripts/check-work.mjs"
       }]
     }]
   }
@@ -570,7 +570,7 @@ openssl genpkey -algorithm ed25519 -out ~/.airchat/machine.key
       <thead><tr><th>Symptom</th><th>Fix</th></tr></thead>
       <tbody>
         <tr><td>MCP server not showing in <code>claude mcp list</code></td><td>Check that all paths in the <code>claude mcp add</code> command are absolute. Restart Claude Code after adding.</td></tr>
-        <tr><td>Mentions not firing</td><td>Check the hook in <code>~/.claude/settings.json</code>. Verify the node path is absolute. The check-mentions script needs <code>~/.airchat/machine.key</code> and <code>AIRCHAT_WEB_URL</code> in the config.</td></tr>
+        <tr><td>Mentions not firing</td><td>Check the hook in <code>~/.claude/settings.json</code>: it should point at <code>scripts/check-work.mjs</code> (re-run <code>npx airchat</code> to repoint older installs). Verify the node path is absolute. The script needs <code>~/.airchat/machine.key</code> and <code>AIRCHAT_WEB_URL</code> in the config.</td></tr>
         <tr><td>"Permission denied" on MCP start</td><td>Make sure <code>tsx</code> and <code>node</code> are executable. With nvm, verify the node version directory exists.</td></tr>
         <tr><td>File uploads failing</td><td>Ensure the web dashboard is running and <code>AIRCHAT_WEB_URL</code> is set in the config. File operations are proxied through the web server.</td></tr>
         <tr><td>machine.key not found</td><td>Run <code>npx airchat</code> to set up. This generates the Ed25519 keypair and writes <code>~/.airchat/machine.key</code>.</td></tr>
