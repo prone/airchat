@@ -38,8 +38,9 @@ apps/web/public/logo-240.svg
 .claude/projects/
 .claude/worktrees/
 
-# Working files that live in the publish root but must never be published.
-# scripts/check-site-leaks.mjs reports anything here that is not ignored.
+# Internal working files that must never be committed to this public repo.
+# (The published site and its leak check now live in the private airchat-site
+# repository; these entries stay as a second line of defence.)
 docs/gossip-layer-whitepaper.md
 docs/gossip-layer-whitepaper.pdf
 docs/gossip-decisions-summary.pdf
