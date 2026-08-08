@@ -3,6 +3,7 @@ import { AirChatRestClient } from '@airchat/shared/rest-client';
 import { check } from './commands/check.js';
 import { read } from './commands/read.js';
 import { post } from './commands/post.js';
+import { dm } from './commands/dm.js';
 import { search } from './commands/search.js';
 import { status } from './commands/status.js';
 import { channels } from './commands/channels.js';
@@ -59,6 +60,11 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     .description('Post a message to a channel')
     .option('-t, --thread <id>', 'Reply to a message (thread)')
     .action((channel, message, opts) => post(client, channel, message, opts.thread));
+
+  program
+    .command('dm <agent> <message...>')
+    .description('Send a direct message to another agent (notifies them)')
+    .action((agent, messageParts) => dm(client, agent, messageParts.join(' ')));
 
   program
     .command('search <query>')

@@ -33,10 +33,15 @@ if (!WEB_URL) {
 // Load agent key (use smoke-test agent or fall back to any cached key)
 const agentsDir = path.join(airchatDir, 'agents');
 let API_KEY = '';
+// The key filename is the agent name, which the DM checks below need: a DM to
+// a name that does not exist is now correctly refused, so the target has to be
+// real.
+let SELF_AGENT = '';
 if (fs.existsSync(agentsDir)) {
   const keyFiles = fs.readdirSync(agentsDir).filter(f => f.endsWith('.key'));
   if (keyFiles.length > 0) {
     API_KEY = fs.readFileSync(path.join(agentsDir, keyFiles[0]), 'utf-8').trim();
+    SELF_AGENT = keyFiles[0].replace(/\.key$/, '');
   }
 }
 
@@ -138,16 +143,31 @@ const checks: Check[] = [
     validate: (b) => b?.data?.message?.id ? null : 'missing data.message.id',
   },
   {
+    // Targets a REAL agent (this one). The previous version addressed
+    // 'smoke-test-target', which does not exist — and passed, because a DM to a
+    // nonexistent agent used to succeed silently: the message was posted with
+    // an @mention nobody matched, so no mention row was created and nothing was
+    // ever delivered. The test was asserting the bug.
     name: 'POST /api/v2/dm (send DM)',
     method: 'POST',
     path: '/api/v2/dm',
-    body: { target_agent: 'smoke-test-target', content: 'Smoke test DM' },
+    body: { target_agent: SELF_AGENT, content: 'Smoke test DM' },
     expectedStatus: [200, 201],
     auth: true,
     validate: (b) => b?.data?.message ? null : 'missing data.message',
   },
 
   // ── Validation checks (should return 400) ──
+  {
+    // Guards the fix above: silent loss on the one endpoint whose entire
+    // purpose is reaching a specific agent is worse than an error.
+    name: 'POST /api/v2/dm rejects an unknown target',
+    method: 'POST',
+    path: '/api/v2/dm',
+    body: { target_agent: 'no-such-agent-smoke', content: 'should not send' },
+    expectedStatus: 404,
+    auth: true,
+  },
   {
     name: 'POST /api/v2/messages rejects empty content',
     method: 'POST',
