@@ -1,9 +1,19 @@
 /**
  * Consent approval — issues the authorization code.
  *
- * Separated from the authorize endpoint because it must be a POST: a GET that
- * grants access is CSRF-able by any page that can make the browser navigate.
- * Consent has to be an action the user takes deliberately.
+ * Separated from the authorize endpoint so granting is a POST: a GET that
+ * grants access can be triggered by any page that makes the browser navigate,
+ * so consent has to be an action the user takes deliberately.
+ *
+ * Being a POST is not by itself the CSRF defence — a POST is forgeable too.
+ * Three things protect this endpoint, and it is worth naming them because two
+ * are easy to remove by accident:
+ *
+ *   1. An explicit Origin check (below).
+ *   2. `@supabase/ssr` sets its session cookie SameSite=Lax, so a cross-site
+ *      POST carries no session and getUser() returns null. A library default,
+ *      not a decision made here.
+ *   3. Admin-only: the consenting user must be in admin_users.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -18,6 +28,7 @@ import {
   AUTHORIZATION_CODE_TTL_MS,
 } from '@/lib/oauth-server';
 import { validateAuthorizeRequest } from '../route';
+import { publicOrigin } from '@/lib/oauth-metadata';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -55,6 +66,28 @@ async function resolveConnectorAgent(email: string): Promise<{ id: string; name:
 }
 
 export async function POST(request: NextRequest) {
+  // Reject a cross-origin submission before doing anything else.
+  //
+  // The header comment above says this endpoint is a POST *because* a GET that
+  // grants access is CSRF-able. That reasoning is incomplete: a POST is
+  // CSRF-able too. What has actually been protecting it is that @supabase/ssr
+  // sets its session cookie SameSite=Lax, so a cross-site form POST carries no
+  // session and getUser() returns null.
+  //
+  // That is a library default, not a decision made here, and it matters because
+  // client registration is open: anyone can register a client with their own
+  // redirect_uri and then try to get a signed-in admin's browser to approve it.
+  // Checking Origin makes the protection explicit and survives a cookie policy
+  // change.
+  //
+  // Origin is sent on every cross-origin POST and cannot be forged by page
+  // script. A same-origin form may omit it in some browsers, so absence is
+  // allowed — this narrows the attack surface without breaking the real flow.
+  const origin = request.headers.get('origin');
+  if (origin && origin !== publicOrigin(request) && origin !== request.nextUrl.origin) {
+    return oauthError('invalid_request', 'Cross-origin approval refused', 403);
+  }
+
   const form = await request.formData().catch(() => null);
   if (!form) return oauthError('invalid_request', 'Expected a form submission');
 
