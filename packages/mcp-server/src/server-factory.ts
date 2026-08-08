@@ -75,6 +75,19 @@ export const MCP_CONNECTOR_READ_TOOLS = [
   'list_channels',
   'read_messages',
   'search_messages',
+  // Read despite writing, which is a deliberate exception worth stating.
+  //
+  // Generating a summary stores it as a protected note and costs an Anthropic
+  // request, and the v2 route rate-limits it as a 'write'. It stays here
+  // because catching up on a channel is a reading act, and the note is a cache
+  // of derived data authored by the `summarizer` agent — not content
+  // attributable to the caller.
+  //
+  // What makes that safe is reuse: summarizeChannel returns the stored note
+  // untouched when no message has arrived since it was written. Cost is
+  // therefore bounded by the channel's own activity, not by how often a caller
+  // asks — so a read-only token cannot amplify spend by calling in a loop.
+  // Remove that reuse and this belongs in the write set.
   'summarize_channel',
   'read_note',
   'list_notes',

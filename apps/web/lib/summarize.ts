@@ -4,7 +4,11 @@
  * Summaries are REQUESTED (by a human in the dashboard or an agent via MCP),
  * not auto-created. Each request distills the channel's recent activity into a
  * single protected `channel-summary` note authored by the `summarizer` agent,
- * ledgers the token spend, and returns the note. Re-requesting regenerates it.
+ * ledgers the token spend, and returns the note.
+ *
+ * Re-requesting returns the stored note unchanged when no message has arrived
+ * since it was written — see freshSummary. Only new activity, a different
+ * window or a different kind causes a regeneration.
  *
  * The generation reuses the unit-tested prompt in @airchat/shared/digest,
  * which frames message content as untrusted data (design doc §10.5).
@@ -85,6 +89,72 @@ export interface ChannelSummaryResult {
   input_tokens: number;
   output_tokens: number;
   generated_at: string;
+  /** True when an existing note was returned without calling the model. */
+  cached?: boolean;
+}
+
+/**
+ * Return the stored summary when nothing has happened since it was written.
+ *
+ * A summary of unchanged content is unchanged, so regenerating it buys nothing
+ * and costs an Anthropic request every time. That mattered more than it looks:
+ * `summarize_channel` is in the connector's READ tool set, so a read-only token
+ * could drive one billable generation per call up to the 120/min rate limit.
+ * Reuse makes the common case — several agents catching up on the same quiet
+ * channel — free and idempotent.
+ *
+ * Reuse requires an exact match on `window_days` and `kind`, because both
+ * change what the summary covers. Anything else regenerates.
+ *
+ * Deliberately compares against the newest message rather than a wall-clock
+ * TTL: activity, not elapsed time, is what makes a summary stale.
+ */
+async function freshSummary(
+  channelId: string,
+  channelName: string,
+  slug: string,
+  kind: SummaryKind,
+  windowDays: number,
+): Promise<ChannelSummaryResult | null> {
+  const client = getSupabaseClient();
+
+  const { data: note } = await client
+    .from('notes')
+    .select('slug, body_md, properties, updated_at')
+    .eq('channel_id', channelId)
+    .eq('slug', slug)
+    .maybeSingle();
+
+  const props = (note?.properties ?? null) as Record<string, unknown> | null;
+  const generatedAt = typeof props?.generated_at === 'string' ? props.generated_at : null;
+  if (!note || !generatedAt) return null;
+
+  // A different window or kind describes something else entirely.
+  if (props?.window_days !== windowDays) return null;
+  const storedKind = kind === 'project' ? 'project-summary' : 'channel-summary';
+  if (props?.kind !== storedKind) return null;
+
+  const { count } = await client
+    .from('messages')
+    .select('id', { count: 'exact', head: true })
+    .eq('channel_id', channelId)
+    .eq('quarantined', false)
+    .gt('created_at', generatedAt);
+
+  if ((count ?? 0) > 0) return null;
+
+  return {
+    channel: channelName,
+    slug: note.slug,
+    kind,
+    body_md: note.body_md ?? '',
+    message_count: typeof props?.message_count === 'number' ? props.message_count : 0,
+    model: typeof props?.model === 'string' ? props.model : summaryModel(),
+    input_tokens: 0,
+    output_tokens: 0,
+    generated_at: generatedAt,
+    cached: true,
+  };
 }
 
 export class SummaryError extends Error {
@@ -98,7 +168,10 @@ export class SummaryError extends Error {
  * the protected `channel-summary` note. Throws SummaryError with an HTTP status
  * on user-facing failures (channel not found, too few messages, refusal).
  */
-export async function summarizeChannel(channelId: string, opts?: { windowDays?: number; kind?: SummaryKind }): Promise<ChannelSummaryResult> {
+export async function summarizeChannel(
+  channelId: string,
+  opts?: { windowDays?: number; kind?: SummaryKind; force?: boolean },
+): Promise<ChannelSummaryResult> {
   if (!summariesEnabled()) {
     throw new SummaryError('Summaries are not configured (ANTHROPIC_API_KEY missing)', 503);
   }
@@ -108,6 +181,14 @@ export async function summarizeChannel(channelId: string, opts?: { windowDays?: 
 
   const { data: channel } = await client.from('channels').select('id, name').eq('id', channelId).single();
   if (!channel) throw new SummaryError('Channel not found', 404);
+
+  // Reuse an up-to-date summary rather than paying for an identical one.
+  // `force` exists for a caller that genuinely wants a rewrite (a changed
+  // prompt or model), which no current caller does.
+  if (!opts?.force) {
+    const cached = await freshSummary(channel.id, channel.name, SLUG_BY_KIND[kind], kind, windowDays);
+    if (cached) return cached;
+  }
 
   const since = new Date(Date.now() - windowDays * 86_400_000).toISOString();
   // Sample the MOST RECENT messages in the window, not the oldest. With a cap
