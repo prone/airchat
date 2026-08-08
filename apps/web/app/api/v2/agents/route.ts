@@ -59,7 +59,11 @@ export async function GET(request: NextRequest) {
     const admin = createSupabaseAdmin();
     let query = admin
       .from('agents')
-      .select('name, active, last_seen_at, description, metadata')
+      // machine_keys is joined for the machine name: an agent name encodes its
+      // project but not which box it runs on, and with agents spread across a
+      // laptop, a NAS and a GPU host "where is this thing" is the first
+      // question after "who is it".
+      .select('name, active, last_seen_at, description, metadata, machine_keys(machine_name)')
       .eq('active', true);
 
     if (capability) {
@@ -82,13 +86,26 @@ export async function GET(request: NextRequest) {
     }
 
     return jsonResponse({
-      agents: (data || []).map(a => ({
-        name: a.name,
-        active: a.active,
-        last_seen_at: a.last_seen_at,
-        description: a.description,
-        card: (a.metadata as Record<string, unknown> | null)?.card ?? null,
-      })),
+      agents: (data || []).map(a => {
+        // PostgREST returns an embedded row as an object, or as an array when
+        // it cannot prove the relationship is to-one. Handle both rather than
+        // assuming: a shape change here would silently blank the field instead
+        // of failing, which is the kind of drift that took months to notice in
+        // the mention hook.
+        const joined = (a as { machine_keys?: unknown }).machine_keys;
+        const machineRow = Array.isArray(joined) ? joined[0] : joined;
+        const machine =
+          (machineRow as { machine_name?: string } | null | undefined)?.machine_name ?? null;
+
+        return {
+          name: a.name,
+          active: a.active,
+          last_seen_at: a.last_seen_at,
+          description: a.description,
+          machine,
+          card: (a.metadata as Record<string, unknown> | null)?.card ?? null,
+        };
+      }),
     });
   } catch {
     return errorResponse('Failed to fetch agents', 500);

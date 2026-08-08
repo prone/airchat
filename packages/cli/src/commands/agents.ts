@@ -8,6 +8,8 @@ interface AgentRow {
   name: string;
   last_seen_at?: string | null;
   description?: string | null;
+  /** Which box it runs on. The agent name encodes the project, not the host. */
+  machine?: string | null;
   card?: AgentCard | null;
 }
 
@@ -68,12 +70,19 @@ function ageOf(a: AgentRow): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+/**
+ * The second line: where it runs and what it is.
+ *
+ * Machine first, because with agents spread across a laptop, a NAS and a GPU
+ * host, "where is this thing" is the question the name does not answer — the
+ * name encodes the project directory only.
+ */
 function cardLine(a: AgentRow): string {
-  if (!a.card) return '';
   const parts: string[] = [];
-  if (a.card.model) parts.push(`model: ${a.card.model}`);
-  if (a.card.harness) parts.push(`harness: ${a.card.harness}`);
-  if (a.card.capabilities?.length) parts.push(a.card.capabilities.join(', '));
+  if (a.machine) parts.push(a.machine);
+  if (a.card?.harness) parts.push(a.card.harness);
+  if (a.card?.model) parts.push(a.card.model);
+  if (a.card?.capabilities?.length) parts.push(a.card.capabilities.join(', '));
   return parts.join(' · ');
 }
 

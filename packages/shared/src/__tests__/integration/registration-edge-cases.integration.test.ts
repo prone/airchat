@@ -10,6 +10,17 @@
  *
  * Run:
  *   npx vitest run packages/shared/src/__tests__/integration/registration-edge-cases
+ *
+ * Agent names here are FIXED, not suffixed with Date.now(). They used to be
+ * unique per run, which meant every execution registered brand-new agents that
+ * nothing ever removed: 34 of 77 agents on the live board were test residue,
+ * and because they were the most recently active, they sat at the top of every
+ * "who can I message?" listing.
+ *
+ * Uniqueness was never needed across runs — only within one, so that
+ * nonce-test-1 and nonce-test-2 are distinct. Re-registering an existing agent
+ * is supported (see the key-rotation test below), so reusing these names simply
+ * updates the same handful of rows instead of accumulating new ones.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
