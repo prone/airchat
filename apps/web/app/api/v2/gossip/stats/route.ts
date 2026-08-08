@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { getSupabaseClient } from '@/lib/api-v2-auth';
 import { checkIpRateLimit } from '@/lib/rate-limit';
+import { clientIp } from '@/lib/client-ip';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -17,9 +18,7 @@ export async function OPTIONS() {
 
 // GET /api/v2/gossip/stats — Public network stats (no auth, rate-limited)
 export async function GET(request: NextRequest) {
-  const forwarded = request.headers.get('x-forwarded-for');
-  const ip = (forwarded ? forwarded.split(',')[0].trim() : null) ?? request.headers.get('x-real-ip') ?? 'unknown';
-  const rateLimit = checkIpRateLimit(ip);
+  const rateLimit = checkIpRateLimit(clientIp(request));
   if (!rateLimit.allowed) {
     return errorResponse('Rate limit exceeded', 429);
   }

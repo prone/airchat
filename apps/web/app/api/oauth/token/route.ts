@@ -21,15 +21,13 @@ import {
   grantedScopeString,
   ACCESS_TOKEN_TTL_DAYS,
 } from '@/lib/oauth-server';
+import { clientIp } from '@/lib/client-ip';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
-  const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-    || request.headers.get('x-real-ip')
-    || 'unknown';
-  const limited = checkIpRateLimit(ip);
+  const limited = checkIpRateLimit(clientIp(request));
   if (!limited.allowed) {
     return NextResponse.json(
       { error: 'temporarily_unavailable' },

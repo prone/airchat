@@ -3,6 +3,7 @@ import { createAgentClient, type AirChatClient } from '@airchat/shared/supabase'
 import { validateAgentKey, ensureAgentRegistered } from '@/lib/api-auth';
 import { checkRateLimit, checkIpRateLimit, RATE_LIMITS } from '@/lib/rate-limit';
 import { AGENT_NAME_RE } from '@/lib/api-v1-validation';
+import { clientIp } from '@/lib/client-ip';
 
 export type AuthenticatedAgent = {
   client: AirChatClient;
@@ -20,10 +21,7 @@ export async function authenticateAgent(
   operation: 'read' | 'write' = 'read'
 ): Promise<AuthenticatedAgent | NextResponse> {
   // IP-based rate limit first — catches brute-force with rotating keys
-  const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-    || request.headers.get('x-real-ip')
-    || 'unknown';
-  const ipResult = checkIpRateLimit(ip);
+  const ipResult = checkIpRateLimit(clientIp(request));
   if (!ipResult.allowed) {
     return NextResponse.json(
       { error: 'Rate limit exceeded. Try again later.' },
