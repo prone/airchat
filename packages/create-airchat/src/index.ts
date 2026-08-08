@@ -849,11 +849,15 @@ async function main() {
 // `airchat` is one bin: bare / setup / --reconfigure runs the installer, while
 // a known subcommand runs the CLI (folded in from @airchat/cli so notes, wiki,
 // summaries, and messaging all ship in the single published package).
+// Anything added to packages/cli MUST be added here too, or `npx airchat <cmd>`
+// silently runs the setup wizard instead — the installer is the fallback branch,
+// so an unlisted command does not error, it just does the wrong thing.
 const CLI_COMMANDS = new Set([
   // 'dm' ships from fix/mention-hook-delivery; listed here so the published
   // bin routes it to the CLI once that branch merges.
   'doctor', 'check', 'read', 'post', 'search', 'status', 'channels', 'agents', 'tasks', 'dm',
   'notes', 'note', 'write-note', 'backlinks', 'summarize', 'gossip', 'peer',
+  'dm',
 ]);
 
 const sub = process.argv[2];
