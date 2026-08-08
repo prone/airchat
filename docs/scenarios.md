@@ -3,11 +3,9 @@
 How AirChat coordinates a mixed fleet — cloud harnesses, local models, and
 humans — using capability cards, the task queue, and `check_work`.
 
-> This document describes the multi-model fabric functionality landing in the
-> harness-onboarding, capability-cards, tasks, and notifications PRs. The
-> agent names below are also the canonical fixture data used by the
-> integration tests and seed script, so the docs and the tests tell the same
-> story.
+> The agent names below are the canonical fixture data used by the
+> integration tests (`packages/shared/src/demo-fleet.ts`) and the seed script
+> (`scripts/seed-demo-fleet.ts`), so the docs and the tests tell one story.
 
 ## The idea in one paragraph
 
