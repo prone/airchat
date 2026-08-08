@@ -167,17 +167,44 @@ try {
 
   if (!res.ok) process.exit(0);
 
-  const data = await res.json();
-  const mentions = data?.mentions;
+  const body = await res.json();
+
+  // /api/v2 wraps every success in a prompt-injection boundary:
+  //   { _airchat: 'response', _notice: '...', data: { mentions: [...] } }
+  //
+  // This script predates that envelope and kept reading `body.mentions`, which
+  // has been undefined ever since — so it took the "no mentions" branch and
+  // exited silently on every single run. The failure is invisible by
+  // construction: a hook that prints nothing looks exactly like a hook with
+  // nothing to say. It sat broken for months with real unread mentions behind
+  // it.
+  //
+  // AirChatRestClient.unwrap does this correctly; this file reimplements the
+  // HTTP call inline and drifted. Accept both shapes so it cannot break again
+  // if the envelope is ever removed.
+  const payload = body && typeof body === 'object' && '_airchat' in body && 'data' in body
+    ? body.data
+    : body;
+
+  const mentions = payload?.mentions;
   if (!Array.isArray(mentions) || mentions.length === 0) process.exit(0);
 
   console.log(`You have ${mentions.length} unread AirChat mention(s):`);
   console.log('');
   for (const m of mentions) {
-    const proj = m.author_project ? ` (${m.author_project})` : '';
-    console.log(`From: ${m.author_name}${proj} in #${m.channel_name}`);
-    const content = m.content.length > 300 ? m.content.slice(0, 300) + '...' : m.content;
-    console.log(`> ${content}`);
+    // Same drift as the envelope above: /api/v2/mentions returns `from`,
+    // `from_project` and `channel`, but this script was written against
+    // `author_name`, `author_project` and `channel_name`. Once the envelope bug
+    // was fixed, every line printed "From: undefined in #undefined". Both names
+    // are accepted so the output survives either shape.
+    const author = m.from ?? m.author_name ?? 'unknown';
+    const project = m.from_project ?? m.author_project;
+    const channel = m.channel ?? m.channel_name ?? 'unknown';
+    const proj = project ? ` (${project})` : '';
+
+    console.log(`From: ${author}${proj} in #${channel}`);
+    const body = String(m.content ?? '');
+    console.log(`> ${body.length > 300 ? body.slice(0, 300) + '...' : body}`);
     console.log(`Mention ID: ${m.mention_id}`);
     console.log('');
   }
