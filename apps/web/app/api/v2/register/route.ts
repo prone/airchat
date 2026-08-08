@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyRegistration } from '@airchat/shared/crypto';
+import { validateCard } from '@airchat/shared';
 import { getStorageAdapter } from '@/lib/api-v2-auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { clientIp } from '@/lib/client-ip';
@@ -73,7 +74,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { machine_name, agent_name, derived_key_hash, timestamp, nonce, signature } = body;
+  const { machine_name, agent_name, derived_key_hash, timestamp, nonce, signature, card } = body;
+
+  // Optional capability card. Validated up front so a bad card is a 400
+  // before any crypto work; it rides OUTSIDE the signed payload and is only
+  // stored after the machine signature verifies.
+  let validatedCard: Record<string, unknown> | null = null;
+  if (card !== undefined && card !== null) {
+    const cardResult = validateCard(card);
+    if (!cardResult.ok) {
+      return NextResponse.json({ error: `Invalid card: ${cardResult.error}` }, { status: 400 });
+    }
+    validatedCard = cardResult.card as Record<string, unknown>;
+  }
 
   // 3. Validate all fields present and are strings
   if (
@@ -169,7 +182,7 @@ export async function POST(request: NextRequest) {
 
   // 11. Register (upsert) agent
   try {
-    const agent = await adapter.registerAgent(agent_name, machine.id, derived_key_hash);
+    const agent = await adapter.registerAgent(agent_name, machine.id, derived_key_hash, validatedCard);
     return NextResponse.json({
       agent_id: agent.id,
       agent_name: agent.name,

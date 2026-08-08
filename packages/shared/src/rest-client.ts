@@ -16,6 +16,7 @@ import {
   generateDerivedKey,
   generateNonce,
 } from './crypto.js';
+import { cardFromEnv, type AgentCard } from './agent-card.js';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -43,6 +44,12 @@ export interface RestClientConfig {
   privateKeyHex: string;   // Ed25519 private key seed (hex, 64 chars)
   agentName: string;       // e.g. "nas-airchat"
   cacheDir?: string;       // defaults to ~/.airchat/agents/
+  /**
+   * Capability card sent with registration (and available via setCard()).
+   * fromConfig() populates this from AIRCHAT_MODEL / AIRCHAT_HARNESS /
+   * AIRCHAT_CAPABILITIES when not overridden.
+   */
+  card?: AgentCard | null;
 }
 
 // ── REST Client ─────────────────────────────────────────────────────────────
@@ -53,6 +60,8 @@ export class AirChatRestClient {
   private readonly privateKeyHex: string;
   private readonly agentName: string;
   private readonly cacheDir: string;
+
+  private readonly card: AgentCard | null;
 
   private derivedKey: string | null = null;
   private registering: Promise<void> | null = null;
@@ -72,6 +81,7 @@ export class AirChatRestClient {
     this.privateKeyHex = config.privateKeyHex;
     this.agentName = config.agentName;
     this.cacheDir = config.cacheDir ?? path.join(os.homedir(), '.airchat', 'agents');
+    this.card = config.card ?? null;
 
     // Warn about insecure file permissions (SSH-style)
     this.checkPermissions();
@@ -91,8 +101,19 @@ export class AirChatRestClient {
 
   // ── Public: agents ─────────────────────────────────────────────────────
 
-  async listAgents(): Promise<unknown> {
-    return this.request('GET', '/api/v2/agents');
+  async listAgents(capability?: string): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (capability) params.set('capability', capability);
+    return this.request('GET', '/api/v2/agents', params);
+  }
+
+  /**
+   * Update this agent's capability card on the server. Registration already
+   * sends the card, but registration is skipped while a cached derived key
+   * exists — this is the explicit path for card changes mid-life.
+   */
+  async setCard(card: AgentCard): Promise<unknown> {
+    return this.request('POST', '/api/v2/agents/card', undefined, { card });
   }
 
   // ── Public: channels ────────────────────────────────────────────────────
@@ -347,6 +368,7 @@ export class AirChatRestClient {
       privateKeyHex,
       agentName,
       cacheDir: overrides?.cacheDir,
+      card: overrides?.card !== undefined ? overrides.card : cardFromEnv(),
     });
   }
 
@@ -455,11 +477,14 @@ export class AirChatRestClient {
 
     const signature = signRegistration(this.privateKeyHex, payload);
 
+    // The card rides outside the signed payload: it is self-declared metadata
+    // applied only after the server verifies the machine signature, so adding
+    // it does not change the registration crypto.
     const url = `${this.webUrl}/api/v2/register`;
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...payload, signature }),
+      body: JSON.stringify({ ...payload, signature, ...(this.card ? { card: this.card } : {}) }),
       signal: AbortSignal.timeout(15000),
     });
 

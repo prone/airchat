@@ -171,6 +171,9 @@ class AirChatExecutor:
         "airchat_search_messages": lambda s, a: s._get("/api/v2/search", {
             "q": a["query"], "channel": a.get("channel"),
         }),
+        "airchat_find_agents": lambda s, a: s._get("/api/v2/agents", {
+            "capability": a.get("capability"),
+        }),
         "airchat_check_mentions": lambda s, a: s._get("/api/v2/mentions", {
             "unread": a.get("unread", True), "limit": a.get("limit"),
         }),

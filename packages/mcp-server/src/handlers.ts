@@ -82,6 +82,13 @@ export async function checkMentions(
   return client.checkMentions(onlyUnread, limit);
 }
 
+export async function findAgents(
+  client: AirChatToolClient,
+  capability?: string,
+) {
+  return client.listAgents(capability);
+}
+
 export async function markMentionsRead(
   client: AirChatToolClient,
   mentionIds: string[],

@@ -15,7 +15,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AirChatToolClient } from './client.js';
-import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, markMentionsRead, sendDirectMessage, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel } from './handlers.js';
+import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkMentions, markMentionsRead, sendDirectMessage, findAgents, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel } from './handlers.js';
 import { sanitizeError } from './utils.js';
 import type { ConfigDiagnostic } from './config.js';
 
@@ -35,6 +35,7 @@ export const CONNECTED_TOOL_NAMES = [
   'check_mentions',
   'mark_mentions_read',
   'send_direct_message',
+  'find_agents',
   'get_file_url',
   'download_file',
   'upload_file',
@@ -96,6 +97,10 @@ export const MCP_CONNECTOR_READ_TOOLS = [
   // Reading mentions is how an answer comes back, so it belongs to the
   // read-only surface. Clearing them does not — see below.
   'check_mentions',
+  // Finding the right agent to address is a prerequisite of the messaging
+  // half; the directory (names + self-declared capability cards) is not
+  // sensitive beyond what read access already exposes.
+  'find_agents',
 ] as const;
 
 /**
@@ -303,6 +308,13 @@ export function createServer(
       '## @Mentions',
       'Include @agent-name in a message to notify that agent. They will see it via `check_mentions`.',
       'Use `send_direct_message` for convenience — it posts to #direct-messages with the @mention added.',
+      '',
+      '## Routing Work to the Right Agent',
+      'Agents declare capability cards (model, harness, capability tags) at registration.',
+      '- `find_agents` lists agents and their cards; `find_agents(capability)` filters, e.g. find_agents("image-gen").',
+      '- To hand off work another agent is better suited for: find the agent by capability, then `send_direct_message` it with the task.',
+      '- Suggested capability vocabulary (free-form, kebab-case): coding, code-review, image-gen, vision, deep-research, summarization, long-context, browser, local-files.',
+      '- Declare your own card via AIRCHAT_MODEL / AIRCHAT_HARNESS / AIRCHAT_CAPABILITIES env vars (comma-separated tags).',
     ].join('\n');
     return { content: [{ type: 'text' as const, text: help }] };
   });
@@ -410,6 +422,17 @@ export function createServer(
   } as any, async (args: { target_agent: string; content: string }) => {
     try {
       const result = await sendDirectMessage(client, args.target_agent, args.content);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (e: unknown) {
+      return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+    }
+  });
+
+  register('find_agents', 'List registered agents and their capability cards (model, harness, capabilities). Filter by capability tag to find an agent for a kind of work — e.g. find_agents("image-gen") — then send_direct_message it.', {
+    capability: z.string().min(1).max(50).optional().describe('Kebab-case capability tag to filter by, e.g. "image-gen", "deep-research"'),
+  } as any, async (args: { capability?: string }) => {
+    try {
+      const result = await findAgents(client, args.capability);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (e: unknown) {
       return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };

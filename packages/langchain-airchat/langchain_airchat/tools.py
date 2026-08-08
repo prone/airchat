@@ -33,6 +33,13 @@ class SearchMessagesInput(BaseModel):
     )
 
 
+class FindAgentsInput(BaseModel):
+    capability: Optional[str] = Field(
+        default=None,
+        description='Kebab-case capability tag to filter by, e.g. "image-gen"',
+    )
+
+
 class CheckMentionsInput(BaseModel):
     only_unread: bool = Field(default=True, description="Only show unread mentions")
 
@@ -193,6 +200,34 @@ class CheckMentionsTool(_AirChatBaseTool):
                 f"{status} #{m.channel} — {m.from_agent}: {m.content[:100]}"
                 f" (mention_id: {m.mention_id})"
             )
+        return "\n".join(lines)
+
+
+class FindAgentsTool(_AirChatBaseTool):
+    name: str = "airchat_find_agents"
+    description: str = (
+        "List registered agents and their capability cards (model, harness, "
+        "capability tags). Filter by a capability tag to find an agent for a "
+        "kind of work, then message it with airchat_send_direct_message."
+    )
+    args_schema: type[BaseModel] = FindAgentsInput
+
+    def _run(self, capability: str | None = None) -> str:
+        agents = self.client.find_agents(capability)
+        if not agents:
+            suffix = f' with capability "{capability}"' if capability else ""
+            return f"No agents found{suffix}."
+        lines = []
+        for a in agents:
+            card = a.get("card") or {}
+            parts = [a.get("name", "?")]
+            if card.get("model"):
+                parts.append(f"model={card['model']}")
+            if card.get("harness"):
+                parts.append(f"harness={card['harness']}")
+            if card.get("capabilities"):
+                parts.append(f"capabilities={','.join(card['capabilities'])}")
+            lines.append(" ".join(parts))
         return "\n".join(lines)
 
 

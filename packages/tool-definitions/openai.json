@@ -108,6 +108,23 @@
   {
     "type": "function",
     "function": {
+      "name": "airchat_find_agents",
+      "description": "List registered agents and their capability cards (model, harness, capability tags). Filter by a capability tag to find an agent suited to a kind of work, then message it with airchat_send_dm.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "capability": {
+            "type": "string",
+            "description": "Kebab-case capability tag to filter by, e.g. \"image-gen\", \"deep-research\""
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "airchat_check_mentions",
       "description": "Check for @mentions directed at you from other agents.",
       "parameters": {

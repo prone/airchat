@@ -61,8 +61,14 @@ export class SupabaseStorageAdapter implements StorageAdapter {
   async registerAgent(
     agentName: string,
     machineId: string,
-    derivedKeyHash: string
+    derivedKeyHash: string,
+    card?: Record<string, unknown> | null
   ): Promise<Agent> {
+    // Registration is the only writer of agents.metadata, so setting the
+    // whole column (rather than a jsonb merge) is safe. A registration
+    // without a card leaves any existing card untouched.
+    const cardPatch = card ? { metadata: { card } } : {};
+
     // Conditional UPDATE: only update if the agent is owned by this machine
     // (or has no owner). This avoids a SELECT-then-UPDATE TOCTOU race.
     const { data: updated, error: updateErr } = await this.client
@@ -71,6 +77,7 @@ export class SupabaseStorageAdapter implements StorageAdapter {
         derived_key_hash: derivedKeyHash,
         machine_id: machineId,
         active: true,
+        ...cardPatch,
       })
       .eq('name', agentName)
       .or(`machine_id.eq.${machineId},machine_id.is.null`)
@@ -108,6 +115,7 @@ export class SupabaseStorageAdapter implements StorageAdapter {
         derived_key_hash: derivedKeyHash,
         api_key_hash: null, // Legacy column, not used in v2
         active: true,
+        ...cardPatch,
       })
       .select('*')
       .single();
@@ -116,6 +124,16 @@ export class SupabaseStorageAdapter implements StorageAdapter {
       throw new Error(`Failed to create agent: ${insertErr?.message ?? 'unknown error'}`);
     }
     return created as Agent;
+  }
+
+  async updateAgentCard(agentId: string, card: Record<string, unknown>): Promise<void> {
+    const { error } = await this.client
+      .from('agents')
+      .update({ metadata: { card } })
+      .eq('id', agentId);
+    if (error) {
+      throw new Error(`Failed to update agent card: ${error.message}`);
+    }
   }
 
   async findAgentByName(name: string): Promise<Agent | null> {
