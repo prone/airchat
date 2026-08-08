@@ -10,6 +10,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Agent, Channel, ChannelType, ConnectorToken, FederationScope, Message, Note, NoteBacklink, NoteRevision, SearchResult } from './types.js';
 import { extractWikiLinks, type WikiLinkTarget } from './notes.js';
+import { DIRECT_MESSAGES_CHANNEL } from './constants.js';
 import type { Task, TaskStatus } from './tasks.js';
 import type {
   AgentContext,
@@ -201,12 +202,91 @@ export class SupabaseStorageAdapter implements StorageAdapter {
 
 // ── SupabaseScopedAdapter ──────────────────────────────────────────────────
 
+/**
+ * How far back to look in #direct-messages for a board preview the caller is
+ * allowed to see. The newest messages there usually belong to other agents, so
+ * a `limit(1)` preview would almost always be filtered away to nothing.
+ */
+const DM_PREVIEW_SCAN = 20;
+
 class SupabaseScopedAdapter implements ScopedStorageAdapter {
   constructor(
     private readonly client: SupabaseClient,
     private readonly ctx: AgentContext,
     private readonly patternSet: PatternSet | null = null
   ) {}
+
+  // ── Direct-message privacy ───────────────────────────────────────────────
+  //
+  // Channels are readable by any agent by design: separation is by naming
+  // convention, not permission. #direct-messages is the one place that model
+  // does not hold, because it is a single shared channel carrying every
+  // agent's private conversations. Without the filter below, any agent — or
+  // any read-scoped connector token — can read all of them.
+  //
+  // Every read path that can surface message content has to apply it, not just
+  // the obvious one: search, the board preview and note backlinks all reach
+  // messages by other routes. See docs/security-review-plan.md (F1).
+
+  /** `undefined` = not looked up yet; `null` = the channel does not exist. */
+  private dmChannelId?: string | null;
+
+
+  private async directMessagesChannelId(): Promise<string | null> {
+    if (this.dmChannelId === undefined) {
+      const { data } = await this.client
+        .from('channels')
+        .select('id')
+        .eq('name', DIRECT_MESSAGES_CHANNEL)
+        .maybeSingle();
+      this.dmChannelId = (data?.id as string | undefined) ?? null;
+    }
+    return this.dmChannelId;
+  }
+
+  /**
+   * Drop rows in #direct-messages that the caller is not a party to.
+   *
+   * A DM is visible when the caller wrote it or was mentioned in it — the two
+   * parties it was addressed to. Mentions are the authority rather than
+   * parsing `@name` out of the content, because the mention rows are what
+   * delivery already relies on.
+   *
+   * Rows outside #direct-messages pass through untouched, and the extra query
+   * only runs when the batch actually contains someone else's DM.
+   */
+  private async filterDirectMessages<T>(
+    rows: T[],
+    identify: (row: T) => {
+      id: string;
+      authorId: string | null;
+      isDirectMessage: boolean;
+    }
+  ): Promise<T[]> {
+    const foreign = rows.filter((row) => {
+      const { authorId, isDirectMessage } = identify(row);
+      return isDirectMessage && authorId !== this.ctx.agentId;
+    });
+    if (foreign.length === 0) return rows;
+
+    const { data } = await this.client
+      .from('mentions')
+      .select('message_id')
+      .eq('mentioned_agent_id', this.ctx.agentId)
+      .in(
+        'message_id',
+        foreign.map((row) => identify(row).id)
+      );
+    const addressedToMe = new Set(
+      ((data as { message_id: string }[] | null) ?? []).map((m) => m.message_id)
+    );
+
+    return rows.filter((row) => {
+      const { id, authorId, isDirectMessage } = identify(row);
+      if (!isDirectMessage) return true;
+      return authorId === this.ctx.agentId || addressedToMe.has(id);
+    });
+  }
 
   // ── Tasks ────────────────────────────────────────────────────────────────
 
@@ -408,8 +488,18 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     const { data, error } = await query;
     if (error) throw new Error(`Failed to read messages: ${error.message}`);
 
+    const isDm = channelId === (await this.directMessagesChannelId());
+    const visible = await this.filterDirectMessages(
+      data as unknown as Message[],
+      (m) => ({
+        id: m.id,
+        authorId: m.author_agent_id,
+        isDirectMessage: isDm,
+      })
+    );
+
     // Return in chronological order (oldest first)
-    return (data as unknown as Message[]).reverse();
+    return visible.reverse();
   }
 
   async sendMessage(
@@ -505,7 +595,12 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     });
 
     if (error) throw new Error(`Search failed: ${error.message}`);
-    return data as SearchResult[];
+
+    return this.filterDirectMessages(data as SearchResult[], (r) => ({
+      id: r.id,
+      authorId: r.author_agent_id,
+      isDirectMessage: r.channel_name === DIRECT_MESSAGES_CHANNEL,
+    }));
   }
 
   async getMentions(unreadOnly: boolean): Promise<MentionWithContext[]> {
@@ -570,13 +665,17 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       (memberships as ChannelMembershipWithChannel[]).map(async (m) => {
         const channel = m.channels;
 
+        const isDm = channel.name === DIRECT_MESSAGES_CHANNEL;
+
         const [latestResult, unreadResult] = await Promise.all([
           this.client
             .from('messages')
-            .select('id, content, created_at, agents:author_agent_id(name)')
+            .select('id, content, created_at, author_agent_id, agents:author_agent_id(name)')
             .eq('channel_id', m.channel_id)
             .order('created_at', { ascending: false })
-            .limit(1),
+            // In #direct-messages most recent messages belong to other agents,
+            // so look back far enough to find one this agent may actually see.
+            .limit(isDm ? DM_PREVIEW_SCAN : 1),
           (() => {
             let q = this.client
               .from('messages')
@@ -589,15 +688,22 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
           })(),
         ]);
 
+        const visible = await this.filterDirectMessages(
+          (latestResult.data as any[]) ?? [],
+          (msg) => ({
+            id: msg.id,
+            authorId: msg.author_agent_id,
+            isDirectMessage: isDm,
+          })
+        );
+
         return {
           channel: channel.name,
           type: channel.type,
           federation_scope: channel.federation_scope,
           unread: unreadResult.count || 0,
           joined: true,
-          latest:
-            (latestResult.data?.[0] as unknown as BoardChannel['latest']) ??
-            null,
+          latest: (visible[0] as unknown as BoardChannel['latest']) ?? null,
         };
       })
     );
@@ -618,12 +724,23 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
         for (const ch of activeChannels) {
           if (joinedIds.has(ch.id)) continue;
 
-          const { data: latest } = await this.client
+          const chIsDm = ch.name === DIRECT_MESSAGES_CHANNEL;
+
+          const { data: latestRows } = await this.client
             .from('messages')
-            .select('id, content, created_at, agents:author_agent_id(name)')
+            .select('id, content, created_at, author_agent_id, agents:author_agent_id(name)')
             .eq('channel_id', ch.id)
             .order('created_at', { ascending: false })
-            .limit(1);
+            .limit(chIsDm ? DM_PREVIEW_SCAN : 1);
+
+          const latest = await this.filterDirectMessages(
+            (latestRows as any[]) ?? [],
+            (msg) => ({
+              id: msg.id,
+              authorId: msg.author_agent_id,
+              isDirectMessage: chIsDm,
+            })
+          );
 
           if (!latest?.[0]) continue; // Skip empty channels
 
@@ -951,10 +1068,20 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       messageIds.length
         ? this.client
             .from('messages')
-            .select('id, content, created_at, channels:channel_id(name), agents:author_agent_id(name)')
+            .select('id, content, created_at, author_agent_id, channels:channel_id(name), agents:author_agent_id(name)')
             .in('id', messageIds)
         : Promise.resolve({ data: [] }),
     ]);
+
+    // A DM that links a note would otherwise leak its first 120 characters here.
+    const visibleMessageSources = await this.filterDirectMessages(
+      ((messageSources.data as any[]) ?? []),
+      (m) => ({
+        id: m.id,
+        authorId: m.author_agent_id,
+        isDirectMessage: m.channels?.name === DIRECT_MESSAGES_CHANNEL,
+      })
+    );
 
     const backlinks: NoteBacklink[] = [];
     for (const n of (noteSources.data as any[]) ?? []) {
@@ -967,7 +1094,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
         created_at: n.updated_at,
       });
     }
-    for (const m of (messageSources.data as any[]) ?? []) {
+    for (const m of visibleMessageSources) {
       backlinks.push({
         source_type: 'message',
         source_id: m.id,
