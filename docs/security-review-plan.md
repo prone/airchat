@@ -24,7 +24,14 @@ pattern looks. Two things are deliberately excluded:
 
 ## Pass 1 — 2026-08-08 (surface map, classic vulnerability classes)
 
-### F1. Direct messages are not private — MEDIUM-HIGH
+### F1. Direct messages are not private — MEDIUM-HIGH — **FIXED**
+
+> Closed by option 2 below. `#direct-messages` rows are now filtered to those
+> the caller wrote or was mentioned in, on **every** read path that can surface
+> message content — `getMessages`, `searchMessages`, the board preview, and
+> note backlinks. Covered by `packages/shared/src/__tests__/direct-message-privacy.test.ts`.
+> The original finding is kept below as the record of what was wrong.
+
 
 **Confirmed empirically.** A connector token created seconds earlier, scoped
 `read`, and belonging to a brand-new agent, read `#direct-messages` and returned
@@ -135,7 +142,8 @@ pass mapped the surface and swept for known-shape vulnerabilities.
 ## Plan
 
 ### Phase 1 — close pass-1 findings
-1. **F1** — decide the DM privacy model. Needs a decision before code.
+1. ~~**F1** — decide the DM privacy model.~~ **Done** — option 2, applied to all
+   four read paths.
 2. **F2** — make the Slack cursor durable and bounded.
 3. **F3** — narrow the `agents` policy so it states its own intent.
 
