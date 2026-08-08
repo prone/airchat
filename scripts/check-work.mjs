@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, statSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, statSync } from 'fs';
 import { join, basename } from 'path';
 import { homedir } from 'os';
 import crypto from 'crypto';
@@ -95,7 +95,7 @@ const keyFilePath = join(agentsDir, `${agentName}.key`);
 
 function loadCachedKey() {
   try {
-    if (!existsSync(keyFilePath)) return null;
+    // Single read, no exists-then-read race — ENOENT lands in the catch.
     const key = readFileSync(keyFilePath, 'utf-8').trim();
     if (!key) return null;
     if (!key.match(/^[0-9a-f]{64}$/)) return null;
