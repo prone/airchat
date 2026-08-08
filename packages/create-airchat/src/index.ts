@@ -630,8 +630,13 @@ function installMentionHook(config: SetupConfig): StepResult {
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
     let settings: any = {};
 
-    if (fs.existsSync(settingsPath)) {
+    // Single read, no exists-then-read race. A missing file means fresh
+    // settings; an unparseable one still throws to the outer catch rather
+    // than being clobbered.
+    try {
       settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+    } catch (e: any) {
+      if (e?.code !== 'ENOENT') throw e;
     }
 
     // Use forward slashes on all platforms — backslashes break bash/PowerShell hook execution
