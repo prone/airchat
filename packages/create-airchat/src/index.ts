@@ -7,6 +7,7 @@ import * as crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { createClient } from '@supabase/supabase-js';
 import { run as runCli } from '@airchat/cli';
+import { HARNESSES, detectHarnesses, genericSnippet, installInstructions, type McpLaunch } from './harnesses.js';
 
 // Also defined in packages/shared/src/rest-client.ts — keep in sync
 const DEFAULT_AIRCHAT_URL = 'https://supernode-web-production.up.railway.app';
@@ -24,6 +25,7 @@ interface SetupConfig {
   supabaseServiceRoleKey?: string;
   databaseUrl?: string;
   machineName: string;
+  harnesses: string[];
   dashboardPort: number;
   deployDashboard: boolean;
   airchatDir: string;
@@ -196,6 +198,27 @@ async function collectConfig(rl: readline.Interface, reconfigure: boolean): Prom
   }
   console.log('');
 
+  // Harnesses — which AI tools on this machine get the MCP server + instructions
+  const detected = detectHarnesses(os.homedir());
+  const detectedKeys = new Set(detected.map((h) => h.key));
+  console.log('  Which AI harnesses should connect to AirChat?');
+  HARNESSES.forEach((h, i) => {
+    const mark = detectedKeys.has(h.key) ? ` ${GREEN}(detected)${RESET}` : '';
+    console.log(`    ${BOLD}${i + 1}${RESET}) ${h.label}${mark}`);
+  });
+  console.log(`    ${BOLD}${HARNESSES.length + 1}${RESET}) Other MCP client ${dim('(prints a generic snippet)')}`);
+  const fallbackSel = detected.length ? detected.map((h) => h.key) : ['claude'];
+  const selRaw = await rl.question(
+    `  Select, comma-separated ${dim(`(Enter = ${fallbackSel.join(', ')})`)}: `
+  );
+  let harnesses = selRaw
+    .split(',')
+    .map((s) => parseInt(s.trim(), 10) - 1)
+    .filter((idx) => idx >= 0 && idx <= HARNESSES.length)
+    .map((idx) => (idx === HARNESSES.length ? 'other' : HARNESSES[idx].key));
+  if (harnesses.length === 0) harnesses = fallbackSel;
+  console.log('');
+
   // Dashboard
   const deployDashboard = await askYesNo(rl, 'Deploy web dashboard?', true);
   let dashboardPort = 3003;
@@ -270,6 +293,7 @@ async function collectConfig(rl: readline.Interface, reconfigure: boolean): Prom
     supabaseServiceRoleKey,
     databaseUrl,
     machineName,
+    harnesses,
     dashboardPort,
     deployDashboard,
     airchatDir,
@@ -555,60 +579,49 @@ function writeWebEnv(config: SetupConfig): StepResult {
   }
 }
 
-function registerMcpServer(config: SetupConfig): StepResult {
-  const name = 'Register MCP server';
-
+function buildMcpLaunch(config: SetupConfig): McpLaunch | null {
   const tsxPath = path.join(config.airchatDir, 'node_modules', '.bin', 'tsx');
   const serverPath = path.join(config.airchatDir, 'packages', 'mcp-server', 'src', 'index.ts');
-
-  if (!fs.existsSync(serverPath)) {
-    return { name, ok: false, message: `MCP server not found at ${serverPath}` };
-  }
-
+  if (!fs.existsSync(serverPath)) return null;
   // v2: No env vars passed — the MCP server reads from ~/.airchat/config and ~/.airchat/machine.key directly
-  // Use forward slashes on all platforms — backslashes break bash/PowerShell hook execution
-  const cmd = `claude mcp add airchat -s user -- "${config.nodePath}" "${tsxPath}" "${serverPath}"`.replace(/\\/g, '/');
-
-  try {
-    execSync(cmd, { stdio: 'pipe' });
-    return { name, ok: true, message: 'Registered at user level (no env vars — reads from ~/.airchat/)' };
-  } catch (e: any) {
-    // claude CLI might not be installed
-    return {
-      name,
-      ok: false,
-      message: `Could not run "claude mcp add". Run manually:\n    ${cmd}`,
-    };
-  }
+  return { nodePath: config.nodePath, tsxPath, serverPath };
 }
 
-function installClaudeMd(config: SetupConfig): StepResult {
-  const name = 'Install agent instructions';
-  try {
-    const srcPath = path.join(config.airchatDir, 'setup', 'global-CLAUDE.md');
-    if (!fs.existsSync(srcPath)) {
-      return { name, ok: false, message: 'setup/global-CLAUDE.md not found' };
-    }
-
-    const content = fs.readFileSync(srcPath, 'utf-8');
-    const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
-
-    // Check if already present
-    if (fs.existsSync(claudeMdPath)) {
-      const existing = fs.readFileSync(claudeMdPath, 'utf-8');
-      if (existing.includes('# AirChat')) {
-        return { name, ok: true, message: 'Already present in ~/.claude/CLAUDE.md' };
-      }
-      fs.appendFileSync(claudeMdPath, '\n' + content);
-    } else {
-      fs.mkdirSync(path.dirname(claudeMdPath), { recursive: true });
-      fs.writeFileSync(claudeMdPath, content);
-    }
-
-    return { name, ok: true, message: '~/.claude/CLAUDE.md' };
-  } catch (e: any) {
-    return { name, ok: false, message: e.message };
+function registerMcpServers(config: SetupConfig): StepResult[] {
+  const launch = buildMcpLaunch(config);
+  if (!launch) {
+    return [{ name: 'Register MCP server', ok: false, message: `MCP server not found under ${config.airchatDir}` }];
   }
+
+  const results: StepResult[] = [];
+  for (const key of config.harnesses) {
+    if (key === 'other') continue; // generic snippet printed with next steps
+    const harness = HARNESSES.find((h) => h.key === key);
+    if (!harness) continue;
+    const res = harness.registerMcp(launch, os.homedir());
+    const message = res.manualSnippet
+      ? `${res.message}\n${res.manualSnippet.split('\n').map((l) => `    ${l}`).join('\n')}`
+      : res.message;
+    results.push({ name: `MCP · ${harness.label}`, ok: res.ok, message });
+  }
+  return results;
+}
+
+function installAgentInstructions(config: SetupConfig): StepResult[] {
+  const srcPath = path.join(config.airchatDir, 'setup', 'agent-instructions.md');
+  if (!fs.existsSync(srcPath)) {
+    return [{ name: 'Install agent instructions', ok: false, message: 'setup/agent-instructions.md not found' }];
+  }
+  const content = fs.readFileSync(srcPath, 'utf-8');
+
+  const results: StepResult[] = [];
+  for (const key of config.harnesses) {
+    const harness = HARNESSES.find((h) => h.key === key);
+    if (!harness?.instructionsPath) continue; // e.g. Cursor: global rules live in app settings
+    const res = installInstructions(harness.instructionsPath(os.homedir()), content);
+    results.push({ name: `Instructions · ${harness.label}`, ok: res.ok, message: res.message });
+  }
+  return results;
 }
 
 function installMentionHook(config: SetupConfig): StepResult {
@@ -695,6 +708,7 @@ async function main() {
   console.log(`  ${bold('Summary:')}`);
   console.log(`    Database:    ${config.dbProvider}`);
   console.log(`    Machine:     ${config.machineName}`);
+  console.log(`    Harnesses:   ${config.harnesses.join(', ')}`);
   console.log(`    Repo:        ${config.airchatDir}`);
   console.log(`    Node:        ${config.nodePath}`);
   if (config.deployDashboard) {
@@ -752,25 +766,28 @@ async function main() {
   else if (!config.deployDashboard) {} // silent skip
   else fail(envResult.message);
 
-  // 7. Register MCP server (no env vars — reads from ~/.airchat/ directly)
-  const mcpResult = registerMcpServer(config);
-  results.push(mcpResult);
-  if (mcpResult.ok) ok(`MCP server → ${mcpResult.message}`); else warn(mcpResult.message);
+  // 7. Register MCP server with each selected harness (no env vars — reads from ~/.airchat/ directly)
+  for (const r of registerMcpServers(config)) {
+    results.push(r);
+    if (r.ok) ok(`${r.name} → ${r.message}`); else warn(`${r.name}: ${r.message}`);
+  }
 
-  // 8. Install agent instructions
-  const claudeResult = installClaudeMd(config);
-  results.push(claudeResult);
-  if (claudeResult.ok) ok(`Instructions → ${claudeResult.message}`); else fail(claudeResult.message);
+  // 8. Install agent instructions into each harness's global context file
+  for (const r of installAgentInstructions(config)) {
+    results.push(r);
+    if (r.ok) ok(`${r.name} → ${r.message}`); else fail(`${r.name}: ${r.message}`);
+  }
 
-  // 9. Install mention hook
-  const hookResult = installMentionHook(config);
-  results.push(hookResult);
-  if (hookResult.ok) ok(`Mention hook → ${hookResult.message}`); else fail(hookResult.message);
+  // 9. + 10. Claude-Code-specific extras: mention hook and slash commands
+  if (config.harnesses.includes('claude')) {
+    const hookResult = installMentionHook(config);
+    results.push(hookResult);
+    if (hookResult.ok) ok(`Mention hook → ${hookResult.message}`); else fail(hookResult.message);
 
-  // 10. Copy slash commands
-  const cmdResult = copySlashCommands(config);
-  results.push(cmdResult);
-  if (cmdResult.ok) ok(`Slash commands → ${cmdResult.message}`); else fail(cmdResult.message);
+    const cmdResult = copySlashCommands(config);
+    results.push(cmdResult);
+    if (cmdResult.ok) ok(`Slash commands → ${cmdResult.message}`); else fail(cmdResult.message);
+  }
 
   // Summary
   console.log('');
@@ -802,10 +819,22 @@ async function main() {
   console.log(`    ~/.airchat/machine.pub ${dim('Ed25519 public key')}`);
   console.log(`    ~/.airchat/agents/     ${dim('Cached derived keys (auto-created)')}`);
 
+  if (config.harnesses.includes('other')) {
+    const launch = buildMcpLaunch(config);
+    if (launch) {
+      console.log('');
+      console.log(genericSnippet(launch).split('\n').map((l) => `  ${l}`).join('\n'));
+    }
+  }
+
   console.log('');
   console.log(`  ${dim('Next steps:')}`);
   let step = 1;
-  console.log(`  ${step++}. Restart Claude Code`);
+  const selectedLabels = config.harnesses
+    .filter((k) => k !== 'other')
+    .map((k) => HARNESSES.find((h) => h.key === k)?.label)
+    .filter(Boolean);
+  console.log(`  ${step++}. Restart your agent sessions${selectedLabels.length ? ` (${selectedLabels.join(', ')})` : ''}`);
   if (config.deployDashboard) {
     console.log(`  ${step++}. Start the dashboard: cd ${config.airchatDir} && docker compose up -d --build`);
   }
