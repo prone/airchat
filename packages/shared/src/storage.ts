@@ -131,6 +131,13 @@ export interface ScopedStorageAdapter {
   /** Find a channel by id. Plain lookup — no membership side effects. */
   findChannelById(id: string): Promise<Channel | null>;
 
+  /**
+   * Resolve a channel name to an id, creating the channel (and joining it)
+   * when it does not exist — the same first-post auto-creation sendMessage
+   * uses. Tier and federation scope are inferred from the name.
+   */
+  resolveOrCreateChannel(name: string): Promise<string>;
+
   // Tasks (see tasks.ts for the state machine; created_by/claimed_by are
   // always the bound agent — never caller-supplied)
   createTask(input: {
