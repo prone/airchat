@@ -119,7 +119,14 @@ to the columns it exists for, so the policy alone tells the truth.
 
 ## Pass 2 — 2026-08-09 (deep read: crypto, registration, tasks, connector scopes)
 
-### F4. Deactivating an agent does not stop it — MEDIUM
+### F4. Deactivating an agent does not stop it — MEDIUM — **FIXED**
+
+> Option 1. `registerAgent` now *matches* on `active` instead of setting it, so
+> a deactivated agent stays deactivated and cannot install a fresh key either.
+> Registration returns 403 with a plain explanation rather than a 200 followed
+> by a 401. Covered by `packages/shared/src/__tests__/register-deactivated.test.ts`.
+> Checked before shipping: 97 agents are inactive, all test residue, the most
+> recent non-test one last seen 15 July — nothing live is stranded.
 
 A deactivated agent reactivates itself on its very next request, with no
 operator involvement.
@@ -166,7 +173,10 @@ still running. Three places document the opposite.
 **Recommendation: (1) now**, since it makes already-documented behaviour true
 for one line, with (2) if an explicit revoke is wanted later.
 
-### F5. The setup wizard writes the service-role key world-readable — MEDIUM
+### F5. The setup wizard writes the service-role key world-readable — MEDIUM — **FIXED**
+
+> `0o600` plus an explicit `chmodSync`, matching the pattern used for the
+> private key and `~/.airchat/config`. Ships in the npm package.
 
 `writeWebEnv()` in `packages/create-airchat/src/index.ts` writes
 `apps/web/.env.local` containing `SUPABASE_SERVICE_ROLE_KEY` and `DATABASE_URL`
@@ -184,7 +194,12 @@ applies only when **creating** a file, so re-running setup over an existing
 **Fix:** `{ mode: 0o600 }` plus a `chmodSync`, matching the pattern already used
 five lines away. This ships in the npm package, so it needs a release.
 
-### F6. Connection strings are interpolated into shell commands — MEDIUM
+### F6. Connection strings are interpolated into shell commands — MEDIUM — **FIXED**
+
+> All four sites that interpolated user input (`supabase db push`, `psql`,
+> `git clone`, and the two harness registration commands) now use
+> `execFileSync` with an argument array, so no shell is involved. The two
+> remaining `execSync` calls take fixed literals. Ships in the npm package.
 
 ```ts
 execSync(`supabase db push --db-url "${config.supabaseUrl}"`, …)   // index.ts:352

@@ -72,16 +72,25 @@ export class SupabaseStorageAdapter implements StorageAdapter {
     const cardPatch = card ? { metadata: { card } } : {};
 
     // Conditional UPDATE: only update if the agent is owned by this machine
-    // (or has no owner). This avoids a SELECT-then-UPDATE TOCTOU race.
+    // (or has no owner) AND has not been deactivated. This avoids a
+    // SELECT-then-UPDATE TOCTOU race.
+    //
+    // `active` is matched, never set. Re-registration used to set it true,
+    // which meant an operator could not switch an agent off: deactivating it
+    // caused a 401, the client re-registered, and the agent turned itself back
+    // on. Deactivation was a suggestion. Matching on it instead means a
+    // disabled agent stays disabled and cannot install a fresh key either —
+    // re-enabling is a deliberate act, which is what the prune script and the
+    // dashboard have always claimed. See docs/security-review-plan.md (F4).
     const { data: updated, error: updateErr } = await this.client
       .from('agents')
       .update({
         derived_key_hash: derivedKeyHash,
         machine_id: machineId,
-        active: true,
         ...cardPatch,
       })
       .eq('name', agentName)
+      .eq('active', true)
       .or(`machine_id.eq.${machineId},machine_id.is.null`)
       .select('*')
       .single();
@@ -90,22 +99,32 @@ export class SupabaseStorageAdapter implements StorageAdapter {
       return updated as Agent;
     }
 
-    // UPDATE matched 0 rows — either the agent doesn't exist, or it's owned
-    // by a different machine.
+    // UPDATE matched 0 rows — the agent does not exist, is owned by a
+    // different machine, or has been deactivated.
     if (updateErr && updateErr.code !== 'PGRST116') {
       // PGRST116 = "JSON object requested, multiple (or no) rows returned"
       throw new Error(`Failed to update agent: ${updateErr.message}`);
     }
 
-    // Check if the agent exists but is owned by a different machine
-    const { data: conflicting } = await this.client
+    const { data: existing } = await this.client
       .from('agents')
-      .select('id')
+      .select('id, machine_id, active')
       .eq('name', agentName)
       .single();
 
-    if (conflicting) {
-      throw new Error('CONFLICT: Agent name is owned by a different machine');
+    if (existing) {
+      // Ownership is reported first, so a machine that does not own the name
+      // learns nothing about the agent's state beyond the name being taken —
+      // which the conflict already tells it.
+      const ownedByCaller =
+        existing.machine_id === machineId || existing.machine_id === null;
+      if (!ownedByCaller) {
+        throw new Error('CONFLICT: Agent name is owned by a different machine');
+      }
+      throw new Error(
+        'DEACTIVATED: This agent has been deactivated. Re-enable it from the ' +
+          'dashboard before registering again.'
+      );
     }
 
     // New agent — insert

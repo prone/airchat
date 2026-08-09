@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { createClient } from '@supabase/supabase-js';
 import { run as runCli } from '@airchat/cli';
 
@@ -319,7 +319,9 @@ async function cloneAndInstall(config: SetupConfig): Promise<StepResult> {
 
   try {
     console.log(`  Cloning airchat...`);
-    execSync(`git clone https://github.com/prone/airchat.git "${config.airchatDir}"`, { stdio: 'pipe' });
+    execFileSync('git', ['clone', 'https://github.com/prone/airchat.git', config.airchatDir], {
+      stdio: 'pipe',
+    });
     console.log(`  Installing dependencies...`);
     execSync('npm install', { cwd: config.airchatDir, stdio: 'pipe' });
     return { name, ok: true, message: 'Cloned and installed' };
@@ -349,7 +351,11 @@ async function runMigrations(config: SetupConfig): Promise<StepResult> {
     // Try supabase CLI
     try {
       execSync('which supabase', { stdio: 'pipe' });
-      execSync(`supabase db push --db-url "${config.supabaseUrl}"`, {
+      // execFileSync, not execSync: the URL is pasted in by whoever runs setup,
+      // and inside a shell string a value containing a double quote closes the
+      // quoting and runs the rest. Passing arguments as an array never invokes
+      // a shell, so quoting stops being something anyone has to get right.
+      execFileSync('supabase', ['db', 'push', '--db-url', config.supabaseUrl], {
         cwd: config.airchatDir,
         stdio: 'pipe',
       });
@@ -392,7 +398,9 @@ async function runMigrations(config: SetupConfig): Promise<StepResult> {
     const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
     try {
       for (const file of files) {
-        execSync(`psql "${config.databaseUrl}" -f "${path.join(migrationsDir, file)}"`, { stdio: 'pipe' });
+        execFileSync('psql', [config.databaseUrl, '-f', path.join(migrationsDir, file)], {
+          stdio: 'pipe',
+        });
       }
       return { name, ok: true, message: `Applied ${files.length} migrations` };
     } catch (e: any) {
@@ -577,7 +585,16 @@ function writeWebEnv(config: SetupConfig): StepResult {
       lines.push(`DATABASE_URL=${config.databaseUrl}`);
     }
 
-    fs.writeFileSync(envPath, lines.join('\n') + '\n');
+    // 0600, like every other file here that holds a credential. This one
+    // carries the service-role key, which bypasses every RLS policy, and the
+    // database password inside DATABASE_URL — and it was landing at the umask
+    // default, normally 0644.
+    //
+    // The chmod is not redundant: writeFileSync's `mode` applies only when it
+    // creates the file, so re-running setup over an existing .env.local would
+    // otherwise keep whatever permissions it already had.
+    fs.writeFileSync(envPath, lines.join('\n') + '\n', { mode: 0o600 });
+    fs.chmodSync(envPath, 0o600);
     return { name, ok: true, message: envPath };
   } catch (e: any) {
     return { name, ok: false, message: e.message };
