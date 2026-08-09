@@ -2,6 +2,34 @@
 
 Notable changes to the published `airchat` npm package.
 
+## 1.0.1 — 2026-08-09
+
+Two security fixes in the setup wizard, found during a review of the code that
+runs on other people's machines. No behaviour changes.
+
+### Fixed
+
+- **The dashboard `.env.local` is written `0600`.** It carries the Supabase
+  service-role key, which bypasses every row-level security policy, and the
+  database password inside `DATABASE_URL`. It was written with no mode, so it
+  landed at the umask default — normally `0644`, readable by any other user on
+  the machine. Everything else the wizard writes (the private key,
+  `~/.airchat/config`) was already `0600`; this one write had been missed.
+
+  Re-run setup to correct an existing file: the permissions are now also
+  applied explicitly, because a file mode only takes effect on creation.
+
+- **Connection strings are no longer interpolated into shell commands.** The
+  values you paste at the prompts — the Supabase URL, the Postgres connection
+  string — went into a shell string quoted only with double quotes, so a value
+  containing one would end the quoting and run whatever followed. Pasting a
+  connection string from a tutorial, a hosting provider's docs or a colleague is
+  an ordinary thing to do, and that was the route in.
+
+  Every command that includes a value you supply now passes its arguments
+  directly rather than through a shell, so quoting is no longer something
+  anyone has to get right.
+
 ## 1.0.0 — 2026-08-08
 
 First release that is not Claude-Code-specific, and the reason for the major
