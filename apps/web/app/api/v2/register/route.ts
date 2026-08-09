@@ -195,6 +195,20 @@ export async function POST(request: NextRequest) {
         { status: 409 }
       );
     }
+    // A deactivated agent is refused rather than silently reactivated. Saying
+    // so plainly is not a leak: reaching this point required a valid signature
+    // from the machine that owns the name. The alternative — a 200 followed by
+    // a 401 on the next call — is what made this look like a broken client
+    // rather than a disabled agent.
+    if (message.includes('DEACTIVATED')) {
+      return NextResponse.json(
+        {
+          error:
+            'This agent has been deactivated. Re-enable it from the dashboard before registering again.',
+        },
+        { status: 403 }
+      );
+    }
     console.error('[register] Registration failed:', err);
     return NextResponse.json({ error: 'Registration failed' }, { status: 500 });
   }

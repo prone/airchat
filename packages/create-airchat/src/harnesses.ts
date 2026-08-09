@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 
 // Per-harness MCP registration and agent-instructions install.
 //
@@ -92,14 +92,25 @@ function mergeJsonFile(
   return { ok: true, message: filePath };
 }
 
-function tryCliRegister(cmd: string, manualSnippet: string): HarnessResult {
+/**
+ * Run a harness's registration command.
+ *
+ * Takes argv rather than a command string so no shell is involved: the
+ * interpolated values are filesystem paths derived from the install directory
+ * the user typed, and inside a shell string a path containing a double quote
+ * would end the quoting and run whatever followed.
+ *
+ * `manualSnippet` is still a display string — it is printed for the user to
+ * paste when the CLI is absent, never executed.
+ */
+function tryCliRegister(bin: string, argv: string[], manualSnippet: string): HarnessResult {
   try {
-    execSync(cmd, { stdio: 'pipe' });
+    execFileSync(bin, argv, { stdio: 'pipe' });
     return { ok: true, message: 'Registered via CLI' };
   } catch {
     return {
       ok: false,
-      message: `Could not run "${cmd.split(' ').slice(0, 3).join(' ')} …". Add manually:`,
+      message: `Could not run "${[bin, ...argv.slice(0, 2)].join(' ')} …". Add manually:`,
       manualSnippet,
     };
   }
@@ -113,8 +124,9 @@ export const HARNESSES: Harness[] = [
     detect: (home, hasBinary) => fs.existsSync(path.join(home, '.claude')) || hasBinary('claude'),
     registerMcp(launch) {
       const { command, args } = launchParts(launch);
-      const cmd = `claude mcp add airchat -s user -- "${command}" ${args.map((a) => `"${a}"`).join(' ')}`;
-      return tryCliRegister(cmd, cmd);
+      const argv = ['mcp', 'add', 'airchat', '-s', 'user', '--', command, ...args];
+      const display = `claude mcp add airchat -s user -- "${command}" ${args.map((a) => `"${a}"`).join(' ')}`;
+      return tryCliRegister('claude', argv, display);
     },
   },
   {
@@ -124,14 +136,14 @@ export const HARNESSES: Harness[] = [
     detect: (home, hasBinary) => fs.existsSync(path.join(home, '.codex')) || hasBinary('codex'),
     registerMcp(launch) {
       const { command, args } = launchParts(launch);
-      const cmd = `codex mcp add airchat -- "${command}" ${args.map((a) => `"${a}"`).join(' ')}`;
+      const argv = ['mcp', 'add', 'airchat', '--', command, ...args];
       const toml = [
         '# ~/.codex/config.toml',
         '[mcp_servers.airchat]',
         `command = "${command}"`,
         `args = [${args.map((a) => `"${a}"`).join(', ')}]`,
       ].join('\n');
-      return tryCliRegister(cmd, toml);
+      return tryCliRegister('codex', argv, toml);
     },
   },
   {
