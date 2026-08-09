@@ -30,18 +30,54 @@ if (!WEB_URL) {
   process.exit(1);
 }
 
-// Load agent key (use smoke-test agent or fall back to any cached key)
+// Load an agent key to authenticate with.
+//
+// This used to take whichever key file sorted first, which made the whole
+// authenticated half of the suite depend on an arbitrary filename. It failed
+// exactly that way once ~40 stale test agents were deactivated: the first key
+// belonged to a deactivated agent, auth correctly returned 401, and 13 checks
+// reported as failures that had nothing to do with the deploy.
+//
+// Deactivation is revocation, and a machine accumulates keys for agents that
+// no longer exist, so the only reliable test of a key is whether the server
+// still accepts it. Try them until one does.
 const agentsDir = path.join(airchatDir, 'agents');
 let API_KEY = '';
 // The key filename is the agent name, which the DM checks below need: a DM to
 // a name that does not exist is now correctly refused, so the target has to be
 // real.
 let SELF_AGENT = '';
-if (fs.existsSync(agentsDir)) {
-  const keyFiles = fs.readdirSync(agentsDir).filter(f => f.endsWith('.key'));
-  if (keyFiles.length > 0) {
-    API_KEY = fs.readFileSync(path.join(agentsDir, keyFiles[0]), 'utf-8').trim();
-    SELF_AGENT = keyFiles[0].replace(/\.key$/, '');
+
+async function selectAgentKey(): Promise<void> {
+  if (!fs.existsSync(agentsDir)) return;
+
+  const keyFiles = fs.readdirSync(agentsDir).filter(f => f.endsWith('.key')).sort();
+  const rejected: string[] = [];
+
+  for (const file of keyFiles) {
+    const key = fs.readFileSync(path.join(agentsDir, file), 'utf-8').trim();
+    if (!key) continue;
+
+    const res = await fetch(`${WEB_URL}/api/v2/board`, {
+      headers: { 'x-agent-api-key': key },
+    }).catch(() => null);
+
+    if (res?.ok) {
+      API_KEY = key;
+      SELF_AGENT = file.replace(/\.key$/, '');
+      break;
+    }
+    rejected.push(file.replace(/\.key$/, ''));
+  }
+
+  if (!API_KEY && rejected.length > 0) {
+    console.warn(
+      `WARNING: none of the ${rejected.length} cached agent keys authenticated ` +
+        `— every agent they belong to looks deactivated or removed.\n` +
+        `         Register an agent on this machine, then re-run.\n`
+    );
+  } else if (rejected.length > 0) {
+    console.log(`(skipped ${rejected.length} key(s) whose agents are no longer active)\n`);
   }
 }
 
@@ -57,7 +93,8 @@ interface Check {
   validate?: (body: any) => string | null; // return error message or null
 }
 
-const checks: Check[] = [
+function buildChecks(): Check[] {
+  return [
   // ── Unauthenticated checks ──
   {
     name: 'Root page loads',
@@ -208,7 +245,8 @@ const checks: Check[] = [
     expectedStatus: 400,
     auth: true,
   },
-];
+  ];
+}
 
 // ── Runner ────────────────────────────────────────────────────────────────
 
@@ -250,6 +288,9 @@ async function runCheck(check: Check): Promise<{ pass: boolean; detail: string }
 }
 
 async function main() {
+  await selectAgentKey();
+  const checks = buildChecks();
+
   console.log(`\nSmoke testing: ${WEB_URL}\n`);
 
   if (!API_KEY) {
