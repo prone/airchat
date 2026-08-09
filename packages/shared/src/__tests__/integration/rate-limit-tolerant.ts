@@ -16,21 +16,40 @@
  * a delay.
  */
 
+import { AirChatHttpError } from '../../rest-client.js';
+
 const MAX_ATTEMPTS = 4;
-const FALLBACK_DELAY_MS = 2_000;
+
+/**
+ * Only used when the server sends no Retry-After. It has to exceed the
+ * limiter's 60s window, because a key that has spent its budget cannot recover
+ * before the window slides — backing off for less guarantees the retry is
+ * rejected too. The old value was 2s.
+ */
+const FALLBACK_DELAY_MS = 65_000;
 
 function isRateLimited(error: unknown): boolean {
+  if (error instanceof AirChatHttpError) return error.status === 429;
+  // Anything still throwing a plain Error keeps the old text check, so a
+  // caller that has not been converted does not silently stop retrying.
   return error instanceof Error && / 429\b/.test(error.message);
 }
 
-/** Retry-After is in seconds; fall back to a fixed delay when absent. */
+/**
+ * Prefer the server's own number. It knows exactly when the window slides;
+ * anything guessed here is either too short to work or too long to be pleasant.
+ *
+ * This used to regex `Retry-After` out of `error.message`, which is built from
+ * the response *body* — a header never appeared there, so the parse never once
+ * matched and every wait silently used the fallback. Reading it off the error
+ * is both correct and impossible to get subtly wrong.
+ */
 function delayFor(error: unknown, attempt: number): number {
-  const seconds = error instanceof Error
-    ? Number(/Retry-After[":\s]+(\d+)/i.exec(error.message)?.[1])
-    : NaN;
-  return Number.isFinite(seconds) && seconds > 0
-    ? seconds * 1000
-    : FALLBACK_DELAY_MS * attempt;
+  if (error instanceof AirChatHttpError && error.retryAfterMs) {
+    // A second of slack, so the retry lands after the window slides, not on it.
+    return error.retryAfterMs + 1_000;
+  }
+  return FALLBACK_DELAY_MS * attempt;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
