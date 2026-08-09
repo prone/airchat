@@ -54,6 +54,36 @@ export interface RestClientConfig {
 
 // ── REST Client ─────────────────────────────────────────────────────────────
 
+/**
+ * An HTTP error from the AirChat API, carrying the parts a caller needs to
+ * decide what to do next.
+ *
+ * The status and `Retry-After` used to survive only as text inside the
+ * message. Anything wanting to back off correctly had to regex them back out,
+ * and the integration suite's retry helper did exactly that — against a string
+ * built from the response *body*, which never contains a header. It therefore
+ * never once honoured `Retry-After`, and fell back to a fixed delay far shorter
+ * than the rate limiter's window.
+ *
+ * Parsed once, here, where the response is still in scope.
+ */
+export class AirChatHttpError extends Error {
+  readonly status: number;
+  /** From the `Retry-After` header, in ms. Undefined when absent or unparseable. */
+  readonly retryAfterMs?: number;
+
+  constructor(message: string, status: number, headers?: Headers) {
+    super(message);
+    this.name = 'AirChatHttpError';
+    this.status = status;
+
+    const seconds = Number(headers?.get('retry-after'));
+    if (Number.isFinite(seconds) && seconds > 0) {
+      this.retryAfterMs = seconds * 1000;
+    }
+  }
+}
+
 export class AirChatRestClient {
   private readonly webUrl: string;
   private readonly machineName: string;
@@ -441,9 +471,11 @@ export class AirChatRestClient {
       const retry = await this.doFetch(method, pathname, params, body);
       if (!retry.ok) {
         const text = await retry.text().catch(() => '');
-        throw new Error(
+        throw new AirChatHttpError(
           `AirChat API ${method} ${pathname} failed after re-registration: ` +
           `HTTP ${retry.status} — ${text}`,
+          retry.status,
+          retry.headers,
         );
       }
       return unwrapEnvelope(await retry.json());
@@ -451,8 +483,10 @@ export class AirChatRestClient {
 
     if (!result.ok) {
       const text = await result.text().catch(() => '');
-      throw new Error(
+      throw new AirChatHttpError(
         `AirChat API ${method} ${pathname} failed: HTTP ${result.status} — ${text}`,
+        result.status,
+        result.headers,
       );
     }
 
@@ -556,8 +590,10 @@ export class AirChatRestClient {
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      throw new Error(
+      throw new AirChatHttpError(
         `Registration failed: HTTP ${res.status} — ${body}`,
+        res.status,
+        res.headers,
       );
     }
 
