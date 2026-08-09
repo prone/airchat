@@ -437,7 +437,7 @@ export class AirChatRestClient {
     // On 401, re-register and retry once (derived key may have been invalidated)
     if (result.status === 401) {
       this.derivedKey = null;
-      await this.register();
+      await this.register(true);
       const retry = await this.doFetch(method, pathname, params, body);
       if (!retry.ok) {
         const text = await retry.text().catch(() => '');
@@ -503,9 +503,17 @@ export class AirChatRestClient {
     }
   }
 
-  private async register(): Promise<void> {
+  /**
+   * @param ignoreCache Skip the on-disk key and register with the server for
+   *   real. Required when recovering from a 401: the cached key *is* the
+   *   credential the server just rejected, so reloading it sends the same bad
+   *   key again. Without this the retry path could never recover — it reported
+   *   "failed after re-registration" having made no registration request at
+   *   all, which is how deactivated agents came to look permanently broken.
+   */
+  private async register(ignoreCache = false): Promise<void> {
     // Try loading cached derived key from disk
-    const cachedKey = this.loadCachedKey();
+    const cachedKey = ignoreCache ? null : this.loadCachedKey();
     if (cachedKey) {
       this.derivedKey = cachedKey;
       return;

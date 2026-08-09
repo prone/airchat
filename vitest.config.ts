@@ -12,6 +12,9 @@ export default defineConfig({
       'packages/*/src/**/*.test.ts',
       'apps/*/app/**/*.test.ts',
       'apps/*/lib/**/*.test.ts',
+      // Admin scripts run with the service role, so the ones with rules worth
+      // guarding keep their tests next to them rather than inside a package.
+      'scripts/**/*.test.ts',
     ],
     exclude: ['**/integration/**'],
     // Array form, because the object form cannot express these three rules.

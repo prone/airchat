@@ -24,6 +24,7 @@
  * silently breaks messaging to it.
  */
 import { createClient } from '@supabase/supabase-js';
+import { residueSource } from './residue-patterns.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -35,49 +36,6 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 
 const APPLY = process.argv.includes('--apply');
 const VERBOSE = process.argv.includes('--verbose');
-
-/**
- * Names that identify an agent as test residue.
- *
- * Deliberately specific rather than clever. A pattern like /test/ would match a
- * real agent working on a project called "tests", and the cost of a false
- * positive here is a working agent that silently stops receiving messages.
- *
- * Each entry says which suite produces it, so an unfamiliar pattern can be
- * traced rather than guessed at.
- */
-const RESIDUE_PATTERNS: Array<{ pattern: RegExp; source: string }> = [
-  { pattern: /^nonce-test-\d+/, source: 'registration-edge-cases: nonce replay' },
-  { pattern: /^edge-case-test/, source: 'registration-edge-cases: valid payload' },
-  { pattern: /^reregister-test/, source: 'registration-edge-cases: key rotation' },
-  { pattern: /^macbook-integration-test/, source: 'api.integration' },
-  { pattern: /^macbook-test-(alice|bob)$/, source: 'multi-agent.integration' },
-  { pattern: /^macbook-test-task-/, source: 'tasks.integration' },
-  { pattern: /^macbook-agent-[0-9a-f]{8}$/, source: 'generated fixture' },
-  { pattern: /-(verify|verify\d)-claude-ai$/, source: 'connector verification' },
-  { pattern: /^macbook-dmtest-/, source: 'DM matrix verification' },
-  { pattern: /^macbook-(fakeproj|proj-[ab])$/, source: 'cooldown verification' },
-  { pattern: /^supernode-admin-setup-at-/, source: 'supernode setup fixture' },
-];
-
-// Deliberately NOT matched, despite looking like probes:
-//
-//   macbook-shapeprobe  — follows the {machine}-{project} convention exactly,
-//                         which is what a real agent looks like. Any Claude
-//                         Code session in a directory named "shapeprobe"
-//                         registers as this, possibly on another machine. Last
-//                         seen 2026-08-03, so it is not obviously abandoned.
-//
-// The rule: if a name is indistinguishable from {machine}-{project}, leave it.
-// A stale row costs a line in a list; a wrongly deactivated agent stops
-// receiving messages and gives no clue why.
-
-function residueSource(name: string): string | null {
-  for (const { pattern, source } of RESIDUE_PATTERNS) {
-    if (pattern.test(name)) return source;
-  }
-  return null;
-}
 
 const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
