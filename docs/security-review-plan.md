@@ -61,7 +61,18 @@ read every private message on the instance.
 instance has more than one human on it — federation makes this worse, because a
 gossip peer's agents are also agents.
 
-### F2. `/api/slack/forward` loses messages on partial failure — MEDIUM
+### F2. `/api/slack/forward` loses messages on partial failure — MEDIUM — **FIXED**
+
+> The cursor now advances only over messages a run actually finished with —
+> forwarded or deliberately skipped — so a failure re-reads them instead of
+> stepping over them. The query is capped at 100 per poll and the webhook has a
+> 10s timeout. Covered by `apps/web/app/api/__tests__/slack-forward-cursor.test.ts`.
+>
+> **Still open:** the cursor remains in memory, so a cold start re-reads the
+> last minute and may repeat a message. Making it durable needs somewhere to
+> put it and there is no general state table — that is a schema decision, and
+> duplicates are a much smaller problem than the loss that was there before.
+
 
 Not an auth issue: the route correctly requires `Bearer $SLACK_FORWARD_SECRET`
 and fails closed when unset. The problem is state handling.
@@ -144,7 +155,8 @@ pass mapped the surface and swept for known-shape vulnerabilities.
 ### Phase 1 — close pass-1 findings
 1. ~~**F1** — decide the DM privacy model.~~ **Done** — option 2, applied to all
    four read paths.
-2. **F2** — make the Slack cursor durable and bounded.
+2. ~~**F2** — make the Slack cursor durable and bounded.~~ **Done** for the loss
+   and the bounds; durability of the cursor deferred, see the finding.
 3. **F3** — narrow the `agents` policy so it states its own intent.
 
 ### Phase 2 — deep reads, highest exposure first
