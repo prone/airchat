@@ -12,7 +12,7 @@ import { loadPatternSet } from '@airchat/shared/safety';
 import { verifyEnvelope, verifyRetraction, signData, signEnvelope } from '@airchat/shared/gossip';
 import type { GossipEnvelope, RetractionEnvelope } from '@airchat/shared/gossip';
 import type { PatternSet } from '@airchat/shared/safety';
-import type { GossipStorageAdapter, GossipPeer } from '@airchat/shared';
+import type { GossipStorageAdapter, GossipPeer, GossipInstanceConfig } from '@airchat/shared';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -67,11 +67,35 @@ let cachedPrivateKey: string | null = null;
 // In-memory agent flag counter (tracking window only — quarantine state persisted to DB)
 const agentFlags = new Map<string, { count: number; firstFlagAt: number }>();
 
-const SYNC_INTERVAL_MS = 30_000;
+// Pull sync is a backstop — peers push new messages immediately (see
+// pushMessageToSupernodes / the push route), so a long interval costs little
+// latency. Writes per tick are minimized to protect the disk IO budget on
+// small database instances: peer rows are only updated when something
+// actually changed (or on the heartbeat interval), and quarantine cleanup
+// runs on its own much slower cadence.
+const SYNC_INTERVAL_MS = 5 * 60 * 1000;
+const SYNC_HEARTBEAT_MS = 10 * 60 * 1000;
+const QUARANTINE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+const CONFIG_CACHE_TTL_MS = 60_000;
 const AGENT_FLAG_WINDOW_MS = 60 * 60 * 1000;
 const AGENT_FLAG_THRESHOLD = 3;
 const AGENT_QUARANTINE_MS = 24 * 60 * 60 * 1000;
 const PEER_FLAG_THRESHOLD = 10;
+
+let lastQuarantineCleanupAt = 0;
+
+// ── Instance config cache ───────────────────────────────────────────────────
+
+let configCache: { value: GossipInstanceConfig | null; fetchedAt: number } | null = null;
+
+async function getCachedInstanceConfig(gossip: GossipStorageAdapter): Promise<GossipInstanceConfig | null> {
+  if (configCache && Date.now() - configCache.fetchedAt < CONFIG_CACHE_TTL_MS) {
+    return configCache.value;
+  }
+  const value = await gossip.getInstanceConfig();
+  configCache = { value, fetchedAt: Date.now() };
+  return value;
+}
 
 // ── Trigger immediate sync ──────────────────────────────────────────────────
 
@@ -80,7 +104,10 @@ const pendingSyncs = new Set<string>();
 export function triggerSyncFromPeer(peerId: string): Promise<void> {
   if (pendingSyncs.has(peerId)) return Promise.resolve();
   pendingSyncs.add(peerId);
-  return syncFromPeer(peerId).finally(() => pendingSyncs.delete(peerId));
+  return (async () => {
+    const peer = await getGossipAdapter().getPeerById(peerId);
+    if (peer) await syncFromPeer(peer);
+  })().finally(() => pendingSyncs.delete(peerId));
 }
 
 // ── Private key loading (cached) ─────────────────────────────────────────────
@@ -103,13 +130,18 @@ export async function getPrivateKey(): Promise<string | null> {
 
 // ── Sync from a single peer ─────────────────────────────────────────────────
 
-async function syncFromPeer(peerId: string): Promise<void> {
+/** Write last_sync_error only when it changed — an unreachable peer must not
+ *  generate a WAL write every tick for the same repeated error. */
+async function recordSyncError(gossip: GossipStorageAdapter, peer: GossipPeer, error: string): Promise<void> {
+  if (peer.last_sync_error === error) return;
+  await gossip.updatePeer(peer.id, { last_sync_error: error } as Partial<GossipPeer>);
+}
+
+async function syncFromPeer(peer: GossipPeer): Promise<void> {
+  if (!peer.active || peer.suspended) return;
+
   const gossip = getGossipAdapter();
-
-  const peer = await gossip.getPeerById(peerId);
-  if (!peer || !peer.active || peer.suspended) return;
-
-  const config = await gossip.getInstanceConfig();
+  const config = await getCachedInstanceConfig(gossip);
   if (!config?.gossip_enabled) return;
 
   const since = peer.last_sync_at ?? new Date(0).toISOString();
@@ -117,7 +149,7 @@ async function syncFromPeer(peerId: string): Promise<void> {
 
   // M10: Cannot authenticate without a private key — skip this peer
   if (!privateKey) {
-    await gossip.updatePeer(peerId, { last_sync_error: 'Instance private key not found' } as Partial<GossipPeer>);
+    await recordSyncError(gossip, peer, 'Instance private key not found');
     return;
   }
 
@@ -138,7 +170,7 @@ async function syncFromPeer(peerId: string): Promise<void> {
     );
 
     if (!res.ok) {
-      await gossip.updatePeer(peerId, { last_sync_error: `HTTP ${res.status}` } as Partial<GossipPeer>);
+      await recordSyncError(gossip, peer, `HTTP ${res.status}`);
       return;
     }
 
@@ -169,23 +201,33 @@ async function syncFromPeer(peerId: string): Promise<void> {
       await processRetraction(retraction, gossip);
     }
 
-    await gossip.updatePeer(peerId, {
-      last_sync_at: data.sync_timestamp,
-      last_sync_error: null,
-      messages_received: (peer.messages_received ?? 0) + received,
-      messages_quarantined: (peer.messages_quarantined ?? 0) + quarantined,
-    } as Partial<GossipPeer>);
+    // Skip the peer-row write on quiet syncs: only write when something
+    // arrived, when a previous error needs clearing, or when the sync cursor
+    // is stale enough to warrant a heartbeat. An idle empty sync stays
+    // correct without advancing the cursor — the peer just re-answers a
+    // slightly wider (still empty) window next tick.
+    const gotTraffic = received > 0 || quarantined > 0 || (data.retractions?.length ?? 0) > 0;
+    const lastSyncMs = peer.last_sync_at ? new Date(peer.last_sync_at).getTime() : 0;
+    const heartbeatDue = Date.now() - lastSyncMs >= SYNC_HEARTBEAT_MS;
+    if (gotTraffic || peer.last_sync_error != null || heartbeatDue) {
+      await gossip.updatePeer(peer.id, {
+        last_sync_at: data.sync_timestamp,
+        last_sync_error: null,
+        messages_received: (peer.messages_received ?? 0) + received,
+        messages_quarantined: (peer.messages_quarantined ?? 0) + quarantined,
+      } as Partial<GossipPeer>);
+    }
 
     // Circuit breaker: check peer suspension
     if (quarantined >= PEER_FLAG_THRESHOLD) {
-      await suspendPeer(gossip, peerId, `Auto-suspended: ${quarantined} messages quarantined in single sync`);
+      await suspendPeer(gossip, peer.id, `Auto-suspended: ${quarantined} messages quarantined in single sync`);
     } else if ((peer.messages_quarantined ?? 0) + quarantined >= PEER_FLAG_THRESHOLD * 2) {
-      await checkPeerSuspension(gossip, peerId);
+      await checkPeerSuspension(gossip, peer.id);
     }
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await gossip.updatePeer(peerId, { last_sync_error: msg } as Partial<GossipPeer>);
+    await recordSyncError(gossip, peer, msg);
   }
 }
 
@@ -444,17 +486,20 @@ async function checkPeerSuspension(gossip: GossipStorageAdapter, peerId: string)
 
 async function syncLoop(): Promise<void> {
   const gossip = getGossipAdapter();
-  const config = await gossip.getInstanceConfig();
+  const config = await getCachedInstanceConfig(gossip);
   if (!config?.gossip_enabled) return;
 
-  // Periodic cleanup of expired agent quarantines
-  await gossip.clearExpiredAgentQuarantines();
+  // Periodic cleanup of expired agent quarantines — hourly, not every tick
+  if (Date.now() - lastQuarantineCleanupAt >= QUARANTINE_CLEANUP_INTERVAL_MS) {
+    lastQuarantineCleanupAt = Date.now();
+    await gossip.clearExpiredAgentQuarantines();
+  }
 
   const peers = await gossip.listPeers();
   const activePeers = peers.filter((p: { active: boolean; suspended: boolean }) => p.active && !p.suspended);
 
   for (const peer of activePeers) {
-    try { await syncFromPeer(peer.id); } catch { /* individual failures don't stop loop */ }
+    try { await syncFromPeer(peer); } catch { /* individual failures don't stop loop */ }
   }
 }
 
@@ -499,7 +544,7 @@ export async function pushMessageToSupernodes(message: {
   created_at: string;
 }): Promise<void> {
   const gossip = getGossipAdapter();
-  const config = await gossip.getInstanceConfig();
+  const config = await getCachedInstanceConfig(gossip);
   if (!config?.gossip_enabled) return;
 
   const privateKey = await getPrivateKey();
@@ -555,7 +600,10 @@ export async function pushMessageToSupernodes(message: {
 
 export function startSyncWorker(): void {
   if (syncInterval) return;
-  console.log('[gossip] Sync worker started (polling every 30s)');
+  // Drop any cached config — an explicit start (e.g. gossip just enabled via
+  // the API) must not be no-oped by a stale cached gossip_enabled=false.
+  configCache = null;
+  console.log(`[gossip] Sync worker started (polling every ${SYNC_INTERVAL_MS / 1000}s)`);
   syncInterval = setInterval(() => { syncLoop().catch(console.error); }, SYNC_INTERVAL_MS);
   syncLoop().catch(console.error);
 }
@@ -568,7 +616,7 @@ export async function ensureSyncWorker(): Promise<void> {
   if (syncInterval) return;
   try {
     const gossip = getGossipAdapter();
-    const config = await gossip.getInstanceConfig();
+    const config = await getCachedInstanceConfig(gossip);
     if (config?.gossip_enabled) {
       startSyncWorker();
     }
