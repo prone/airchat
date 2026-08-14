@@ -214,17 +214,18 @@ async function channelNameById(client: AirChatRestClient, channelId: string | nu
   return channelCache.map.get(channelId) ?? null;
 }
 
-/** Upload oversized output as a file in the task's channel; returns the
- *  storage path, or null when upload isn't possible (caller falls back). */
+/** Upload oversized output as a file in the task's channel. Returns the
+ *  storage path, or the failure reason — which callers put IN the task
+ *  result, because worker logs are invisible on Task-Scheduler machines. */
 async function uploadOverflow(
   client: AirChatRestClient,
   task: TaskRow,
   kind: 'result' | 'embeddings',
   content: string,
-): Promise<string | null> {
+): Promise<{ path: string } | { error: string }> {
   try {
     const channel = await channelNameById(client, task.channel_id);
-    if (!channel) return null;
+    if (!channel) return { error: `channel ${task.channel_id ?? '(missing)'} not resolvable` };
     const raw = await client.uploadFile(
       overflowFilename(task.id, kind),
       content,
@@ -233,10 +234,12 @@ async function uploadOverflow(
       'utf-8',
     ) as any;
     const path = (raw?.data ?? raw)?.file?.path;
-    return typeof path === 'string' ? path : null;
+    if (typeof path !== 'string') return { error: `upload response carried no file path: ${JSON.stringify(raw).slice(0, 120)}` };
+    return { path };
   } catch (err) {
-    console.error(`[model-worker] overflow upload failed for task ${task.id}: ${err instanceof Error ? err.message : err}`);
-    return null;
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(`[model-worker] overflow upload failed for task ${task.id}: ${reason}`);
+    return { error: reason };
   }
 }
 
@@ -281,10 +284,10 @@ async function serveTask(client: AirChatRestClient, task: TaskRow, model: Served
           result = payload;
         } else {
           const dims = embeddings[0]?.length ?? 0;
-          const path = await uploadOverflow(client, task, 'embeddings', payload);
-          result = path
-            ? embedOverflowResult(model.name, embeddings.length, dims, path)
-            : embedOverflowRefusal(payload.length, embeddings.length, dims);
+          const up = await uploadOverflow(client, task, 'embeddings', payload);
+          result = 'path' in up
+            ? embedOverflowResult(model.name, embeddings.length, dims, up.path)
+            : `${embedOverflowRefusal(payload.length, embeddings.length, dims)} [upload error: ${up.error}]`;
         }
         console.log(`[model-worker] task ${task.id} embedded ${req.input.length} input(s) with ${model.name}`);
       }
@@ -295,9 +298,9 @@ async function serveTask(client: AirChatRestClient, task: TaskRow, model: Served
       if (output.length <= MAX_RESULT_CHARS) {
         result = output;
       } else {
-        const path = await uploadOverflow(client, task, 'result', output);
+        const up = await uploadOverflow(client, task, 'result', output);
         // Truncation is an acceptable chat fallback; corrupt text reads fine.
-        result = path ? chatOverflowResult(output, path) : shapeResult(output);
+        result = 'path' in up ? chatOverflowResult(output, up.path) : shapeResult(output);
       }
       console.log(`[model-worker] task ${task.id} served by ${model.name} (${output.length} chars)`);
     }
