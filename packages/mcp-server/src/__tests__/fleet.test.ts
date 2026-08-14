@@ -24,6 +24,8 @@ const INVENTORY_NOTES = {
         machine: 'nas',
         models: [
           { name: 'anthropic/claude-sonnet-5', capability: 'llm-anthropic-claude-sonnet-5', kind: 'llm', backend: 'openrouter', location: 'remote', endpoint: 'https://openrouter.ai/api/v1' },
+          // Fell off the machine's 20-tag agent card: advertised endpoint-only.
+          { name: 'tinyllama:1.1b', capability: 'llm-tinyllama-1-1b', kind: 'llm', backend: 'ollama', location: 'local', endpoint: 'http://100.99.1.2:11434/v1', routable: false },
         ],
       },
     },
@@ -71,7 +73,7 @@ describe('listModels', () => {
   it('flattens machines into one model list', async () => {
     const result = await listModels(mockClient()) as any;
     expect(result.machines).toHaveLength(2);
-    expect(result.models).toHaveLength(3);
+    expect(result.models).toHaveLength(4);
     expect(result.models[2].machine).toBe('nas');
   });
 
@@ -87,6 +89,13 @@ describe('getModelEndpoint', () => {
     const result = await getModelEndpoint(mockClient(), 'gemma4:12b') as any;
     expect(result.endpoint).toBe('http://100.105.10.12:11434/v1');
     expect(result.machine).toBe('workstation');
+  });
+
+  it('keeps working for endpoint-only (routable: false) models', async () => {
+    const result = await getModelEndpoint(mockClient(), 'tinyllama:1.1b') as any;
+    expect(result.endpoint).toBe('http://100.99.1.2:11434/v1');
+    expect(result.machine).toBe('nas');
+    expect(result.error).toBeUndefined();
   });
 
   it('lists what is available when the model is not served', async () => {
@@ -128,6 +137,24 @@ describe('runModel', () => {
   it('errors informatively for an unserved model', async () => {
     const result = await runModel(mockClient(), { model: 'nope', prompt: 'hi' }, 1) as any;
     expect(result.error).toContain('nope');
+  });
+
+  it('refuses to post a task for an endpoint-only (routable: false) model', async () => {
+    const client = mockClient();
+    const result = await runModel(client, { model: 'tinyllama:1.1b', prompt: 'hi' }, 1) as any;
+    expect(result.error).toContain('endpoint-only');
+    expect(result.error).toContain('get_model_endpoint');
+    expect(result.endpoint).toBe('http://100.99.1.2:11434/v1');
+    expect(client.postTask).not.toHaveBeenCalled();
+  });
+
+  it('still routes models whose inventory predates the routable flag', async () => {
+    const client = mockClient();
+    const result = await runModel(client, { model: 'anthropic/claude-sonnet-5', prompt: 'hi', wait_seconds: 0 }, 1) as any;
+    expect(client.postTask).toHaveBeenCalledWith(
+      'model-tasks', expect.any(String), expect.any(String), ['llm-anthropic-claude-sonnet-5'],
+    );
+    expect(result.task_id).toBe('task-1');
   });
 
   it('reports still-running on timeout', async () => {

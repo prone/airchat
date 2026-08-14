@@ -29,7 +29,8 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { AirChatRestClient } from '@airchat/shared/rest-client';
-import { validateCard, modelToCapability, modelMatches, type AgentCard } from '@airchat/shared';
+import { modelToCapability, modelMatches } from '@airchat/shared';
+import { buildCard, buildInventoryNote, buildInventoryProperties } from './inventory.js';
 import {
   AnthropicBackend,
   OllamaBackend,
@@ -52,7 +53,6 @@ import {
 
 const INVENTORY_REFRESH_MS = 60 * 60 * 1000;
 const INFERENCE_TIMEOUT_MS = 10 * 60 * 1000;
-const MAX_CARD_CAPS = 20; // agent-card limit (packages/shared/src/agent-card.ts)
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -154,38 +154,7 @@ async function discoverAll(backends: ModelBackend[]): Promise<ServedModel[]> {
   return [...served.values()];
 }
 
-function buildCard(models: ServedModel[], machineName: string): AgentCard {
-  // Biggest models win the card slots; the note still lists everything.
-  const ranked = [...models].sort((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0));
-  const caps = ['llm', ...ranked.map((m) => m.capability)].slice(0, MAX_CARD_CAPS);
-  const card: AgentCard = { harness: `model-worker@${machineName}`, capabilities: caps };
-  const check = validateCard(card);
-  if (!check.ok || !check.card) throw new Error(`invalid agent card: ${check.error}`);
-  return check.card;
-}
-
-function gb(bytes?: number): string {
-  return bytes ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : '—';
-}
-
-function buildInventoryNote(models: ServedModel[], machineName: string): string {
-  const rows = models
-    .map((m) =>
-      `| ${m.name} | \`${m.capability}\` | ${m.kind} | ${m.backend} | ${m.location} | ${gb(m.sizeBytes)} | ${m.quantization ?? '—'} | ${m.endpoint} |`)
-    .join('\n');
-  return [
-    `Model inventory for machine **${machineName}**, maintained by its model worker.`,
-    `Post a task tagged with a capability below (or generic \`llm\`) to run inference;`,
-    `for direct streaming use the OpenAI-compatible endpoint listed per model.`,
-    ``,
-    `| model | capability | kind | backend | location | size | quant | endpoint |`,
-    `|---|---|---|---|---|---|---|---|`,
-    rows || '| _none discovered_ | | | | | | | |',
-    ``,
-    `Task body: plain text prompt, or JSON \`{"model", "prompt"|"messages", "options"}\`.`,
-    `See [[model-fleet-design]] / docs/model-fleet-design.md.`,
-  ].join('\n');
-}
+// Card / note / properties construction lives in inventory.ts.
 
 // ── Task serving ────────────────────────────────────────────────────────────
 
@@ -194,6 +163,10 @@ interface TaskRow {
   title: string;
   body: string | null;
   channel_id?: string | null;
+  /** Channel name joined server-side by listTasks — the reliable way to know
+   *  the task's channel, since /api/v2/channels only lists channels this
+   *  agent is a member of while tasks are matched fleet-wide. */
+  channels?: { name: string } | null;
   capability_tags: string[] | null;
 }
 
@@ -201,17 +174,29 @@ interface TaskRow {
 let channelCache: { map: Map<string, string>; fetchedAt: number } | null = null;
 const CHANNEL_CACHE_TTL_MS = 5 * 60 * 1000;
 
+async function refreshChannelCache(client: AirChatRestClient): Promise<void> {
+  const raw = await client.listChannels() as any;
+  const channels = (raw?.data ?? raw)?.channels ?? [];
+  channelCache = {
+    map: new Map(channels.map((c: { id: string; name: string }) => [c.id, c.name])),
+    fetchedAt: Date.now(),
+  };
+}
+
+/** Fallback resolution only — listChannels returns just the channels this
+ *  agent is a MEMBER of, so a task from a channel the worker never posted in
+ *  is invisible here. Prefer the `channels.name` joined onto the task row.
+ *  A miss refreshes the cache once and retries; it is never cached as a
+ *  negative result, so a later call can still succeed. */
 async function channelNameById(client: AirChatRestClient, channelId: string | null | undefined): Promise<string | null> {
   if (!channelId) return null;
   if (!channelCache || Date.now() - channelCache.fetchedAt > CHANNEL_CACHE_TTL_MS) {
-    const raw = await client.listChannels() as any;
-    const channels = (raw?.data ?? raw)?.channels ?? [];
-    channelCache = {
-      map: new Map(channels.map((c: { id: string; name: string }) => [c.id, c.name])),
-      fetchedAt: Date.now(),
-    };
+    await refreshChannelCache(client);
   }
-  return channelCache.map.get(channelId) ?? null;
+  const hit = channelCache!.map.get(channelId);
+  if (hit) return hit;
+  await refreshChannelCache(client);
+  return channelCache!.map.get(channelId) ?? null;
 }
 
 /** Upload oversized output as a file in the task's channel. Returns the
@@ -224,7 +209,7 @@ async function uploadOverflow(
   content: string,
 ): Promise<{ path: string } | { error: string }> {
   try {
-    const channel = await channelNameById(client, task.channel_id);
+    const channel = task.channels?.name ?? await channelNameById(client, task.channel_id);
     if (!channel) return { error: `channel ${task.channel_id ?? '(missing)'} not resolvable` };
     const raw = await client.uploadFile(
       overflowFilename(task.id, kind),
@@ -357,37 +342,33 @@ async function main(): Promise<void> {
     machineName: config.machineName,
     privateKeyHex: config.privateKeyHex,
     agentName,
-    card: buildCard(models, config.machineName),
+    card: buildCard(models, config.machineName).card,
   });
 
   const noteSlug = `models-${config.machineName}`;
+  // Best-effort by design: a failed publish logs and retries at the hourly
+  // refresh instead of killing the worker at startup (a large fleet can trip
+  // the notes route's properties byte cap; buildInventoryProperties truncates
+  // to stay under it, but any other 4xx/5xx must not be fatal either).
   const publishInventory = async (): Promise<void> => {
-    await client.setCard(buildCard(models, config.machineName));
-    await client.writeNote({
-      channel: null,
-      slug: noteSlug,
-      title: `Models on ${config.machineName}`,
-      body_md: buildInventoryNote(models, config.machineName),
-      // Structured mirror of the table: `type` is the query key the fleet
-      // tools (list_models / run_model / get_model_endpoint) filter on via
-      // query_notes, so they never parse markdown.
-      properties: {
-        type: 'model-inventory',
-        machine: config.machineName,
-        models: models.map((m) => ({
-          name: m.name,
-          capability: m.capability,
-          kind: m.kind,
-          backend: m.backend,
-          location: m.location,
-          endpoint: m.endpoint,
-          ...(m.protocol ? { protocol: m.protocol } : {}),
-          ...(m.sizeBytes ? { size_bytes: m.sizeBytes } : {}),
-          ...(m.quantization ? { quantization: m.quantization } : {}),
-        })),
-      },
-    });
-    console.log(`[model-worker] inventory published as note "${noteSlug}" (${models.length} models)`);
+    const { card, onCard } = buildCard(models, config.machineName);
+    try {
+      await client.setCard(card);
+    } catch (err) {
+      console.error(`[model-worker] card update failed: ${err instanceof Error ? err.message : err}`);
+    }
+    try {
+      await client.writeNote({
+        channel: null,
+        slug: noteSlug,
+        title: `Models on ${config.machineName}`,
+        body_md: buildInventoryNote(models, config.machineName, onCard),
+        properties: buildInventoryProperties(models, config.machineName, onCard),
+      });
+      console.log(`[model-worker] inventory published as note "${noteSlug}" (${models.length} models)`);
+    } catch (err) {
+      console.error(`[model-worker] inventory publish failed (retrying at next refresh): ${err instanceof Error ? err.message : err}`);
+    }
   };
   await publishInventory();
 
@@ -416,7 +397,11 @@ async function main(): Promise<void> {
         open_matching?: TaskRow[];
         mine_claimed?: TaskRow[];
       };
-      const myCaps = new Set(models.map((m) => m.capability).concat('llm'));
+      const specificCaps = new Set(models.map((m) => m.capability));
+      const hasLlm = models.some((m) => m.kind === 'llm');
+      // The generic 'llm' tag counts only while a chat model exists — same
+      // rule as the card, so an embed-only worker never touches llm tasks.
+      const myCaps = hasLlm ? new Set([...specificCaps, 'llm']) : specificCaps;
       // Untagged tasks match every agent — leave those to humans and
       // general-purpose agents; only claim tasks that name a model capability.
       const candidates = (work.open_matching ?? []).filter(
@@ -425,9 +410,15 @@ async function main(): Promise<void> {
       for (const task of candidates) {
         const model = pickModel(task, models);
         if (!model) {
-          // Matched our card but resolves to nothing — claim once and say so,
-          // as before, rather than silently retrying every tick.
-          void serveTask(client, task, null).catch(() => {});
+          // Matched our card but resolves to nothing. Claim once and say so
+          // ONLY when the task named one of our specific capabilities — that
+          // failure is ours to report. A task matched purely via the generic
+          // 'llm' tag stays open for a worker that can actually serve it
+          // (defense in depth: the card no longer advertises 'llm' without a
+          // chat model, but a stale card could still route one here).
+          if ((task.capability_tags ?? []).some((tag) => specificCaps.has(tag))) {
+            void serveTask(client, task, null).catch(() => {});
+          }
           continue;
         }
         const backend = model.backendRef;

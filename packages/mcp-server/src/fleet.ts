@@ -21,6 +21,10 @@ export interface InventoryModel {
   protocol?: string;
   size_bytes?: number;
   quantization?: string;
+  /** False when the model's capability fell off the worker's 20-tag agent
+   *  card: tasks tagged with it are never claimed, so run_model refuses to
+   *  post one. Absent (older inventories) means routable. */
+  routable?: boolean;
 }
 
 export interface MachineInventory {
@@ -129,6 +133,15 @@ export async function runModel(
       return {
         error: `No machine in the fleet serves "${args.model}"`,
         available: inventories.flatMap((i) => i.models.map((m) => m.name)),
+      };
+    }
+    if (hit.entry.routable === false) {
+      // A task tagged with this capability would sit unclaimed forever: the
+      // server matches tasks against agent cards, and this capability did
+      // not fit on the worker's card.
+      return {
+        error: `Model "${hit.entry.name}" on ${hit.machine} is advertised endpoint-only; the machine's capability card is full — use get_model_endpoint for direct calls or reduce installed models`,
+        endpoint: hit.entry.endpoint,
       };
     }
     capability = hit.entry.capability;
