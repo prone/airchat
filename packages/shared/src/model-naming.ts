@@ -13,11 +13,15 @@ const TAG_RE = /^[a-z0-9][a-z0-9-]{0,49}$/;
 export type ModelKind = 'llm' | 'embed';
 
 export function normalizeModelName(model: string): string {
+  // split/filter instead of trim-regexes: `/^-+|-+$/g` backtracks
+  // polynomially on long hyphen runs (CodeQL js/polynomial-redos), and model
+  // names arrive from task bodies.
   return model
     .toLowerCase()
     .replace(/:latest$/, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .join('-');
 }
 
 /** Returns the capability tag for a model, or null if it cannot form a valid tag. */
