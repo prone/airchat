@@ -312,7 +312,10 @@ export class AirChatRestClient {
     encoding?: 'base64' | 'utf-8',
     postMessage?: boolean,
   ): Promise<unknown> {
-    return this.request('POST', '/api/upload', undefined, {
+    // PUT /api/files is the agent upload path. /api/upload is the dashboard's
+    // (browser session + admin + multipart) and 401s agent keys — this method
+    // pointed there for a while and no caller noticed until overflow uploads.
+    return this.request('PUT', '/api/files', undefined, {
       filename,
       content,
       channel,
@@ -476,7 +479,7 @@ export class AirChatRestClient {
   // ── Internal: HTTP request with auth ────────────────────────────────────
 
   private async request(
-    method: 'GET' | 'POST' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     pathname: string,
     params?: URLSearchParams,
     body?: unknown,
@@ -515,7 +518,7 @@ export class AirChatRestClient {
   }
 
   private async doFetch(
-    method: 'GET' | 'POST' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     pathname: string,
     params?: URLSearchParams,
     body?: unknown,
