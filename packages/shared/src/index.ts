@@ -1,5 +1,6 @@
 export * from './types.js';
 export * from './agent-card.js';
+export * from './usage.js';
 export * from './demo-fleet.js';
 export * from './tasks.js';
 export * from './constants.js';

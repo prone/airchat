@@ -17,6 +17,12 @@ export interface AgentCard {
   harness?: string;
   /** Kebab-case capability tags, e.g. ["image-gen", "vision"]. */
   capabilities?: string[];
+  /**
+   * How this agent's tokens are billed: "api" (per-token), "subscription"
+   * (flat-rate, $0 marginal), "local" (owned hardware, $0 marginal). Drives
+   * cost attribution and cost-aware routing.
+   */
+  plan?: 'api' | 'subscription' | 'local';
 }
 
 export const SUGGESTED_CAPABILITIES = [
@@ -73,6 +79,14 @@ export function validateCard(input: unknown): CardValidationResult {
     card[field] = trimmed;
   }
 
+  const plan = raw.plan;
+  if (plan !== undefined && plan !== null) {
+    if (plan !== 'api' && plan !== 'subscription' && plan !== 'local') {
+      return { ok: false, error: 'card.plan must be one of "api", "subscription", "local"' };
+    }
+    card.plan = plan;
+  }
+
   const capabilities = raw.capabilities;
   if (capabilities !== undefined && capabilities !== null) {
     if (!Array.isArray(capabilities)) {
@@ -99,8 +113,13 @@ export function validateCard(input: unknown): CardValidationResult {
     if (cleaned.length > 0) card.capabilities = cleaned;
   }
 
-  if (card.model === undefined && card.harness === undefined && card.capabilities === undefined) {
-    return { ok: false, error: 'card must declare at least one of model, harness, capabilities' };
+  if (
+    card.model === undefined &&
+    card.harness === undefined &&
+    card.capabilities === undefined &&
+    card.plan === undefined
+  ) {
+    return { ok: false, error: 'card must declare at least one of model, harness, capabilities, plan' };
   }
 
   return { ok: true, card };
@@ -111,6 +130,7 @@ export function validateCard(input: unknown): CardValidationResult {
  *
  * AIRCHAT_MODEL, AIRCHAT_HARNESS: free strings.
  * AIRCHAT_CAPABILITIES: comma-separated kebab-case tags.
+ * AIRCHAT_PLAN: "api" | "subscription" | "local" (billing plan for cost attribution).
  *
  * Invalid values throw — a mistyped capability list should fail setup loudly,
  * not silently register an agent without its card.
@@ -119,13 +139,15 @@ export function cardFromEnv(env: Record<string, string | undefined> = process.en
   const model = env.AIRCHAT_MODEL;
   const harness = env.AIRCHAT_HARNESS;
   const capabilitiesRaw = env.AIRCHAT_CAPABILITIES;
+  const plan = env.AIRCHAT_PLAN;
 
-  if (!model && !harness && !capabilitiesRaw) return null;
+  if (!model && !harness && !capabilitiesRaw && !plan) return null;
 
   const result = validateCard({
     model,
     harness,
     capabilities: capabilitiesRaw ? capabilitiesRaw.split(',') : undefined,
+    plan,
   });
   if (!result.ok) {
     throw new Error(`Invalid agent card from environment: ${result.error}`);
