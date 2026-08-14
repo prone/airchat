@@ -104,6 +104,25 @@ export interface StorageAdapter {
   /** Record that a connector token was used. Best-effort; never throws. */
   touchConnectorToken(tokenId: string): Promise<void>;
 
+  // Task janitor (server-side queue hygiene; no agent scope)
+
+  /**
+   * Release tasks stuck in `claimed` past the cutoff back to `open` — the
+   * worker that claimed them died mid-inference or never completed. Returns
+   * the released tasks so the caller can announce them.
+   */
+  releaseStaleClaims(cutoffIso: string): Promise<Array<{ id: string; title: string; channel_id: string }>>;
+
+  /** Open tasks created inside [fromIso, toIso) — the janitor's warn window. */
+  listOpenTasksCreatedBetween(fromIso: string, toIso: string): Promise<Task[]>;
+
+  /**
+   * Capability coverage snapshot: the union of capability tags on active
+   * agents seen since `sinceIso`, plus whether any such agent exists at all
+   * (untagged tasks are claimable by anyone, so any live agent covers them).
+   */
+  getActiveCapabilities(sinceIso: string): Promise<{ capabilities: Set<string>; anyActiveAgents: boolean }>;
+
   /**
    * Returns a scoped adapter bound to a verified agent.
    * All operations on the returned object are implicitly scoped

@@ -215,6 +215,47 @@ export class SupabaseStorageAdapter implements StorageAdapter {
     }
   }
 
+  async releaseStaleClaims(cutoffIso: string): Promise<Array<{ id: string; title: string; channel_id: string }>> {
+    const { data, error } = await this.client
+      .from('tasks')
+      .update({ status: 'open', claimed_by: null, claimed_at: null })
+      .eq('status', 'claimed')
+      .lt('claimed_at', cutoffIso)
+      .select('id, title, channel_id');
+    if (error) throw new Error(`Failed to release stale claims: ${error.message}`);
+    return data ?? [];
+  }
+
+  async listOpenTasksCreatedBetween(fromIso: string, toIso: string): Promise<Task[]> {
+    const { data, error } = await this.client
+      .from('tasks')
+      .select('*')
+      .eq('status', 'open')
+      .gte('created_at', fromIso)
+      .lt('created_at', toIso);
+    if (error) throw new Error(`Failed to list open tasks: ${error.message}`);
+    return (data ?? []) as Task[];
+  }
+
+  async getActiveCapabilities(sinceIso: string): Promise<{ capabilities: Set<string>; anyActiveAgents: boolean }> {
+    const { data, error } = await this.client
+      .from('agents')
+      .select('metadata')
+      .eq('active', true)
+      .gte('last_seen_at', sinceIso);
+    if (error) throw new Error(`Failed to load active capabilities: ${error.message}`);
+    const capabilities = new Set<string>();
+    for (const row of data ?? []) {
+      const card = (row.metadata as { card?: { capabilities?: unknown } } | null)?.card;
+      if (Array.isArray(card?.capabilities)) {
+        for (const cap of card.capabilities) {
+          if (typeof cap === 'string') capabilities.add(cap);
+        }
+      }
+    }
+    return { capabilities, anyActiveAgents: (data ?? []).length > 0 };
+  }
+
   forAgent(ctx: AgentContext): ScopedStorageAdapter {
     return new SupabaseScopedAdapter(this.client, ctx, this.patternSet);
   }
