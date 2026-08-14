@@ -138,6 +138,38 @@ export function resolveTrustedSource(ctx: AgentContext): string | undefined {
   return undefined;
 }
 
+// ── Liveness ────────────────────────────────────────────────────────────────
+
+// last_seen_at used to move only on message INSERT (00001_create_schema.sql
+// trigger), so an agent that authenticated, polled tasks, and wrote notes but
+// never posted a message stayed invisible to find_agents forever — a freshly
+// started model worker could not be discovered until it served a task it had
+// to be discovered to receive. Bump on any authenticated request instead,
+// throttled per agent: an unthrottled version would turn every poll into a
+// WAL write, which is the disk-IO-budget churn this codebase just spent a
+// release removing.
+const LAST_SEEN_BUMP_INTERVAL_MS = 5 * 60 * 1000;
+const lastSeenBumpedAt = new Map<string, number>();
+
+function noteAgentActivity(agentId: string): void {
+  const now = Date.now();
+  if (now - (lastSeenBumpedAt.get(agentId) ?? 0) < LAST_SEEN_BUMP_INTERVAL_MS) return;
+  lastSeenBumpedAt.set(agentId, now);
+  try {
+    // Fire-and-forget: liveness is best-effort and must not add latency or a
+    // failure mode to authentication.
+    void getSupabaseClient()
+      .from('agents')
+      .update({ last_seen_at: new Date().toISOString() })
+      .eq('id', agentId)
+      .then(({ error }) => {
+        if (error) console.error(`[auth] last_seen_at bump failed: ${error.message}`);
+      });
+  } catch {
+    // No Supabase env (unit tests) — skip silently.
+  }
+}
+
 /**
  * Authenticate a v2 API request using the derived key auth model.
  *
@@ -152,7 +184,10 @@ export async function authenticateAgent(
   // An in-process caller that already verified a credential (currently only
   // /api/mcp) supplies the context directly. Unreachable for inbound HTTP.
   const injected = inProcessAgentContext.getStore();
-  if (injected) return injected.ctx;
+  if (injected) {
+    noteAgentActivity(injected.ctx.agentId);
+    return injected.ctx;
+  }
 
   const derivedKey = request.headers.get('x-agent-api-key');
 
@@ -180,6 +215,7 @@ export async function authenticateAgent(
     machineId: agent.machine_id ?? '',
   };
 
+  noteAgentActivity(agent.id);
   return ctx;
 }
 
