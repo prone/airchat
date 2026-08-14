@@ -126,7 +126,12 @@ with the message carrying the file reference. Existing task lifecycle
    (4080). Ollama on Windows binds 127.0.0.1 by default — the workstation
    needs `OLLAMA_HOST=0.0.0.0` (system env var) and a firewall allowance for
    11434, reachable over Tailscale.
-2. Add OpenRouter as a second backend on the NAS worker.
+2. Give the always-on NAS worker a hosted-model backend so remote models
+   stay reachable when GPU boxes sleep. Shipped as a first-class Anthropic
+   backend (official SDK, explicit model allowlist, refusal-aware); the
+   generic OpenAI-compatible backend remains available for OpenRouter,
+   LM Studio, and vLLM. Hosted backends never auto-advertise a catalog —
+   the allowlist is the inventory.
 3. MCP tools (`list_models`, `run_model`, `get_model_endpoint`).
 4. GX10 arrives: install worker, zero config changes elsewhere — its models
    simply appear in the fleet.

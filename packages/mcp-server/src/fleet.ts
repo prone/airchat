@@ -18,6 +18,7 @@ export interface InventoryModel {
   backend: string;
   location: string;
   endpoint: string;
+  protocol?: string;
   size_bytes?: number;
   quantization?: string;
 }
@@ -84,6 +85,7 @@ export async function getModelEndpoint(client: AirChatToolClient, model: string)
     };
   }
   const { entry, machine } = hit;
+  const protocol = entry.protocol ?? 'openai-compatible';
   return {
     model: entry.name,
     machine,
@@ -91,7 +93,10 @@ export async function getModelEndpoint(client: AirChatToolClient, model: string)
     backend: entry.backend,
     location: entry.location,
     kind: entry.kind,
-    note: 'OpenAI-compatible base URL — talk to it directly for streaming/interactive use; use run_model for queued jobs.',
+    protocol,
+    note: protocol === 'anthropic'
+      ? 'Anthropic Messages API endpoint — use an Anthropic SDK with your own key for direct calls, or use run_model to route through the fleet worker (which holds a key).'
+      : 'OpenAI-compatible base URL — talk to it directly for streaming/interactive use; use run_model for queued jobs.',
   };
 }
 

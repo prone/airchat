@@ -9,6 +9,7 @@
  * it directly.
  */
 
+import Anthropic from '@anthropic-ai/sdk';
 import { inferModelKind, type ModelKind } from '@airchat/shared';
 
 export interface DiscoveredModel {
@@ -17,8 +18,10 @@ export interface DiscoveredModel {
   kind: ModelKind;
   backend: string;
   location: 'local' | 'remote';
-  /** OpenAI-compatible base URL for direct (streaming) use. */
+  /** Base URL for direct use; interpret per `protocol`. */
   endpoint: string;
+  /** Wire protocol the endpoint speaks. Defaults to openai-compatible. */
+  protocol?: 'openai-compatible' | 'anthropic';
   sizeBytes?: number;
   quantization?: string;
   family?: string;
@@ -106,6 +109,84 @@ export class OllamaBackend implements ModelBackend {
       throw new Error('Ollama response had no message content');
     }
     return data.message.content;
+  }
+}
+
+// ── Anthropic (hosted Claude models via the official SDK) ───────────────────
+
+/** Narrow view of the Anthropic client, so tests can inject a fake. */
+export interface AnthropicMessagesClient {
+  messages: {
+    create(params: {
+      model: string;
+      max_tokens: number;
+      system?: string;
+      temperature?: number;
+      messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+    }): Promise<{
+      stop_reason: string | null;
+      content: Array<{ type: string; text?: string }>;
+      stop_details?: { category?: string | null } | null;
+    }>;
+  };
+}
+
+export class AnthropicBackend implements ModelBackend {
+  readonly name = 'anthropic';
+  private client: AnthropicMessagesClient;
+
+  constructor(
+    apiKey: string,
+    /** Explicit allowlist — hosted catalogs are never auto-advertised. */
+    private models: string[],
+    inferenceTimeoutMs: number,
+    client?: AnthropicMessagesClient
+  ) {
+    this.client = client ?? new Anthropic({ apiKey, timeout: inferenceTimeoutMs, maxRetries: 2 });
+  }
+
+  async discover(): Promise<DiscoveredModel[]> {
+    // No catalog call: the allowlist IS the inventory, so an empty or absent
+    // allowlist advertises nothing (and costs nothing).
+    return this.models.map((name) => ({
+      name,
+      kind: inferModelKind(name),
+      backend: this.name,
+      location: 'remote' as const,
+      endpoint: 'https://api.anthropic.com/v1',
+      protocol: 'anthropic' as const,
+    }));
+  }
+
+  async chat(model: string, messages: ChatMessage[], options?: Record<string, unknown>): Promise<string> {
+    // The Messages API takes system prompts as a top-level field, not a role.
+    const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
+    const turns = messages
+      .filter((m): m is ChatMessage & { role: 'user' | 'assistant' } => m.role !== 'system')
+      .map((m) => ({ role: m.role, content: m.content }));
+
+    const response = await this.client.messages.create({
+      model,
+      max_tokens: typeof options?.max_tokens === 'number' ? options.max_tokens : 8192,
+      ...(system ? { system } : {}),
+      ...(typeof options?.temperature === 'number' ? { temperature: options.temperature } : {}),
+      messages: turns,
+    });
+
+    // Safety classifiers return HTTP 200 with stop_reason "refusal" — never
+    // read content blocks as an answer in that case.
+    if (response.stop_reason === 'refusal') {
+      throw new Error(
+        `Anthropic declined the request (refusal${response.stop_details?.category ? `: ${response.stop_details.category}` : ''})`
+      );
+    }
+
+    const text = response.content
+      .filter((b) => b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text)
+      .join('\n');
+    if (!text) throw new Error('Anthropic response contained no text content');
+    return text;
   }
 }
 
