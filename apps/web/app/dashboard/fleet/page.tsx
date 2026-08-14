@@ -98,8 +98,9 @@ function StatusDot({ lastSeen, now }: { lastSeen: string | null; now: number }) 
   );
 }
 
-function AgentLine({ a, now, expanded, onToggle }: {
+function AgentLine({ a, now, expanded, onToggle, activeCap, onSelectCap }: {
   a: AgentRow; now: number; expanded: boolean; onToggle: () => void;
+  activeCap: string | null; onSelectCap: (cap: string) => void;
 }) {
   const online = a.last_seen_at !== null && now - new Date(a.last_seen_at).getTime() < ONLINE_THRESHOLD_MS;
   return (
@@ -117,10 +118,12 @@ function AgentLine({ a, now, expanded, onToggle }: {
         <strong style={{ opacity: a.active ? 1 : 0.5 }}>{a.name}</strong>
         {!a.active && <span className="text-sm text-dim">deactivated</span>}
         {a.metadata?.card?.harness && (
-          <span className="text-sm text-dim">{a.metadata.card.harness}</span>
+          <span className="text-sm text-dim" title="harness — the runtime this agent reported it runs in (claude-code, opencode, python-sdk, …)">
+            {a.metadata.card.harness}
+          </span>
         )}
         <span className="text-sm text-dim">{a.last_seen_at ? timeAgo(a.last_seen_at, now) : 'never seen'}</span>
-        <CapChips card={a.metadata?.card} />
+        <CapChips card={a.metadata?.card} activeCap={activeCap} onSelect={onSelectCap} />
       </div>
       {expanded && (
         <div
@@ -144,6 +147,9 @@ function AgentLine({ a, now, expanded, onToggle }: {
           <span className="text-dim">registered</span>
           <span>{new Date(a.created_at).toLocaleString()}</span>
           {a.description && (<><span className="text-dim">description</span><span>{a.description}</span></>)}
+          {a.metadata?.card?.harness && (
+            <><span className="text-dim">harness</span><span>{a.metadata.card.harness} — the runtime the agent reported it runs in</span></>
+          )}
           {a.metadata?.card?.model && (<><span className="text-dim">model</span><span>{a.metadata.card.model}</span></>)}
           <span className="text-dim">id</span>
           <span><code style={{ fontSize: '0.75rem' }}>{a.id}</code></span>
@@ -153,12 +159,24 @@ function AgentLine({ a, now, expanded, onToggle }: {
   );
 }
 
-function CapChips({ card }: { card?: AgentCard }) {
+function CapChips({ card, activeCap, onSelect }: {
+  card?: AgentCard; activeCap?: string | null; onSelect?: (cap: string) => void;
+}) {
   if (!card?.capabilities?.length) return null;
   return (
     <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
       {card.capabilities.map((c) => (
-        <code key={c} className="text-sm" style={{ padding: '0 4px', borderRadius: 4, background: 'var(--bg)', fontSize: '0.7rem' }}>
+        <code
+          key={c}
+          className="text-sm"
+          title={onSelect ? 'filter fleet by this capability' : undefined}
+          onClick={onSelect ? (e) => { e.stopPropagation(); onSelect(c); } : undefined}
+          style={{
+            padding: '0 4px', borderRadius: 4, fontSize: '0.7rem',
+            background: c === activeCap ? 'var(--accent)' : 'var(--bg)',
+            cursor: onSelect ? 'pointer' : undefined,
+          }}
+        >
           {c}
         </code>
       ))}
@@ -174,6 +192,7 @@ export default function FleetPage() {
   const [showInactive, setShowInactive] = useState(false);
   const [showNever, setShowNever] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [capFilter, setCapFilter] = useState<string | null>(null);
   const now = useNow();
   const supabase = createSupabaseBrowser();
 
@@ -208,11 +227,22 @@ export default function FleetPage() {
   const tierShown = (tier: AgentTier): boolean =>
     tier === 'recent' || (tier === 'inactive' && showInactive) || (tier === 'never' && showNever);
 
-  /** Split a card's agents into what the current toggles show, counting what they hide. */
+  /** A capability filter answers "who can run X?" — it searches every tier,
+   *  so a stale-but-capable worker still turns up. */
+  const agentShown = (a: AgentRow): boolean => {
+    if (capFilter !== null) {
+      return (a.metadata?.card?.capabilities ?? []).includes(capFilter) || a.metadata?.card?.model === capFilter;
+    }
+    return tierShown(agentTier(a, now));
+  };
+
+  /** Split a card's agents into what the current filters show, counting what they hide. */
   const splitByTier = (list: AgentRow[]): { shown: AgentRow[]; hidden: number } => {
-    const shown = list.filter((a) => tierShown(agentTier(a, now)));
+    const shown = list.filter(agentShown);
     return { shown, hidden: list.length - shown.length };
   };
+
+  const toggleCapFilter = (cap: string) => setCapFilter((cur) => (cur === cap ? null : cap));
 
   const counts = useMemo(() => {
     let inactive = 0;
@@ -227,11 +257,11 @@ export default function FleetPage() {
 
   const totals = useMemo(() => ({
     machines: machines.length,
-    agents: agents.filter((a) => tierShown(agentTier(a, now))).length,
+    agents: agents.filter(agentShown).length,
     online: agents.filter((a) => a.last_seen_at && now - new Date(a.last_seen_at).getTime() < ONLINE_THRESHOLD_MS).length,
     models: inventories.reduce((sum, n) => sum + (n.properties?.models?.length ?? 0), 0),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [machines, agents, inventories, now, showInactive, showNever]);
+  }), [machines, agents, inventories, now, showInactive, showNever, capFilter]);
 
   const unattachedAll = byMachine.get(null) ?? [];
   const unattached = splitByTier(unattachedAll);
@@ -241,7 +271,20 @@ export default function FleetPage() {
       <div className="flex items-center justify-between mb-3">
         <h2>Fleet</h2>
         <span className="text-sm text-dim" style={{ display: 'inline-flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-          {counts.inactive > 0 && (
+          {capFilter !== null && (
+            <button
+              onClick={() => setCapFilter(null)}
+              title="Showing only agents advertising this model/capability, in any state. Click to clear."
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+                background: 'var(--accent)', color: 'inherit', border: 'none',
+                borderRadius: 4, padding: '1px 8px', font: 'inherit',
+              }}
+            >
+              <code style={{ fontSize: '0.75rem', background: 'transparent' }}>{capFilter}</code> ✕
+            </button>
+          )}
+          {capFilter === null && counts.inactive > 0 && (
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }} title="Also show deactivated agents and agents not seen in 24 hours">
               <input
                 type="checkbox"
@@ -251,7 +294,7 @@ export default function FleetPage() {
               show inactive ({counts.inactive})
             </label>
           )}
-          {counts.never > 0 && (
+          {capFilter === null && counts.never > 0 && (
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }} title="Also show agents that registered but never authenticated — usually test residue">
               <input
                 type="checkbox"
@@ -299,7 +342,9 @@ export default function FleetPage() {
             )}
             {machineAll.length > 0 && machineAgents.length === 0 && (
               <p className="text-sm text-dim">
-                No agents active in the last 24 hours — {machineHidden} hidden by the filters above.
+                {capFilter !== null
+                  ? `No agents here advertise ${capFilter} — ${machineHidden} filtered out.`
+                  : `No agents active in the last 24 hours — ${machineHidden} hidden by the filters above.`}
               </p>
             )}
             {machineAgents.map((a) => (
@@ -309,6 +354,8 @@ export default function FleetPage() {
                 now={now}
                 expanded={expanded === a.id}
                 onToggle={() => setExpanded(expanded === a.id ? null : a.id)}
+                activeCap={capFilter}
+                onSelectCap={toggleCapFilter}
               />
             ))}
 
@@ -335,7 +382,15 @@ export default function FleetPage() {
                     <tbody>
                       {models.map((mo) => (
                         <tr key={mo.capability}>
-                          <td style={{ padding: '2px 8px 2px 0' }}><code>{mo.name}</code></td>
+                          <td style={{ padding: '2px 8px 2px 0' }}>
+                            <code
+                              title="filter fleet to agents serving this model"
+                              onClick={() => toggleCapFilter(mo.capability)}
+                              style={{ cursor: 'pointer', background: mo.capability === capFilter ? 'var(--accent)' : undefined, borderRadius: 4, padding: '0 4px' }}
+                            >
+                              {mo.name}
+                            </code>
+                          </td>
                           <td style={{ padding: '2px 8px' }}>{mo.kind}</td>
                           <td style={{ padding: '2px 8px' }}>{mo.size_bytes ? formatSize(mo.size_bytes) : '—'}</td>
                           <td style={{ padding: '2px 8px' }}>{mo.quantization ?? '—'}</td>
@@ -365,7 +420,9 @@ export default function FleetPage() {
           </p>
           {unattached.shown.length === 0 && (
             <p className="text-sm text-dim">
-              None active in the last 24 hours — {unattached.hidden} hidden by the filters above.
+              {capFilter !== null
+                ? `None advertise ${capFilter} — ${unattached.hidden} filtered out.`
+                : `None active in the last 24 hours — ${unattached.hidden} hidden by the filters above.`}
             </p>
           )}
           {unattached.shown.map((a) => (
@@ -375,6 +432,8 @@ export default function FleetPage() {
               now={now}
               expanded={expanded === a.id}
               onToggle={() => setExpanded(expanded === a.id ? null : a.id)}
+              activeCap={capFilter}
+              onSelectCap={toggleCapFilter}
             />
           ))}
         </div>
