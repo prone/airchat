@@ -27,7 +27,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { AirChatRestClient } from '@airchat/shared/rest-client';
-import { validateCard, modelToCapability, type AgentCard } from '@airchat/shared';
+import { validateCard, modelToCapability, modelMatches, type AgentCard } from '@airchat/shared';
 import {
   AnthropicBackend,
   OllamaBackend,
@@ -182,7 +182,9 @@ interface TaskRow {
 function pickModel(task: TaskRow, models: ServedModel[]): ServedModel | null {
   const req = parseTaskBody(task.body ?? task.title);
   if (req.model) {
-    return models.find((m) => m.name === req.model) ?? null;
+    // Fuzzy on purpose: callers say "nomic-embed-text", registries say
+    // "nomic-embed-text:latest". Exact-name-only matching failed in the field.
+    return models.find((m) => modelMatches(m, req.model!)) ?? null;
   }
   for (const tag of task.capability_tags ?? []) {
     const byTag = models.find((m) => m.capability === tag);

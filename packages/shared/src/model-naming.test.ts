@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { inferModelKind, modelToCapability, normalizeModelName } from './model-naming.js';
+import { inferModelKind, modelMatches, modelToCapability, normalizeModelName } from './model-naming.js';
 
 const TAG_RE = /^[a-z0-9][a-z0-9-]{0,49}$/;
 
@@ -43,6 +43,22 @@ describe('modelToCapability', () => {
 
   it('returns null when nothing normalizable remains', () => {
     expect(modelToCapability('llm', ':::')).toBeNull();
+  });
+});
+
+describe('modelMatches', () => {
+  const entry = { name: 'nomic-embed-text:latest', capability: 'embed-nomic-embed-text' };
+
+  it('matches exact registry name, capability tag, and normalized variants', () => {
+    expect(modelMatches(entry, 'nomic-embed-text:latest')).toBe(true);
+    expect(modelMatches(entry, 'embed-nomic-embed-text')).toBe(true);
+    expect(modelMatches(entry, 'nomic-embed-text')).toBe(true); // the field failure
+    expect(modelMatches({ name: 'qwen2.5-coder:32b', capability: 'llm-qwen2-5-coder-32b' }, 'QWEN2.5-CODER:32B')).toBe(true);
+  });
+
+  it('rejects different models', () => {
+    expect(modelMatches(entry, 'gemma4:12b')).toBe(false);
+    expect(modelMatches(entry, 'llm-gemma4-12b')).toBe(false);
   });
 });
 
