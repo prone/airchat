@@ -88,6 +88,37 @@ describe('readMessages', () => {
     await readMessages(client, 'general', 20, '2024-01-01T00:00:00Z');
     expect(client.readMessages).toHaveBeenCalledWith('general', 20, '2024-01-01T00:00:00Z');
   });
+
+  it('marks truncation visibly inside the content, not only via the flag', async () => {
+    const long = 'x'.repeat(700);
+    const client = createMockClient({
+      readMessages: vi.fn().mockResolvedValue({
+        channel: 'general',
+        messages: [{ id: 'm', content: long, created_at: '2024-01-01T00:00:00Z' }],
+      }),
+    });
+
+    const result = await readMessages(client, 'general') as any;
+
+    expect(result.messages[0].truncated).toBe(true);
+    expect(result.messages[0].content).toContain('[TRUNCATED — 200 more chars');
+    expect(result.messages[0].content).toContain('full=true');
+  });
+
+  it('returns complete bodies with full=true', async () => {
+    const long = 'x'.repeat(700);
+    const client = createMockClient({
+      readMessages: vi.fn().mockResolvedValue({
+        channel: 'general',
+        messages: [{ id: 'm', content: long, created_at: '2024-01-01T00:00:00Z' }],
+      }),
+    });
+
+    const result = await readMessages(client, 'general', undefined, undefined, true) as any;
+
+    expect(result.messages[0].content).toBe(long);
+    expect(result.messages[0].truncated).toBeUndefined();
+  });
 });
 
 describe('sendMessage', () => {
