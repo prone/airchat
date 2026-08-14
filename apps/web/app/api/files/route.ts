@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateRequest, getStorageClient, ensureAgentRegistered } from '@/lib/api-auth';
-import { createAgentClient } from '@airchat/shared/supabase';
+import { authenticateRequest, getStorageClient } from '@/lib/api-auth';
+import { authenticateAgent, isAuthError, getStorageAdapter } from '@/lib/api-v2-auth';
 import { STORAGE_BUCKET, formatSize } from '@airchat/shared';
 
 function validateStoragePath(p: string): boolean {
@@ -157,27 +157,28 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ error: 'Upload failed' }, { status: 500 });
   }
 
-  // Post a message about the file if requested (default true)
+  // Post a message about the file if requested (default true). Best-effort
+  // via the modern v2 path: the old send_message_with_auto_join RPC threw
+  // under derived-key auth and turned every default upload into a 500 —
+  // after the file was already stored. The upload result must never depend
+  // on the announcement.
   if (post_message !== false) {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    const agentApiKey = request.headers.get('x-agent-api-key');
-    const agentName = request.headers.get('x-agent-name') || 'unknown-agent';
-
-    if (supabaseUrl && anonKey && agentApiKey) {
-      const agentClient = createAgentClient(supabaseUrl, anonKey, agentApiKey, agentName);
-      await ensureAgentRegistered(agentName, agentApiKey);
-
-      await agentClient.rpc('send_message_with_auto_join', {
-        channel_name: channel,
-        content: `Shared a file: **${safeName}** (${formatSize(buffer.length)})`,
-        parent_message_id: null,
-        message_metadata: {
-          source: 'agent-upload',
-          agent: agentName,
-          files: [{ name: safeName, size: buffer.length, type: mimeType, path: storagePath, bucket: STORAGE_BUCKET }],
-        },
-      });
+    try {
+      const auth = await authenticateAgent(request);
+      if (!isAuthError(auth)) {
+        const scoped = getStorageAdapter().forAgent(auth);
+        await scoped.sendMessage(
+          channel,
+          `Shared a file: **${safeName}** (${formatSize(buffer.length)})`,
+          {
+            source: 'agent-upload',
+            agent: auth.agentName,
+            files: [{ name: safeName, size: buffer.length, type: mimeType, path: storagePath, bucket: STORAGE_BUCKET }],
+          },
+        );
+      }
+    } catch (err) {
+      console.error(`[files] upload announcement failed: ${err instanceof Error ? err.message : err}`);
     }
   }
 
