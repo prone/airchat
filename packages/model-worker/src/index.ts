@@ -19,6 +19,8 @@
  *   MODEL_WORKER_ANTHROPIC_KEY   Anthropic API key — enables the Anthropic
  *                                backend (hosted Claude models, official SDK)
  *   MODEL_WORKER_ANTHROPIC_MODELS comma allowlist, default claude-haiku-4-5
+ *   MODEL_WORKER_REMOTE_CONCURRENCY parallel tasks per remote/hosted backend
+ *                                (default 4; local GPU backends always run 1)
  *   MODEL_WORKER_POLL_MS         default 20000
  *   MODEL_WORKER_SUFFIX          agent name suffix, default "models"
  */
@@ -36,7 +38,17 @@ import {
   type DiscoveredModel,
   type ModelBackend,
 } from './backends.js';
-import { parseEmbedBody, parseTaskBody, shapeEmbedResult, shapeResult } from './task-payload.js';
+import {
+  MAX_RESULT_CHARS,
+  buildEmbedPayload,
+  chatOverflowResult,
+  embedOverflowRefusal,
+  embedOverflowResult,
+  overflowFilename,
+  parseEmbedBody,
+  parseTaskBody,
+  shapeResult,
+} from './task-payload.js';
 
 const INVENTORY_REFRESH_MS = 60 * 60 * 1000;
 const INFERENCE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -57,6 +69,7 @@ interface WorkerConfig {
   openaiModels: string[] | null;
   anthropicKey: string | null;
   anthropicModels: string[];
+  remoteConcurrency: number;
 }
 
 function loadConfig(): WorkerConfig {
@@ -107,6 +120,10 @@ function loadConfig(): WorkerConfig {
     anthropicKey: get('MODEL_WORKER_ANTHROPIC_KEY') ?? null,
     anthropicModels: (get('MODEL_WORKER_ANTHROPIC_MODELS') ?? 'claude-haiku-4-5')
       .split(',').map((s) => s.trim()).filter(Boolean),
+    remoteConcurrency: (() => {
+      const parsed = parseInt(get('MODEL_WORKER_REMOTE_CONCURRENCY') ?? '', 10);
+      return Number.isInteger(parsed) && parsed >= 1 && parsed <= 16 ? parsed : 4;
+    })(),
   };
 }
 
@@ -176,7 +193,51 @@ interface TaskRow {
   id: string;
   title: string;
   body: string | null;
+  channel_id?: string | null;
   capability_tags: string[] | null;
+}
+
+// channel_id → name, for uploading overflow files into the task's channel.
+let channelCache: { map: Map<string, string>; fetchedAt: number } | null = null;
+const CHANNEL_CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function channelNameById(client: AirChatRestClient, channelId: string | null | undefined): Promise<string | null> {
+  if (!channelId) return null;
+  if (!channelCache || Date.now() - channelCache.fetchedAt > CHANNEL_CACHE_TTL_MS) {
+    const raw = await client.listChannels() as any;
+    const channels = (raw?.data ?? raw)?.channels ?? [];
+    channelCache = {
+      map: new Map(channels.map((c: { id: string; name: string }) => [c.id, c.name])),
+      fetchedAt: Date.now(),
+    };
+  }
+  return channelCache.map.get(channelId) ?? null;
+}
+
+/** Upload oversized output as a file in the task's channel; returns the
+ *  storage path, or null when upload isn't possible (caller falls back). */
+async function uploadOverflow(
+  client: AirChatRestClient,
+  task: TaskRow,
+  kind: 'result' | 'embeddings',
+  content: string,
+): Promise<string | null> {
+  try {
+    const channel = await channelNameById(client, task.channel_id);
+    if (!channel) return null;
+    const raw = await client.uploadFile(
+      overflowFilename(task.id, kind),
+      content,
+      channel,
+      kind === 'embeddings' ? 'application/json' : 'text/plain',
+      'utf-8',
+    ) as any;
+    const path = (raw?.data ?? raw)?.file?.path;
+    return typeof path === 'string' ? path : null;
+  } catch (err) {
+    console.error(`[model-worker] overflow upload failed for task ${task.id}: ${err instanceof Error ? err.message : err}`);
+    return null;
+  }
 }
 
 function pickModel(task: TaskRow, models: ServedModel[]): ServedModel | null {
@@ -197,7 +258,7 @@ function pickModel(task: TaskRow, models: ServedModel[]): ServedModel | null {
   return llms.find((m) => m.location === 'local') ?? llms[0] ?? null;
 }
 
-async function serveTask(client: AirChatRestClient, task: TaskRow, models: ServedModel[]): Promise<void> {
+async function serveTask(client: AirChatRestClient, task: TaskRow, model: ServedModel | null): Promise<void> {
   try {
     await client.updateTask(task.id, 'claim');
   } catch {
@@ -207,7 +268,6 @@ async function serveTask(client: AirChatRestClient, task: TaskRow, models: Serve
 
   let result: string;
   try {
-    const model = pickModel(task, models);
     if (!model) {
       result = 'ERROR: no model on this worker matches the task';
     } else if (model.kind === 'embed') {
@@ -216,14 +276,29 @@ async function serveTask(client: AirChatRestClient, task: TaskRow, models: Serve
       } else {
         const req = parseEmbedBody(task.body ?? task.title);
         const embeddings = await model.backendRef.embed(model.name, req.input);
-        result = shapeEmbedResult(model.name, embeddings);
+        const payload = buildEmbedPayload(model.name, embeddings);
+        if (payload.length <= MAX_RESULT_CHARS) {
+          result = payload;
+        } else {
+          const dims = embeddings[0]?.length ?? 0;
+          const path = await uploadOverflow(client, task, 'embeddings', payload);
+          result = path
+            ? embedOverflowResult(model.name, embeddings.length, dims, path)
+            : embedOverflowRefusal(payload.length, embeddings.length, dims);
+        }
         console.log(`[model-worker] task ${task.id} embedded ${req.input.length} input(s) with ${model.name}`);
       }
     } else {
       const req = parseTaskBody(task.body ?? task.title);
       const messages: ChatMessage[] = req.messages;
       const output = await model.backendRef.chat(model.name, messages, req.options);
-      result = shapeResult(output);
+      if (output.length <= MAX_RESULT_CHARS) {
+        result = output;
+      } else {
+        const path = await uploadOverflow(client, task, 'result', output);
+        // Truncation is an acceptable chat fallback; corrupt text reads fine.
+        result = path ? chatOverflowResult(output, path) : shapeResult(output);
+      }
       console.log(`[model-worker] task ${task.id} served by ${model.name} (${output.length} chars)`);
     }
   } catch (err) {
@@ -255,12 +330,14 @@ async function main(): Promise<void> {
   }
   if (config.openaiUrl) {
     backends.push(new OpenAICompatBackend(
-      config.openaiUrl, config.openaiKey, INFERENCE_TIMEOUT_MS, config.openaiModels
+      config.openaiUrl, config.openaiKey, INFERENCE_TIMEOUT_MS, config.openaiModels,
+      undefined, config.remoteConcurrency
     ));
   }
   if (config.anthropicKey) {
     backends.push(new AnthropicBackend(
-      config.anthropicKey, config.anthropicModels, INFERENCE_TIMEOUT_MS
+      config.anthropicKey, config.anthropicModels, INFERENCE_TIMEOUT_MS,
+      undefined, config.remoteConcurrency
     ));
   }
   if (backends.length === 0) {
@@ -312,11 +389,15 @@ async function main(): Promise<void> {
   await publishInventory();
 
   let lastInventoryAt = Date.now();
-  let serving = false;
+  let polling = false;
+  // Per-backend in-flight counts: a GPU serializes (concurrency 1), a hosted
+  // API takes several. Tasks over a backend's limit stay open for the next
+  // tick (or another worker) instead of queueing behind our claim.
+  const inFlight = new Map<string, number>();
 
   const tick = async (): Promise<void> => {
-    if (serving) return; // one inference at a time — GPU boxes don't overlap
-    serving = true;
+    if (polling) return; // guard the poll itself; serving runs detached below
+    polling = true;
     try {
       // Inventory refresh: hourly, or sooner if a backend was down at start
       if (Date.now() - lastInventoryAt >= INVENTORY_REFRESH_MS || models.length === 0) {
@@ -339,12 +420,27 @@ async function main(): Promise<void> {
         (t) => (t.capability_tags ?? []).some((tag) => myCaps.has(tag))
       );
       for (const task of candidates) {
-        await serveTask(client, task, models);
+        const model = pickModel(task, models);
+        if (!model) {
+          // Matched our card but resolves to nothing — claim once and say so,
+          // as before, rather than silently retrying every tick.
+          void serveTask(client, task, null).catch(() => {});
+          continue;
+        }
+        const backend = model.backendRef;
+        const current = inFlight.get(backend.name) ?? 0;
+        if (current >= backend.concurrency) continue; // at capacity — leave it open
+        inFlight.set(backend.name, current + 1);
+        void serveTask(client, task, model)
+          .catch(() => {})
+          .finally(() => {
+            inFlight.set(backend.name, Math.max(0, (inFlight.get(backend.name) ?? 1) - 1));
+          });
       }
     } catch (err) {
       console.error(`[model-worker] poll failed: ${err instanceof Error ? err.message : err}`);
     } finally {
-      serving = false;
+      polling = false;
     }
   };
 

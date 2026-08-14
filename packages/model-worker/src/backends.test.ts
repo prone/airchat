@@ -10,6 +10,17 @@ function fakeClient(response: {
   return { messages: { create }, create };
 }
 
+describe('backend concurrency defaults', () => {
+  it('hosted backends parallelize, local GPU backends serialize', async () => {
+    const { OllamaBackend, OpenAICompatBackend } = await import('./backends.js');
+    expect(new OllamaBackend('http://127.0.0.1:11434', 1000).concurrency).toBe(1);
+    expect(new OpenAICompatBackend('http://127.0.0.1:1234/v1', null, 1000, null).concurrency).toBe(1);
+    expect(new OpenAICompatBackend('https://openrouter.ai/api/v1', 'k', 1000, ['m']).concurrency).toBe(4);
+    expect(new OpenAICompatBackend('https://openrouter.ai/api/v1', 'k', 1000, ['m'], undefined, 8).concurrency).toBe(8);
+    expect(new AnthropicBackend('k', ['m'], 1000, fakeClient({ stop_reason: 'end_turn', content: [] })).concurrency).toBe(4);
+  });
+});
+
 describe('AnthropicBackend', () => {
   it('advertises exactly the allowlist as remote anthropic-protocol models', async () => {
     const backend = new AnthropicBackend('key', ['claude-haiku-4-5'], 1000, fakeClient({ stop_reason: 'end_turn', content: [] }));

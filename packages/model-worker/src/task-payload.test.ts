@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_RESULT_CHARS, parseEmbedBody, parseTaskBody, shapeEmbedResult, shapeResult } from './task-payload.js';
+import {
+  MAX_RESULT_CHARS,
+  buildEmbedPayload,
+  chatOverflowResult,
+  embedOverflowRefusal,
+  embedOverflowResult,
+  overflowFilename,
+  parseEmbedBody,
+  parseTaskBody,
+  shapeResult,
+} from './task-payload.js';
 
 describe('parseTaskBody', () => {
   it('treats plain text as a user prompt', () => {
@@ -56,16 +66,36 @@ describe('parseEmbedBody', () => {
   });
 });
 
-describe('shapeEmbedResult', () => {
+describe('buildEmbedPayload', () => {
   it('returns parseable JSON with count and dimensions', () => {
-    const out = JSON.parse(shapeEmbedResult('m', [[0.1, 0.2], [0.3, 0.4]]));
+    const out = JSON.parse(buildEmbedPayload('m', [[0.1, 0.2], [0.3, 0.4]]));
     expect(out).toMatchObject({ model: 'm', count: 2, dimensions: 2 });
     expect(out.embeddings).toHaveLength(2);
   });
+});
 
-  it('refuses oversized batches instead of shipping truncated JSON', () => {
-    const big = Array.from({ length: 10 }, () => Array.from({ length: 768 }, (_, i) => i * 0.123456));
-    const out = shapeEmbedResult('m', big);
+describe('overflow helpers', () => {
+  it('names overflow files by task and kind', () => {
+    expect(overflowFilename('6854ec9e-93a3-4513-81f7-2bc4c41f168c', 'embeddings')).toBe('task-6854ec9e-embeddings.json');
+    expect(overflowFilename('6854ec9e-93a3-4513-81f7-2bc4c41f168c', 'result')).toBe('task-6854ec9e-result.txt');
+  });
+
+  it('chat overflow result keeps a preview and points at the file', () => {
+    const out = chatOverflowResult('x'.repeat(40_000), 'model-tasks/123-task-abc-result.txt');
+    expect(out.length).toBeLessThan(2300);
+    expect(out).toContain('40000 chars');
+    expect(out).toContain('model-tasks/123-task-abc-result.txt');
+    expect(out).toContain('get_file_url');
+  });
+
+  it('embed overflow result is small parseable JSON carrying the file path', () => {
+    const out = JSON.parse(embedOverflowResult('m', 6, 768, 'model-tasks/f.json'));
+    expect(out).toMatchObject({ model: 'm', count: 6, dimensions: 768, file: 'model-tasks/f.json' });
+    expect(JSON.stringify(out).length).toBeLessThan(MAX_RESULT_CHARS);
+  });
+
+  it('embed refusal fallback still refuses rather than truncating', () => {
+    const out = embedOverflowRefusal(45_000, 6, 768);
     expect(out.startsWith('ERROR:')).toBe(true);
     expect(out).toContain('split the batch');
   });
