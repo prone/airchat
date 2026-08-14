@@ -20,5 +20,11 @@ export async function register() {
     } catch {
       // Digest worker is optional (gated by AIRCHAT_DIGEST_ENABLED)
     }
+    try {
+      const { startTaskJanitor } = await import('./lib/task-janitor');
+      startTaskJanitor();
+    } catch {
+      // Queue hygiene degrades gracefully — tasks just stay manual.
+    }
   }
 }
