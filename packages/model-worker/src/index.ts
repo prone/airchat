@@ -9,6 +9,9 @@
  *
  * Config (~/.airchat/config or env, env wins):
  *   MODEL_WORKER_OLLAMA_URL      default http://127.0.0.1:11434, "off" disables
+ *   MODEL_WORKER_ADVERTISE_URL   URL other machines use to reach this Ollama
+ *                                (e.g. http://100.x.y.z:11434) — published in the
+ *                                inventory note instead of the local backend URL
  *   MODEL_WORKER_OPENAI_URL      OpenAI-compatible base incl. version path,
  *                                e.g. https://openrouter.ai/api/v1 — optional
  *   MODEL_WORKER_OPENAI_KEY      bearer key for that backend — optional
@@ -45,6 +48,7 @@ interface WorkerConfig {
   agentSuffix: string;
   pollMs: number;
   ollamaUrl: string | null;
+  advertiseUrl: string | null;
   openaiUrl: string | null;
   openaiKey: string | null;
   openaiModels: string[] | null;
@@ -91,6 +95,7 @@ function loadConfig(): WorkerConfig {
     agentSuffix: get('MODEL_WORKER_SUFFIX') ?? 'models',
     pollMs: Number.isInteger(pollMsRaw) && pollMsRaw >= 5000 ? pollMsRaw : 20_000,
     ollamaUrl: ollamaRaw.toLowerCase() === 'off' ? null : ollamaRaw,
+    advertiseUrl: get('MODEL_WORKER_ADVERTISE_URL') ?? null,
     openaiUrl: get('MODEL_WORKER_OPENAI_URL') ?? null,
     openaiKey: get('MODEL_WORKER_OPENAI_KEY') ?? null,
     openaiModels: openaiModels ? openaiModels.split(',').map((s) => s.trim()).filter(Boolean) : null,
@@ -220,7 +225,15 @@ async function main(): Promise<void> {
   const config = loadConfig();
 
   const backends: ModelBackend[] = [];
-  if (config.ollamaUrl) backends.push(new OllamaBackend(config.ollamaUrl, INFERENCE_TIMEOUT_MS));
+  if (config.ollamaUrl) {
+    if (!config.advertiseUrl && /\/\/(localhost|127\.)/.test(config.ollamaUrl)) {
+      console.warn(
+        '[model-worker] MODEL_WORKER_ADVERTISE_URL is not set and the Ollama URL is '
+        + 'localhost — the inventory note will advertise an endpoint other machines cannot reach'
+      );
+    }
+    backends.push(new OllamaBackend(config.ollamaUrl, INFERENCE_TIMEOUT_MS, config.advertiseUrl));
+  }
   if (config.openaiUrl) {
     backends.push(new OpenAICompatBackend(
       config.openaiUrl, config.openaiKey, INFERENCE_TIMEOUT_MS, config.openaiModels

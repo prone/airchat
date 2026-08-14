@@ -59,9 +59,14 @@ export class OllamaBackend implements ModelBackend {
 
   constructor(
     private baseUrl: string,
-    private inferenceTimeoutMs: number
+    private inferenceTimeoutMs: number,
+    /** URL other machines should use to reach this backend (e.g. the box's
+     *  Tailscale address). The worker often talks to Ollama over localhost,
+     *  which is meaningless to remote consumers — never advertise it. */
+    private advertiseUrl: string | null = null
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
+    this.advertiseUrl = advertiseUrl?.replace(/\/+$/, '') ?? null;
   }
 
   async discover(): Promise<DiscoveredModel[]> {
@@ -72,14 +77,15 @@ export class OllamaBackend implements ModelBackend {
         details?: { family?: string; quantization_level?: string };
       }>;
     };
-    const location = urlLocation(this.baseUrl);
+    const advertised = this.advertiseUrl ?? this.baseUrl;
+    const location = urlLocation(advertised);
     return (data.models ?? []).map((m) => ({
       name: m.name,
       kind: inferModelKind(m.name),
       backend: this.name,
       location,
       // Ollama exposes an OpenAI-compatible surface under /v1
-      endpoint: `${this.baseUrl}/v1`,
+      endpoint: `${advertised}/v1`,
       sizeBytes: m.size,
       quantization: m.details?.quantization_level,
       family: m.details?.family,
