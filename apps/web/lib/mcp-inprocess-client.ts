@@ -20,6 +20,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import type { AgentContext } from '@airchat/shared';
+import { unwrapEnvelope } from '@airchat/shared/rest-client';
 import type { AirChatToolClient } from '@airchat/mcp-server/client';
 import { runAsAuthenticatedAgent } from '@/lib/api-v2-auth';
 
@@ -110,11 +111,19 @@ export class InProcessToolClient implements AirChatToolClient {
     // 204 and other empty bodies are valid successes for some routes.
     const text = await response.text();
     if (!text) return null;
+    let parsed: unknown;
     try {
-      return JSON.parse(text);
+      parsed = JSON.parse(text);
     } catch {
       throw new Error(`AirChat ${path} returned a non-JSON body`);
     }
+    // Unwrap the v2 boundary envelope ({ _airchat, _notice, data }) exactly as
+    // AirChatRestClient does. The mcp-server handlers were written against the
+    // REST client's unwrapped shape (e.g. `result?.messages`, `result?.results`
+    // guards), so without this the connector path would hand them the raw
+    // envelope, silently skipping truncation/reshaping and leaking envelopes
+    // to claude.ai. Non-enveloped bodies pass through unchanged.
+    return unwrapEnvelope(parsed);
   }
 
   private get(handler: RouteHandler, path: string, params?: URLSearchParams) {

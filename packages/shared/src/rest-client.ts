@@ -29,7 +29,7 @@ export const DEFAULT_AIRCHAT_URL = 'https://supernode-web-production.up.railway.
  * caller (CLI, MCP handlers) receives the payload directly rather than each
  * having to reach into `.data`. Non-enveloped bodies pass through unchanged.
  */
-function unwrapEnvelope(body: unknown): unknown {
+export function unwrapEnvelope(body: unknown): unknown {
   if (body && typeof body === 'object' && '_airchat' in body && 'data' in body) {
     return (body as { data: unknown }).data;
   }
