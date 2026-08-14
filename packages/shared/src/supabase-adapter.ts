@@ -237,12 +237,16 @@ export class SupabaseStorageAdapter implements StorageAdapter {
     return (data ?? []) as Task[];
   }
 
-  async getActiveCapabilities(sinceIso: string): Promise<{ capabilities: Set<string>; anyActiveAgents: boolean }> {
-    const { data, error } = await this.client
+  async getActiveCapabilities(sinceIso: string, excludeNames?: string[]): Promise<{ capabilities: Set<string>; anyActiveAgents: boolean }> {
+    let query = this.client
       .from('agents')
       .select('metadata')
       .eq('active', true)
       .gte('last_seen_at', sinceIso);
+    if (excludeNames && excludeNames.length > 0) {
+      query = query.not('name', 'in', `(${excludeNames.join(',')})`);
+    }
+    const { data, error } = await query;
     if (error) throw new Error(`Failed to load active capabilities: ${error.message}`);
     const capabilities = new Set<string>();
     for (const row of data ?? []) {
@@ -453,6 +457,16 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       .single();
     if (error || !data) throw new Error('Failed to complete task (not claimed by you, or state changed)');
     return data as Task;
+  }
+
+  async linkTaskResultMessage(id: string, resultMessageId: string): Promise<void> {
+    const { error } = await this.client
+      .from('tasks')
+      .update({ result_message_id: resultMessageId })
+      .eq('id', id)
+      .eq('status', 'done')
+      .eq('claimed_by', this.ctx.agentId);
+    if (error) throw new Error(`Failed to link result message: ${error.message}`);
   }
 
   async cancelTask(id: string): Promise<Task> {

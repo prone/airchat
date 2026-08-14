@@ -22,19 +22,30 @@ describe('isCovered', () => {
 });
 
 describe('warnWindow', () => {
-  it('is exactly one sweep interval wide, ending at the orphan threshold', () => {
+  const orphan = 60 * 60 * 1000;
+  const sweepMs = 5 * 60 * 1000;
+
+  it('seeds one interval back on the first sweep', () => {
     const now = Date.parse('2026-08-14T12:00:00Z');
-    const { fromIso, toIso } = warnWindow(now, 60 * 60 * 1000, 5 * 60 * 1000);
-    expect(toIso).toBe('2026-08-14T11:00:00.000Z');
-    expect(fromIso).toBe('2026-08-14T10:55:00.000Z');
+    const w = warnWindow(now, orphan, sweepMs, null);
+    expect(w.toIso).toBe('2026-08-14T11:00:00.000Z');
+    expect(w.fromIso).toBe('2026-08-14T10:55:00.000Z');
   });
 
-  it('successive sweeps tile without gap or overlap', () => {
-    const orphan = 60 * 60 * 1000;
-    const sweepMs = 5 * 60 * 1000;
+  it('successive sweeps tile from the cursor without gap or overlap', () => {
     const t0 = Date.parse('2026-08-14T12:00:00Z');
-    const first = warnWindow(t0, orphan, sweepMs);
-    const second = warnWindow(t0 + sweepMs, orphan, sweepMs);
+    const first = warnWindow(t0, orphan, sweepMs, null);
+    const second = warnWindow(t0 + sweepMs, orphan, sweepMs, first.toMs);
     expect(second.fromIso).toBe(first.toIso);
+  });
+
+  it('a skipped or failed sweep widens the next window instead of dropping a cohort', () => {
+    const t0 = Date.parse('2026-08-14T12:00:00Z');
+    const first = warnWindow(t0, orphan, sweepMs, null);
+    // Two intervals pass with no successful sweep (crash, drift, restart of
+    // the loop timer): the cursor is unchanged, so the window covers it all.
+    const later = warnWindow(t0 + 3 * sweepMs, orphan, sweepMs, first.toMs);
+    expect(later.fromIso).toBe(first.toIso);
+    expect(later.toMs - later.fromMs).toBe(3 * sweepMs);
   });
 });

@@ -50,17 +50,32 @@ export function isCovered(
 }
 
 /**
- * Warn exactly once: when a task's age crosses the orphan threshold within
- * the sweep that observes it — i.e. created inside [threshold+interval ago,
- * threshold ago). Earlier sweeps saw it too young; later sweeps see it past
- * the window. No state, no schema change, no repeat warnings.
+ * Warn exactly once, with no cohort ever silently skipped: the window runs
+ * from wherever the previous successful orphan check left off (a cursor, so
+ * failed sweeps and interval drift extend the next window instead of leaving
+ * a gap) up to the orphan threshold. On the first sweep after startup the
+ * cursor is seeded one interval back — the stateless best available.
  */
-export function warnWindow(now: number, orphanAgeMs: number, sweepIntervalMs: number): { fromIso: string; toIso: string } {
+export function warnWindow(
+  now: number,
+  orphanAgeMs: number,
+  sweepIntervalMs: number,
+  warnedThroughMs: number | null,
+): { fromMs: number; toMs: number; fromIso: string; toIso: string } {
+  const toMs = now - orphanAgeMs;
+  const fromMs = warnedThroughMs ?? (toMs - sweepIntervalMs);
   return {
-    fromIso: new Date(now - orphanAgeMs - sweepIntervalMs).toISOString(),
-    toIso: new Date(now - orphanAgeMs).toISOString(),
+    fromMs,
+    toMs,
+    fromIso: new Date(fromMs).toISOString(),
+    toIso: new Date(toMs).toISOString(),
   };
 }
+
+/** System principals whose activity must not count as task coverage — the
+ *  janitor's own announcements would otherwise suppress the very warnings
+ *  it exists to emit. */
+export const SYSTEM_AGENT_NAMES = ['janitor', 'summarizer', 'dashboard-admin'];
 
 // ── Janitor identity (system agent, same pattern as the summarizer) ─────────
 
@@ -109,29 +124,45 @@ async function announce(taskChannelId: string, content: string, taskId: string, 
   }
 }
 
+// Cursor for the orphan check: where the last successful pass warned through.
+// In-memory: a restart reseeds one interval back (see warnWindow).
+let warnedThroughMs: number | null = null;
+
 async function sweep(): Promise<void> {
   const adapter = getStorageAdapter();
   const now = Date.now();
 
-  // 1. Stale claims → back to open, with a visible trace.
-  const released = await adapter.releaseStaleClaims(new Date(now - claimTimeoutMs()).toISOString());
-  for (const task of released) {
-    console.log(`[task-janitor] released stale claim on task ${task.id} (${task.title})`);
-    await announce(
-      task.channel_id,
-      `[task ${task.id.slice(0, 8)}] released back to open — its worker did not complete within ${Math.round(claimTimeoutMs() / 60000)} minutes. A matching worker can claim it again.`,
-      task.id,
-      'released',
-    );
+  // 1. Stale claims → back to open, with a visible trace. Isolated so a
+  //    failure here never starves the orphan check below.
+  try {
+    const released = await adapter.releaseStaleClaims(new Date(now - claimTimeoutMs()).toISOString());
+    for (const task of released) {
+      console.log(`[task-janitor] released stale claim on task ${task.id} (${task.title})`);
+      await announce(
+        task.channel_id,
+        `[task ${task.id.slice(0, 8)}] released back to open — its worker did not complete within ${Math.round(claimTimeoutMs() / 60000)} minutes. A matching worker can claim it again.`,
+        task.id,
+        'released',
+      );
+    }
+  } catch (err) {
+    console.error(`[task-janitor] stale-claim pass failed: ${err instanceof Error ? err.message : err}`);
   }
 
-  // 2. Orphan warnings — tasks whose age crossed the threshold this sweep.
-  const { fromIso, toIso } = warnWindow(now, ORPHAN_AGE_MS, SWEEP_INTERVAL_MS);
+  // 2. Orphan warnings — every task whose age crossed the threshold since the
+  //    last successful pass (cursor-based; hiccups widen the window, never
+  //    skip a cohort).
+  const { fromIso, toIso, toMs, fromMs } = warnWindow(now, ORPHAN_AGE_MS, SWEEP_INTERVAL_MS, warnedThroughMs);
+  if (toMs <= fromMs) return;
   const candidates = await adapter.listOpenTasksCreatedBetween(fromIso, toIso);
-  if (candidates.length === 0) return;
+  if (candidates.length === 0) {
+    warnedThroughMs = toMs;
+    return;
+  }
 
   const { capabilities, anyActiveAgents } = await adapter.getActiveCapabilities(
     new Date(now - ACTIVE_WINDOW_MS).toISOString(),
+    SYSTEM_AGENT_NAMES,
   );
   for (const task of candidates as Task[]) {
     if (isCovered(task.capability_tags, capabilities, anyActiveAgents)) continue;
@@ -143,6 +174,7 @@ async function sweep(): Promise<void> {
       'unserviced',
     );
   }
+  warnedThroughMs = toMs;
 }
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────

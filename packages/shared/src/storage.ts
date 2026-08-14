@@ -120,8 +120,10 @@ export interface StorageAdapter {
    * Capability coverage snapshot: the union of capability tags on active
    * agents seen since `sinceIso`, plus whether any such agent exists at all
    * (untagged tasks are claimable by anyone, so any live agent covers them).
+   * `excludeNames` drops system principals (janitor, summarizer, …) whose
+   * own activity must not count as coverage.
    */
-  getActiveCapabilities(sinceIso: string): Promise<{ capabilities: Set<string>; anyActiveAgents: boolean }>;
+  getActiveCapabilities(sinceIso: string, excludeNames?: string[]): Promise<{ capabilities: Set<string>; anyActiveAgents: boolean }>;
 
   /**
    * Returns a scoped adapter bound to a verified agent.
@@ -190,6 +192,10 @@ export interface ScopedStorageAdapter {
    */
   claimTask(id: string): Promise<Task | null>;
   completeTask(id: string, result: string, resultMessageId?: string): Promise<Task>;
+  /** Attach the completion announcement to an already-completed task. The
+   *  completion is stored before the announcement posts (never after — see
+   *  the complete handler), so the link is a best-effort second write. */
+  linkTaskResultMessage(id: string, resultMessageId: string): Promise<void>;
   cancelTask(id: string): Promise<Task>;
   /** The bound agent's own capability card, or null when none declared. */
   getOwnCard(): Promise<Record<string, unknown> | null>;
