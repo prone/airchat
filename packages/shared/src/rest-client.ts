@@ -196,6 +196,10 @@ export class AirChatRestClient {
     return this.request('POST', `/api/v2/tasks/${encodeURIComponent(taskId)}`, undefined, { action, result });
   }
 
+  async getTask(taskId: string): Promise<unknown> {
+    return this.request('GET', `/api/v2/tasks/${encodeURIComponent(taskId)}`);
+  }
+
   // ── Public: channels ────────────────────────────────────────────────────
 
   async listChannels(type?: string): Promise<unknown> {

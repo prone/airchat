@@ -420,6 +420,9 @@ export default function DashboardPage() {
           <Link href="/dashboard/overview" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
             Channels Overview
           </Link>
+          <Link href="/dashboard/fleet" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
+            Fleet
+          </Link>
           <Link href="/dashboard/notes" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
             Wiki
           </Link>

@@ -16,6 +16,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AirChatToolClient } from './client.js';
 import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkWork, markMentionsRead, markChannelRead, channelReadStatus, sendDirectMessage, findAgents, postTask, checkTasks, updateTask, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel } from './handlers.js';
+import { listModels, runModel, getModelEndpoint } from './fleet.js';
 import { sanitizeError } from './utils.js';
 import type { ConfigDiagnostic } from './config.js';
 
@@ -51,6 +52,9 @@ export const CONNECTED_TOOL_NAMES = [
   'summarize_channel',
   'get_backlinks',
   'promote_thread_to_note',
+  'list_models',
+  'run_model',
+  'get_model_endpoint',
 ] as const;
 
 export const ALL_TOOL_NAMES = [...BASE_TOOL_NAMES, ...CONNECTED_TOOL_NAMES] as const;
@@ -112,6 +116,9 @@ export const MCP_CONNECTOR_READ_TOOLS = [
   // Who-has-read-what is directory-grade information, same tier as
   // find_agents; moving a cursor is a write and stays out of the read set.
   'channel_read_status',
+  // Fleet inventory is directory-grade too: what models exist, where.
+  'list_models',
+  'get_model_endpoint',
 ] as const;
 
 /**
@@ -133,6 +140,8 @@ export const MCP_CONNECTOR_WRITE_TOOLS = [
   // use case; both mutate queue state other agents act on, so read-write only.
   'post_task',
   'update_task',
+  // Posts a task under the hood, so it belongs with post_task.
+  'run_model',
 ] as const;
 
 export const MCP_CONNECTOR_V1_TOOLS = [
@@ -352,6 +361,13 @@ export function createServer(
       '- Use `send_direct_message` to notify a specific agent',
       '- Don\'t post trivial updates like "started working" or "reading files"',
       '',
+      '## Model Fleet',
+      'Machines running model workers advertise their local models (Ollama, LM Studio, vLLM, OpenRouter, …) as capabilities.',
+      '- `list_models` — everything the fleet can run, with machine, size, and endpoint.',
+      '- `run_model(prompt, model?)` — run a prompt on a fleet model. It posts a capability-tagged task, the serving machine executes it, and the result returns inline (or as a task id with `wait_seconds: 0`).',
+      '- `get_model_endpoint(model)` — the direct OpenAI-compatible URL for streaming/interactive use.',
+      '- Inventories live in `models-<machine>` notes; a stale `updated_at` there means the worker (or its machine) is probably asleep.',
+      '',
       '## Read Cursors (acknowledging a channel)',
       'A read cursor is your explicit statement that you have read and processed a channel — reading messages does NOT move it.',
       '- `mark_channel_read(channel)` — call AFTER you have actually read and acted on a channel\'s messages, not merely fetched them. It records "read through now" (pass `through` to acknowledge an earlier instant).',
@@ -487,6 +503,41 @@ export function createServer(
   } as any, async (args: { channel: string }) => {
     try {
       const result = await channelReadStatus(client, args.channel);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (e: unknown) {
+      return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+    }
+  });
+
+  register('list_models', 'List every model available across the fleet — which machine serves it, backend, size, and its OpenAI-compatible endpoint. Built from the models-* inventory notes that model workers publish.', {} as any, async () => {
+    try {
+      const result = await listModels(client);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (e: unknown) {
+      return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+    }
+  });
+
+  register('run_model', 'Run a prompt on a fleet model. Posts a capability-tagged task that the machine serving the model claims and executes; by default waits (up to wait_seconds) and returns the output inline. Use list_models to see what is available.', {
+    prompt: z.string().min(1).max(8000).describe('The prompt to run'),
+    model: z.string().max(200).optional().describe('Registry name (e.g. "qwen2.5-coder:32b") or capability tag; omit for any available LLM'),
+    options: z.record(z.string(), z.unknown()).optional().describe('Backend options, e.g. {"temperature": 0.2}'),
+    channel: z.string().max(100).optional().describe('Channel to post the task in (default model-tasks)'),
+    wait_seconds: z.number().min(0).max(600).optional().describe('How long to wait for the result (default 120; 0 = post and return the task id immediately)'),
+  } as any, async (args: { prompt: string; model?: string; options?: Record<string, unknown>; channel?: string; wait_seconds?: number }) => {
+    try {
+      const result = await runModel(client, args);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (e: unknown) {
+      return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+    }
+  });
+
+  register('get_model_endpoint', 'Get the direct OpenAI-compatible endpoint URL for a fleet model (for streaming/interactive use — the data plane). Use run_model instead for queued one-shot jobs.', {
+    model: z.string().min(1).max(200).describe('Registry name or capability tag'),
+  } as any, async (args: { model: string }) => {
+    try {
+      const result = await getModelEndpoint(client, args.model);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (e: unknown) {
       return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };

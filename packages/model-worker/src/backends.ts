@@ -9,7 +9,7 @@
  * it directly.
  */
 
-import { inferModelKind, type ModelKind } from './naming.js';
+import { inferModelKind, type ModelKind } from '@airchat/shared';
 
 export interface DiscoveredModel {
   /** Registry name as the backend knows it, e.g. "qwen2.5:0.5b". */

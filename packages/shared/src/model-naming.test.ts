@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { inferModelKind, modelToCapability, normalizeModelName } from './naming.js';
+import { inferModelKind, modelToCapability, normalizeModelName } from './model-naming.js';
 
 const TAG_RE = /^[a-z0-9][a-z0-9-]{0,49}$/;
 

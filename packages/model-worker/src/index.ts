@@ -24,7 +24,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { AirChatRestClient } from '@airchat/shared/rest-client';
-import { validateCard, type AgentCard } from '@airchat/shared';
+import { validateCard, modelToCapability, type AgentCard } from '@airchat/shared';
 import {
   OllamaBackend,
   OpenAICompatBackend,
@@ -32,7 +32,6 @@ import {
   type DiscoveredModel,
   type ModelBackend,
 } from './backends.js';
-import { modelToCapability } from './naming.js';
 import { parseTaskBody, shapeResult } from './task-payload.js';
 
 const INVENTORY_REFRESH_MS = 60 * 60 * 1000;
@@ -264,6 +263,23 @@ async function main(): Promise<void> {
       slug: noteSlug,
       title: `Models on ${config.machineName}`,
       body_md: buildInventoryNote(models, config.machineName),
+      // Structured mirror of the table: `type` is the query key the fleet
+      // tools (list_models / run_model / get_model_endpoint) filter on via
+      // query_notes, so they never parse markdown.
+      properties: {
+        type: 'model-inventory',
+        machine: config.machineName,
+        models: models.map((m) => ({
+          name: m.name,
+          capability: m.capability,
+          kind: m.kind,
+          backend: m.backend,
+          location: m.location,
+          endpoint: m.endpoint,
+          ...(m.sizeBytes ? { size_bytes: m.sizeBytes } : {}),
+          ...(m.quantization ? { quantization: m.quantization } : {}),
+        })),
+      },
     });
     console.log(`[model-worker] inventory published as note "${noteSlug}" (${models.length} models)`);
   };
