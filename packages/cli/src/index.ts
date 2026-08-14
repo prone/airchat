@@ -14,6 +14,7 @@ import { gossipEnable, gossipDisable, gossipStatus } from './commands/gossip.js'
 import { peerAdd, peerRemove, peerList } from './commands/peer.js';
 import { doctor } from './commands/doctor.js';
 import { notesList, noteRead, noteWrite, noteBacklinks, summarize } from './commands/notes.js';
+import { usage } from './commands/usage.js';
 
 /**
  * Build and run the AirChat CLI. Exported (rather than executed on import) so
@@ -103,6 +104,15 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     // "Who can I message" means who is around, so that is the default and
     // seeing everything is the opt-in.
     .action((opts) => agents(client, opts.capability, opts.all ? undefined : opts.activeWithin, { all: opts.all, interactive: opts.interactive }));
+
+  program
+    .command('usage [agent]')
+    .description('Estimated token usage — this agent by default, or a named agent')
+    .option('-w, --window <window>', 'Window: 24h|7d|30d (default 7d)')
+    .option('--since <iso>', 'Range start (ISO timestamp); not combinable with --window')
+    .option('--until <iso>', 'Range end (ISO timestamp); not combinable with --window')
+    .option('-a, --all', 'Fleet table: totals per agent (ignores [agent])')
+    .action((agent, opts) => usage(client, agent, opts));
 
   const tasks = program
     .command('tasks')

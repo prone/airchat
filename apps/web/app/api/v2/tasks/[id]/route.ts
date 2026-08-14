@@ -7,6 +7,7 @@ import {
 import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter } from '@/lib/api-v2-auth';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { UUID_RE } from '@/lib/api-v1-validation';
+import { insertUsageEvent, parseUsagePayload, type UsagePayload } from '@/lib/usage';
 
 // GET /api/v2/tasks/:id — read one task.
 export async function GET(
@@ -28,7 +29,10 @@ export async function GET(
 }
 
 // POST /api/v2/tasks/:id — perform a transition.
-// Body: { action: "claim" | "complete" | "cancel", result? }
+// Body: { action: "claim" | "complete" | "cancel", result?, usage? }
+// On 'complete', optional usage {model, input_tokens, output_tokens,
+// cache_read_tokens?, cache_creation_tokens?} ledgers the worker's spend for
+// the task (estimates, attributed to the calling agent).
 //
 // The precondition check (checkTransition) gates who may attempt what; the
 // claim race itself is settled by the adapter's conditional UPDATE, so two
@@ -79,12 +83,35 @@ export async function POST(
 
       case 'complete': {
         const result = body.result as string;
+        // Validate usage BEFORE completing: a malformed report must be a 400
+        // the worker can fix and retry, not a completion that silently
+        // dropped its token counts.
+        let usage: UsagePayload | null = null;
+        if (body.usage !== undefined && body.usage !== null) {
+          const parsed = parseUsagePayload(body.usage);
+          if (!parsed.ok) return errorResponse(`Invalid usage: ${parsed.error}`, 400);
+          usage = parsed.usage;
+        }
         // Store FIRST: the guarded UPDATE is what decides whether this worker
         // still owns the task — a janitor release (stale-claim timeout) can
         // strip ownership between the precondition read and here. Announcing
         // before the guard published false "done" messages for completions
         // that then 409'd with the result never stored.
         const done = await scoped.completeTask(id, result);
+        if (usage) {
+          // Fire-and-forget: the completion must not fail because the ledger did.
+          insertUsageEvent({
+            agent_id: auth.agentId,
+            model: usage.model,
+            source: 'native',
+            purpose: 'model-task',
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_creation_tokens: usage.cache_creation_tokens,
+            metadata: { task_id: task.id },
+          });
+        }
         try {
           const ch = await scoped.findChannelById(task.channel_id);
           if (ch) {

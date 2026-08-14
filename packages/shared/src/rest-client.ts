@@ -17,6 +17,12 @@ import {
   generateNonce,
 } from './crypto.js';
 import { cardFromEnv, type AgentCard } from './agent-card.js';
+import type {
+  AgentUsageSummary,
+  TokenCounts,
+  UsageReport,
+  UsageWindow,
+} from './usage.js';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -131,10 +137,16 @@ export class AirChatRestClient {
 
   // ── Public: agents ─────────────────────────────────────────────────────
 
-  async listAgents(capability?: string, activeWithin?: string): Promise<unknown> {
+  async listAgents(
+    capability?: string,
+    activeWithin?: string,
+    opts?: { sort?: 'cheapest'; max_cost_per_mtok?: number },
+  ): Promise<unknown> {
     const params = new URLSearchParams();
     if (capability) params.set('capability', capability);
     if (activeWithin) params.set('active_within', activeWithin);
+    if (opts?.sort) params.set('sort', opts.sort);
+    if (opts?.max_cost_per_mtok !== undefined) params.set('max_cost_per_mtok', String(opts.max_cost_per_mtok));
     return this.request('GET', '/api/v2/agents', params);
   }
 
@@ -192,8 +204,17 @@ export class AirChatRestClient {
     return this.request('GET', '/api/v2/tasks', params);
   }
 
-  async updateTask(taskId: string, action: 'claim' | 'complete' | 'cancel', result?: string): Promise<unknown> {
-    return this.request('POST', `/api/v2/tasks/${encodeURIComponent(taskId)}`, undefined, { action, result });
+  async updateTask(
+    taskId: string,
+    action: 'claim' | 'complete' | 'cancel',
+    result?: string,
+    usage?: { model: string } & TokenCounts,
+  ): Promise<unknown> {
+    return this.request('POST', `/api/v2/tasks/${encodeURIComponent(taskId)}`, undefined, {
+      action,
+      result,
+      ...(usage ? { usage } : {}),
+    });
   }
 
   async getTask(taskId: string): Promise<unknown> {
@@ -433,6 +454,59 @@ export class AirChatRestClient {
 
   async removePeer(endpoint: string): Promise<unknown> {
     return this.request('DELETE', '/api/v2/gossip/peers', undefined, { endpoint });
+  }
+
+  // ── Public: token usage ─────────────────────────────────────────────────
+
+  /**
+   * Report cumulative per-session token counters (running totals, never
+   * per-call deltas). The server stores the computed delta and returns it.
+   */
+  async reportUsage(report: UsageReport): Promise<{ delta: TokenCounts; restarted: boolean }> {
+    return await this.request('POST', '/api/v2/usage/report', undefined, report) as {
+      delta: TokenCounts;
+      restarted: boolean;
+    };
+  }
+
+  /**
+   * Report tokens AirChat served into an agent's context (chars/4 estimate).
+   * Best-effort telemetry: errors are logged once and swallowed — this must
+   * never surface as a failure of whatever operation triggered the flush.
+   */
+  async reportServed(payload: {
+    tokens: number;
+    session_id?: string;
+    tools?: Record<string, number>;
+  }): Promise<void> {
+    try {
+      await this.request('POST', '/api/v2/usage/served', undefined, payload);
+    } catch (e: unknown) {
+      console.error('[airchat] served-usage report failed:', e instanceof Error ? e.message : e);
+    }
+  }
+
+  /** Usage summary for one agent (omit `agent` for the caller's own). */
+  async getUsage(params: {
+    agent?: string;
+    window?: UsageWindow;
+    since?: string;
+    until?: string;
+  }): Promise<AgentUsageSummary> {
+    const search = new URLSearchParams();
+    if (params.agent) search.set('agent', params.agent);
+    if (params.window) search.set('window', params.window);
+    if (params.since) search.set('since', params.since);
+    if (params.until) search.set('until', params.until);
+    return await this.request('GET', '/api/v2/usage', search) as AgentUsageSummary;
+  }
+
+  /** Per-agent usage summaries across the fleet. */
+  async getFleetUsage(window?: UsageWindow): Promise<{ agents: AgentUsageSummary[] }> {
+    const search = new URLSearchParams();
+    search.set('all', 'true');
+    if (window) search.set('window', window);
+    return await this.request('GET', '/api/v2/usage', search) as { agents: AgentUsageSummary[] };
   }
 
   // ── Static factory ──────────────────────────────────────────────────────

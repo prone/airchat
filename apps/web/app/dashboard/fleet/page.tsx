@@ -3,7 +3,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { createSupabaseBrowser } from '@/lib/supabase-browser';
-import { formatSize } from '@airchat/shared';
+import { formatSize, marginalCostUsd, totalTokens } from '@airchat/shared';
+import type { BillingPlan, ModelPrice, TokenCounts, UsageSource } from '@airchat/shared';
+import { formatTokens, formatUsd } from '@/components/viz/viz';
 import { useNow } from '@/lib/use-now';
 
 /**
@@ -28,6 +30,7 @@ interface AgentCard {
   model?: string;
   harness?: string;
   capabilities?: string[];
+  plan?: BillingPlan;
 }
 
 interface AgentRow {
@@ -56,6 +59,29 @@ interface InventoryNote {
   slug: string;
   updated_at: string;
   properties: { machine?: string; models?: InventoryModel[] } | null;
+}
+
+/** One row of agent_usage_rollup(p_days) — per (agent, day, model, source). */
+interface RollupRow extends TokenCounts {
+  agent_id: string;
+  day: string;
+  model: string;
+  source: UsageSource;
+}
+
+interface UsageBreakdownRow extends TokenCounts {
+  model: string;
+  source: UsageSource;
+  est: number | null;
+}
+
+/** Per-agent aggregate for the chips + expanded breakdown. All estimates. */
+interface AgentUsage {
+  tokensToday: number;
+  tokens7d: number;
+  /** Sum of priced rows; null when no row could be priced (unknown ≠ free). */
+  cost7d: number | null;
+  breakdown: UsageBreakdownRow[];
 }
 
 const ONLINE_THRESHOLD_MS = 10 * 60 * 1000;
@@ -98,9 +124,10 @@ function StatusDot({ lastSeen, now }: { lastSeen: string | null; now: number }) 
   );
 }
 
-function AgentLine({ a, now, expanded, onToggle, activeCap, onSelectCap }: {
+function AgentLine({ a, now, expanded, onToggle, activeCap, onSelectCap, usage }: {
   a: AgentRow; now: number; expanded: boolean; onToggle: () => void;
   activeCap: string | null; onSelectCap: (cap: string) => void;
+  usage?: AgentUsage;
 }) {
   const online = a.last_seen_at !== null && now - new Date(a.last_seen_at).getTime() < ONLINE_THRESHOLD_MS;
   return (
@@ -123,6 +150,11 @@ function AgentLine({ a, now, expanded, onToggle, activeCap, onSelectCap }: {
           </span>
         )}
         <span className="text-sm text-dim">{a.last_seen_at ? timeAgo(a.last_seen_at, now) : 'never seen'}</span>
+        {usage && usage.tokens7d > 0 && (
+          <span className="text-sm text-dim" title="estimated token usage and marginal cost over the last 7 days">
+            {formatTokens(usage.tokens7d)} tok{usage.cost7d !== null ? ` · ${formatUsd(usage.cost7d)}` : ''} (7d)
+          </span>
+        )}
         <CapChips card={a.metadata?.card} activeCap={activeCap} onSelect={onSelectCap} />
       </div>
       {expanded && (
@@ -151,8 +183,46 @@ function AgentLine({ a, now, expanded, onToggle, activeCap, onSelectCap }: {
             <><span className="text-dim">harness</span><span>{a.metadata.card.harness} — the runtime the agent reported it runs in</span></>
           )}
           {a.metadata?.card?.model && (<><span className="text-dim">model</span><span>{a.metadata.card.model}</span></>)}
+          {a.metadata?.card?.plan && (
+            <><span className="text-dim">plan</span><span>{a.metadata.card.plan}{a.metadata.card.plan !== 'api' ? ' — $0 marginal token cost' : ''}</span></>
+          )}
           <span className="text-dim">id</span>
           <span><code style={{ fontSize: '0.75rem' }}>{a.id}</code></span>
+          {usage && usage.breakdown.length > 0 && (
+            <>
+              <span className="text-dim">usage (7d)</span>
+              <span>
+                {formatTokens(usage.tokensToday)} tok today · {formatTokens(usage.tokens7d)} tok 7d
+                {usage.cost7d !== null ? ` · ${formatUsd(usage.cost7d)}` : ''} — estimated
+              </span>
+              <div style={{ gridColumn: '1 / -1', overflowX: 'auto' }}>
+                <table style={{ width: '100%', fontSize: '0.75rem', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr className="text-dim" style={{ textAlign: 'left' }}>
+                      <th style={{ padding: '2px 8px 2px 0' }}>model</th>
+                      <th style={{ padding: '2px 8px' }}>source</th>
+                      <th style={{ padding: '2px 8px' }}>input</th>
+                      <th style={{ padding: '2px 8px' }}>output</th>
+                      <th style={{ padding: '2px 8px' }}>cache r/w</th>
+                      <th style={{ padding: '2px 8px', textAlign: 'right' }}>est $</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {usage.breakdown.map((row) => (
+                      <tr key={`${row.model} ${row.source}`}>
+                        <td style={{ padding: '2px 8px 2px 0' }}><code style={{ fontSize: '0.7rem' }}>{row.model}</code></td>
+                        <td style={{ padding: '2px 8px' }}>{row.source}</td>
+                        <td style={{ padding: '2px 8px', fontVariantNumeric: 'tabular-nums' }}>{formatTokens(row.input_tokens)}</td>
+                        <td style={{ padding: '2px 8px', fontVariantNumeric: 'tabular-nums' }}>{formatTokens(row.output_tokens)}</td>
+                        <td style={{ padding: '2px 8px', fontVariantNumeric: 'tabular-nums' }}>{formatTokens(row.cache_read_tokens)} / {formatTokens(row.cache_creation_tokens)}</td>
+                        <td style={{ padding: '2px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{row.est === null ? '—' : formatUsd(row.est)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -188,6 +258,8 @@ export default function FleetPage() {
   const [machines, setMachines] = useState<MachineRow[]>([]);
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [inventories, setInventories] = useState<InventoryNote[]>([]);
+  const [rollup, setRollup] = useState<RollupRow[]>([]);
+  const [prices, setPrices] = useState<ModelPrice[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const [showNever, setShowNever] = useState(false);
@@ -198,19 +270,68 @@ export default function FleetPage() {
 
   useEffect(() => {
     async function load() {
-      const [m, a, n] = await Promise.all([
+      const [m, a, n, u, p] = await Promise.all([
         supabase.from('machine_keys').select('id, machine_name, active, created_at').order('machine_name'),
         supabase.from('agents').select('id, name, active, description, created_at, last_seen_at, machine_id, metadata').order('last_seen_at', { ascending: false, nullsFirst: false }),
         supabase.from('notes').select('slug, updated_at, properties').contains('properties', { type: 'model-inventory' }),
+        // Both admin-gated server-side; on error the usage chips just don't render.
+        supabase.rpc('agent_usage_rollup', { p_days: 7 }),
+        supabase.from('model_prices').select('*'),
       ]);
       if (m.data) setMachines(m.data);
       if (a.data) setAgents(a.data);
       if (n.data) setInventories(n.data);
+      if (u.data) setRollup(u.data as RollupRow[]);
+      if (p.data) setPrices(p.data as ModelPrice[]);
       setLoaded(true);
     }
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** Per-agent usage aggregates from the rollup: today / 7d totals, and a
+   *  model×source breakdown priced by the agent's card plan. All estimates. */
+  const usageByAgent = useMemo(() => {
+    const priceMap = new Map<string, ModelPrice>(prices.map((p) => [p.model, p]));
+    const planById = new Map<string, BillingPlan | undefined>(
+      agents.map((a) => [a.id, a.metadata?.card?.plan]),
+    );
+    const today = new Date().toISOString().slice(0, 10);
+    const map = new Map<string, AgentUsage>();
+    for (const r of rollup) {
+      let agg = map.get(r.agent_id);
+      if (!agg) {
+        agg = { tokensToday: 0, tokens7d: 0, cost7d: null, breakdown: [] };
+        map.set(r.agent_id, agg);
+      }
+      const total = totalTokens(r);
+      agg.tokens7d += total;
+      if (r.day === today) agg.tokensToday += total;
+      const row = agg.breakdown.find((b) => b.model === r.model && b.source === r.source);
+      if (row) {
+        row.input_tokens += r.input_tokens;
+        row.output_tokens += r.output_tokens;
+        row.cache_read_tokens += r.cache_read_tokens;
+        row.cache_creation_tokens += r.cache_creation_tokens;
+      } else {
+        agg.breakdown.push({
+          model: r.model, source: r.source,
+          input_tokens: r.input_tokens, output_tokens: r.output_tokens,
+          cache_read_tokens: r.cache_read_tokens, cache_creation_tokens: r.cache_creation_tokens,
+          est: null,
+        });
+      }
+    }
+    for (const [agentId, agg] of map) {
+      const plan = planById.get(agentId);
+      agg.breakdown.sort((a, b) => totalTokens(b) - totalTokens(a));
+      for (const row of agg.breakdown) {
+        row.est = marginalCostUsd(row, row.model, plan, priceMap);
+        if (row.est !== null) agg.cost7d = (agg.cost7d ?? 0) + row.est;
+      }
+    }
+    return map;
+  }, [rollup, prices, agents]);
 
   const byMachine = useMemo(() => {
     const map = new Map<string | null, AgentRow[]>();
@@ -356,6 +477,7 @@ export default function FleetPage() {
                 onToggle={() => setExpanded(expanded === a.id ? null : a.id)}
                 activeCap={capFilter}
                 onSelectCap={toggleCapFilter}
+                usage={usageByAgent.get(a.id)}
               />
             ))}
 
@@ -434,6 +556,7 @@ export default function FleetPage() {
               onToggle={() => setExpanded(expanded === a.id ? null : a.id)}
               activeCap={capFilter}
               onSelectCap={toggleCapFilter}
+              usage={usageByAgent.get(a.id)}
             />
           ))}
         </div>

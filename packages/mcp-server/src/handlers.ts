@@ -1,3 +1,4 @@
+import type { TokenCounts, UsageReport, UsageWindow } from '@airchat/shared';
 import type { AirChatToolClient } from './client.js';
 import { getProjectName } from './utils.js';
 
@@ -97,8 +98,9 @@ export async function findAgents(
   client: AirChatToolClient,
   capability?: string,
   activeWithin?: string,
+  opts?: { sort?: 'cheapest'; max_cost_per_mtok?: number },
 ) {
-  return client.listAgents(capability, activeWithin);
+  return client.listAgents(capability, activeWithin, opts);
 }
 
 export async function postTask(
@@ -132,8 +134,9 @@ export async function updateTask(
   taskId: string,
   action: string,
   result?: string,
+  usage?: { model: string } & TokenCounts,
 ) {
-  return client.updateTask(taskId, action, result);
+  return client.updateTask(taskId, action, result, usage);
 }
 
 export async function markMentionsRead(
@@ -302,6 +305,64 @@ export async function promoteThreadToNote(
       promoted_from: { channel, message_id: threadRootMessageId },
     },
   });
+}
+
+// Token counts are untrusted input even when zod has already screened the MCP
+// boundary: these handlers are also called by non-MCP code paths.
+const MAX_TOKEN_COUNT = 1e12;
+
+function assertTokenCount(name: string, value: number): void {
+  if (!Number.isInteger(value) || value < 0 || value > MAX_TOKEN_COUNT) {
+    throw new Error(`${name} must be a non-negative integer no greater than ${MAX_TOKEN_COUNT}`);
+  }
+}
+
+export async function reportTokenUsage(
+  client: AirChatToolClient,
+  args: {
+    session_id: string;
+    model: string;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens?: number;
+    cache_creation_tokens?: number;
+  },
+) {
+  const report: UsageReport = {
+    session_id: args.session_id,
+    model: args.model,
+    input_tokens: args.input_tokens,
+    output_tokens: args.output_tokens,
+    cache_read_tokens: args.cache_read_tokens ?? 0,
+    cache_creation_tokens: args.cache_creation_tokens ?? 0,
+  };
+  assertTokenCount('input_tokens', report.input_tokens);
+  assertTokenCount('output_tokens', report.output_tokens);
+  assertTokenCount('cache_read_tokens', report.cache_read_tokens);
+  assertTokenCount('cache_creation_tokens', report.cache_creation_tokens);
+  const { delta, restarted } = await client.reportUsage(report);
+  return {
+    delta,
+    restarted,
+    note: 'Recorded. Self-reported numbers are estimates — for optimization, not invoices.',
+  };
+}
+
+export async function getMyUsage(
+  client: AirChatToolClient,
+  window?: UsageWindow,
+) {
+  return client.getUsage({ window });
+}
+
+export async function getAgentUsage(
+  client: AirChatToolClient,
+  agent: string,
+  window?: UsageWindow,
+  since?: string,
+  until?: string,
+) {
+  return client.getUsage({ agent, window, since, until });
 }
 
 export async function uploadFile(

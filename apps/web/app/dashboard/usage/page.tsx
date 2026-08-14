@@ -16,6 +16,7 @@ interface UsageRow {
   id: string;
   purpose: string;
   channel_id: string | null;
+  agent_id: string | null;
   model: string;
   input_tokens: number;
   output_tokens: number;
@@ -27,17 +28,24 @@ interface UsageRow {
 export default function UsagePage() {
   const supabase = useMemo(() => createSupabaseBrowser(), []);
   const [rows, setRows] = useState<UsageRow[]>([]);
+  const [agentNames, setAgentNames] = useState<Map<string, string>>(new Map());
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     supabase
       .from('llm_usage')
-      .select('id, purpose, channel_id, model, input_tokens, output_tokens, metadata, created_at, channels:channel_id(name)')
+      .select('id, purpose, channel_id, agent_id, model, input_tokens, output_tokens, metadata, created_at, channels:channel_id(name)')
       .order('created_at', { ascending: false })
       .limit(1000)
       .then(({ data }) => {
         setRows((data as unknown as UsageRow[]) ?? []);
         setLoaded(true);
+      });
+    supabase
+      .from('agents')
+      .select('id, name')
+      .then(({ data }) => {
+        setAgentNames(new Map((data ?? []).map((a: { id: string; name: string }) => [a.id, a.name])));
       });
   }, [supabase]);
 
@@ -77,6 +85,20 @@ export default function UsagePage() {
     return [...map.values()].sort((a, b) => (b.input + b.output) - (a.input + a.output));
   }, [rows]);
 
+  const byAgent = useMemo(() => {
+    const map = new Map<string, { name: string; input: number; output: number; calls: number; model: string }>();
+    for (const r of rows) {
+      // Rows without agent attribution are the server's own calls (digest/summaries).
+      const key = r.agent_id === null ? 'server' : (agentNames.get(r.agent_id) ?? '(deleted agent)');
+      const cur = map.get(key) ?? { name: key, input: 0, output: 0, calls: 0, model: r.model };
+      cur.input += r.input_tokens;
+      cur.output += r.output_tokens;
+      cur.calls++;
+      map.set(key, cur);
+    }
+    return [...map.values()].sort((a, b) => (b.input + b.output) - (a.input + a.output));
+  }, [rows, agentNames]);
+
   return (
     <div className="container">
       <div className="mb-3 flex items-center justify-between">
@@ -103,7 +125,7 @@ export default function UsagePage() {
         <DailyBars values={byDay} />
       </div>
 
-      <div className="card" style={{ padding: '0.75rem 1rem', overflowX: 'auto' }}>
+      <div className="card mb-3" style={{ padding: '0.75rem 1rem', overflowX: 'auto' }}>
         <h3 className="text-sm" style={{ marginBottom: 8 }}>By channel</h3>
         {loaded && rows.length === 0 && (
           <p className="text-xs text-dim">
@@ -135,6 +157,47 @@ export default function UsagePage() {
                     <td style={{ padding: '4px 8px', fontVariantNumeric: 'tabular-nums' }}>{c.input.toLocaleString()}</td>
                     <td style={{ padding: '4px 8px', fontVariantNumeric: 'tabular-nums' }}>{c.output.toLocaleString()}</td>
                     <td style={{ padding: '4px 8px', color: INK.secondary }}>{c.model}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                      {cost === null ? '—' : formatUsd(cost)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="card" style={{ padding: '0.75rem 1rem', overflowX: 'auto' }}>
+        <h3 className="text-sm" style={{ marginBottom: 8 }}>By agent</h3>
+        {loaded && rows.length === 0 && (
+          <p className="text-xs text-dim">
+            No usage recorded yet. Rows without agent attribution (digest/summaries)
+            group as &quot;server&quot;.
+          </p>
+        )}
+        {byAgent.length > 0 && (
+          <table style={{ width: '100%', fontSize: '0.75rem', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: INK.muted }}>
+                <th style={{ padding: '4px 8px 4px 0' }}>Agent</th>
+                <th style={{ padding: '4px 8px' }}>Calls</th>
+                <th style={{ padding: '4px 8px' }}>Input</th>
+                <th style={{ padding: '4px 8px' }}>Output</th>
+                <th style={{ padding: '4px 8px' }}>Model</th>
+                <th style={{ padding: '4px 8px', textAlign: 'right' }}>Est. cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {byAgent.map((a) => {
+                const cost = estimateCostUsd(a.model, a.input, a.output);
+                return (
+                  <tr key={a.name} style={{ borderTop: `1px solid ${INK.grid}` }}>
+                    <td style={{ padding: '4px 8px 4px 0' }}>{a.name}</td>
+                    <td style={{ padding: '4px 8px', fontVariantNumeric: 'tabular-nums' }}>{a.calls}</td>
+                    <td style={{ padding: '4px 8px', fontVariantNumeric: 'tabular-nums' }}>{a.input.toLocaleString()}</td>
+                    <td style={{ padding: '4px 8px', fontVariantNumeric: 'tabular-nums' }}>{a.output.toLocaleString()}</td>
+                    <td style={{ padding: '4px 8px', color: INK.secondary }}>{a.model}</td>
                     <td style={{ padding: '4px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                       {cost === null ? '—' : formatUsd(cost)}
                     </td>

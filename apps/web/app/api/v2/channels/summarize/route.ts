@@ -29,7 +29,11 @@ export async function POST(request: NextRequest) {
     const channel = await scoped.findChannelByName(body.channel);
     if (!channel) return errorResponse('Channel not found', 404);
 
-    const summary = await summarizeChannel(channel.id, { windowDays, kind });
+    const summary = await summarizeChannel(channel.id, {
+      windowDays,
+      kind,
+      requestedBy: { agentId: auth.agentId },
+    });
     return jsonResponse({ summary });
   } catch (e) {
     if (e instanceof SummaryError) return errorResponse(e.message, e.status);

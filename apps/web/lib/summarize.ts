@@ -170,7 +170,13 @@ export class SummaryError extends Error {
  */
 export async function summarizeChannel(
   channelId: string,
-  opts?: { windowDays?: number; kind?: SummaryKind; force?: boolean },
+  opts?: {
+    windowDays?: number;
+    kind?: SummaryKind;
+    force?: boolean;
+    /** Agent whose request triggered the spend — attributed on the usage row. */
+    requestedBy?: { agentId: string };
+  },
 ): Promise<ChannelSummaryResult> {
   if (!summariesEnabled()) {
     throw new SummaryError('Summaries are not configured (ANTHROPIC_API_KEY missing)', 503);
@@ -233,10 +239,13 @@ export async function summarizeChannel(
     messages: [{ role: 'user', content: userPrompt }],
   });
 
-  // Ledger spend regardless of outcome
+  // Ledger spend regardless of outcome. agent_id attributes the spend to the
+  // requesting agent; null (digest-worker, dashboard humans) stays valid.
   await client.from('llm_usage').insert({
     purpose: `channel-summary:${kind}`,
     channel_id: channelId,
+    agent_id: opts?.requestedBy?.agentId ?? null,
+    source: 'native',
     model,
     input_tokens: response.usage.input_tokens,
     output_tokens: response.usage.output_tokens,

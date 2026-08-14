@@ -35,6 +35,7 @@ import {
   AnthropicBackend,
   OllamaBackend,
   OpenAICompatBackend,
+  type BackendUsage,
   type ChatMessage,
   type DiscoveredModel,
   type ModelBackend,
@@ -255,6 +256,7 @@ async function serveTask(client: AirChatRestClient, task: TaskRow, model: Served
   console.log(`[model-worker] claimed task ${task.id}: ${task.title}`);
 
   let result: string;
+  let usage: BackendUsage | undefined;
   try {
     if (!model) {
       result = 'ERROR: no model on this worker matches the task';
@@ -263,7 +265,8 @@ async function serveTask(client: AirChatRestClient, task: TaskRow, model: Served
         result = `ERROR: backend ${model.backend} cannot serve embeddings`;
       } else {
         const req = parseEmbedBody(task.body ?? task.title);
-        const embeddings = await model.backendRef.embed(model.name, req.input);
+        const { vectors: embeddings, usage: embedUsage } = await model.backendRef.embed(model.name, req.input);
+        usage = embedUsage;
         const payload = buildEmbedPayload(model.name, embeddings);
         if (payload.length <= MAX_RESULT_CHARS) {
           result = payload;
@@ -279,7 +282,8 @@ async function serveTask(client: AirChatRestClient, task: TaskRow, model: Served
     } else {
       const req = parseTaskBody(task.body ?? task.title);
       const messages: ChatMessage[] = req.messages;
-      const output = await model.backendRef.chat(model.name, messages, req.options);
+      const { text: output, usage: chatUsage } = await model.backendRef.chat(model.name, messages, req.options);
+      usage = chatUsage;
       if (output.length <= MAX_RESULT_CHARS) {
         result = output;
       } else {
@@ -295,7 +299,7 @@ async function serveTask(client: AirChatRestClient, task: TaskRow, model: Served
   }
 
   try {
-    await client.updateTask(task.id, 'complete', result);
+    await client.updateTask(task.id, 'complete', result, usage);
   } catch (err) {
     console.error(`[model-worker] failed to complete task ${task.id}: ${err instanceof Error ? err.message : err}`);
   }
