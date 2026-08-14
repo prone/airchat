@@ -291,17 +291,32 @@ export class AirChatRestClient {
 
   // ── Public: files ───────────────────────────────────────────────────────
 
-  async getFileUrl(fileId: string): Promise<unknown> {
+  // Files are addressed by storage path ("channel/123-name.ext"), and the
+  // route's params are ?path= and ?url=true. These two methods used to send
+  // ?id=/?download= — a contract that never existed — and download responses
+  // are raw bytes, which the JSON request path can't carry. Fixed to fetch
+  // the signed URL and then the content.
+
+  async getFileUrl(filePath: string): Promise<unknown> {
     const params = new URLSearchParams();
-    params.set('id', fileId);
+    params.set('path', filePath);
+    params.set('url', 'true');
     return this.request('GET', '/api/files', params);
   }
 
-  async downloadFile(fileId: string): Promise<unknown> {
-    const params = new URLSearchParams();
-    params.set('id', fileId);
-    params.set('download', 'true');
-    return this.request('GET', '/api/files', params);
+  async downloadFile(filePath: string): Promise<unknown> {
+    const res = await this.getFileUrl(filePath) as { signed_url?: string; data?: { signed_url?: string } };
+    const signedUrl = res?.signed_url ?? res?.data?.signed_url;
+    if (typeof signedUrl !== 'string') {
+      throw new Error('File URL response carried no signed_url');
+    }
+    const dl = await fetch(signedUrl, { signal: AbortSignal.timeout(30_000) });
+    if (!dl.ok) throw new Error(`File download failed: HTTP ${dl.status}`);
+    return {
+      path: filePath,
+      content_type: dl.headers.get('content-type') ?? 'application/octet-stream',
+      content: await dl.text(),
+    };
   }
 
   async uploadFile(
