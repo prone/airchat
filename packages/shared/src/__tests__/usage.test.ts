@@ -64,6 +64,16 @@ describe('reportDelta', () => {
     expect(delta).toEqual(counts(100, 400, 60, 10));
   });
 
+  it('omitted cache counters coalesce to the cursor — no restart, no delta', () => {
+    const cursor = counts(1000, 200, 500, 50);
+    const { delta, restarted } = reportDelta(
+      { input_tokens: 1500, output_tokens: 300 },
+      cursor,
+    );
+    expect(restarted).toBe(false);
+    expect(delta).toEqual(counts(500, 100, 0, 0));
+  });
+
   it('never produces negative deltas', () => {
     const cases: Array<[TokenCounts, TokenCounts | null]> = [
       [counts(5, 5, 5, 5), counts(5, 5, 5, 5)],
@@ -125,28 +135,42 @@ describe('summarizeUsage', () => {
   const until = new Date('2026-08-08T00:00:00Z');
   const row = (model: string, source: UsageSource, c: TokenCounts) => ({ model, source, ...c });
 
-  it('aggregates by model+source with totals and derived cost', () => {
+  it('aggregates by model+source; served rows stay visible but do not double-count totals', () => {
     const summary = summarizeUsage(
       [
         row('claude-opus-4-8', 'native', counts(1_000_000, 100_000)),
         row('claude-opus-4-8', 'native', counts(500_000, 50_000)),
         row('unknown-model', 'served', counts(40_000, 0)),
       ],
-      'macbook-agentchat',
+      'macbook-airchat',
       'api',
       since,
       until,
       PRICES,
     );
-    expect(summary.totals).toEqual(counts(1_540_000, 150_000));
+    // direct (native) rows exist, so the served estimate of the same context
+    // is excluded from totals — it would double-count
+    expect(summary.totals).toEqual(counts(1_500_000, 150_000));
     expect(summary.breakdown).toHaveLength(2);
     const opus = summary.breakdown[0]!;
     expect(opus.events).toBe(2);
     expect(opus.est_cost_usd).toBeCloseTo(1.5 * 5 + 0.15 * 25);
-    // priced rows sum; unpriced row contributes nothing but doesn't null the total
     expect(summary.est_cost_usd).toBeCloseTo(opus.est_cost_usd!);
     expect(summary.breakdown[1]!.est_cost_usd).toBeNull();
     expect(summary.accuracy).toBe('estimated');
+  });
+
+  it('served rows count when they are the only measurement', () => {
+    const summary = summarizeUsage(
+      [row('claude-opus-4-8', 'served', counts(40_000, 0))],
+      'macbook-airchat',
+      'api',
+      since,
+      until,
+      PRICES,
+    );
+    expect(summary.totals).toEqual(counts(40_000, 0));
+    expect(summary.est_cost_usd).toBeCloseTo(0.04 * 5);
   });
 
   it('returns null cost when nothing can be priced, and zero totals on no rows', () => {

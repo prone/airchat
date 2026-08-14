@@ -333,13 +333,20 @@ export async function reportTokenUsage(
     model: args.model,
     input_tokens: args.input_tokens,
     output_tokens: args.output_tokens,
-    cache_read_tokens: args.cache_read_tokens ?? 0,
-    cache_creation_tokens: args.cache_creation_tokens ?? 0,
+    // Omitted cache counters stay undefined: defaulting to 0 would read as a
+    // drop below the stored cursor and trip the server's restart heuristic.
+    // The server coalesces missing counters to the cursor value instead.
+    cache_read_tokens: args.cache_read_tokens,
+    cache_creation_tokens: args.cache_creation_tokens,
   };
   assertTokenCount('input_tokens', report.input_tokens);
   assertTokenCount('output_tokens', report.output_tokens);
-  assertTokenCount('cache_read_tokens', report.cache_read_tokens);
-  assertTokenCount('cache_creation_tokens', report.cache_creation_tokens);
+  if (report.cache_read_tokens !== undefined) {
+    assertTokenCount('cache_read_tokens', report.cache_read_tokens);
+  }
+  if (report.cache_creation_tokens !== undefined) {
+    assertTokenCount('cache_creation_tokens', report.cache_creation_tokens);
+  }
   const { delta, restarted } = await client.reportUsage(report);
   return {
     delta,

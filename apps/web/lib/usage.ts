@@ -17,12 +17,12 @@ import {
   ZERO_COUNTS,
   addCounts,
   marginalCostUsd,
-  reportDelta,
   summarizeUsage,
   totalTokens,
   type AgentUsageSummary,
   type BillingPlan,
   type ModelPrice,
+  type ReportCounts,
   type ReportDelta,
   type TokenCounts,
   type UsageReport,
@@ -47,14 +47,16 @@ export function isTokenCount(value: unknown): value is number {
   );
 }
 
-export interface UsagePayload extends TokenCounts {
+export interface UsagePayload extends ReportCounts {
   model: string;
 }
 
 /**
- * Validate an untrusted {model + 4-way counts} object (task completion usage,
- * self-report body). Missing cache fields default to 0; input/output are
- * required. Never mutates the input.
+ * Validate an untrusted {model + counts} object (task completion usage,
+ * self-report body). Omitted cache fields stay omitted — for cumulative
+ * self-reports omission means "not tracked" (a forced 0 would regress the
+ * cursor and trip the restart heuristic); event inserts coalesce them to 0.
+ * Never mutates the input.
  */
 export function parseUsagePayload(
   value: unknown,
@@ -69,22 +71,22 @@ export function parseUsagePayload(
     return { ok: false, error: 'model must be a string of 1-200 characters' };
   }
 
-  const counts: TokenCounts = { ...ZERO_COUNTS };
+  const usage: UsagePayload = { model, input_tokens: 0, output_tokens: 0 };
   for (const field of ['input_tokens', 'output_tokens'] as const) {
     if (!isTokenCount(raw[field])) {
       return { ok: false, error: `${field} must be a non-negative integer (max 1e12)` };
     }
-    counts[field] = raw[field] as number;
+    usage[field] = raw[field] as number;
   }
   for (const field of ['cache_read_tokens', 'cache_creation_tokens'] as const) {
     if (raw[field] === undefined || raw[field] === null) continue;
     if (!isTokenCount(raw[field])) {
       return { ok: false, error: `${field} must be a non-negative integer (max 1e12)` };
     }
-    counts[field] = raw[field] as number;
+    usage[field] = raw[field] as number;
   }
 
-  return { ok: true, usage: { model, ...counts } };
+  return { ok: true, usage };
 }
 
 // ── Recording ───────────────────────────────────────────────────────────────
@@ -131,56 +133,48 @@ export function insertUsageEvent(row: UsageEventRow): void {
 }
 
 /**
- * Record a cumulative self-report (report_token_usage): compute the delta
- * against the stored cursor, advance the cursor, and ledger the delta as a
- * 'self' event when it is non-zero.
- *
- * Awaited (the tool echoes the delta back), but ordered for resilience:
- * cursor first, event second. Losing the event insert undercounts one delta;
- * a cursor lagging the event stream would double-count the next retry —
- * undercounting is the recoverable failure.
+ * Record a cumulative self-report (report_token_usage) through the
+ * record_usage_report RPC (migration 00028): cursor advance, delta
+ * computation, and the 'self' event insert happen in ONE transaction under a
+ * row lock, so concurrent reports for the same (agent, session, model)
+ * serialize instead of double-counting, and identical retries yield a zero
+ * delta. Omitted cache counters pass as NULL ("not tracked") and coalesce to
+ * the stored cursor inside the RPC.
  */
 export async function recordSelfReport(
   agentId: string,
   report: UsageReport,
 ): Promise<ReportDelta> {
-  const client = getSupabaseClient();
-
-  const { data: cursor, error: readErr } = await client
-    .from('usage_report_cursors')
-    .select('input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens')
-    .eq('agent_id', agentId)
-    .eq('session_id', report.session_id)
-    .eq('model', report.model)
-    .maybeSingle();
-  if (readErr) throw new Error(`usage cursor read failed: ${readErr.message}`);
-
-  const result = reportDelta(report, (cursor as TokenCounts | null) ?? null);
-
-  const { error: upsertErr } = await client.from('usage_report_cursors').upsert({
-    agent_id: agentId,
-    session_id: report.session_id,
-    model: report.model,
-    input_tokens: report.input_tokens,
-    output_tokens: report.output_tokens,
-    cache_read_tokens: report.cache_read_tokens,
-    cache_creation_tokens: report.cache_creation_tokens,
-    updated_at: new Date().toISOString(),
+  const { data, error } = await getSupabaseClient().rpc('record_usage_report', {
+    p_agent_id: agentId,
+    p_session_id: report.session_id,
+    p_model: report.model,
+    p_input: report.input_tokens,
+    p_output: report.output_tokens,
+    p_cache_read: report.cache_read_tokens ?? null,
+    p_cache_creation: report.cache_creation_tokens ?? null,
   });
-  if (upsertErr) throw new Error(`usage cursor upsert failed: ${upsertErr.message}`);
-
-  if (totalTokens(result.delta) > 0) {
-    insertUsageEvent({
-      agent_id: agentId,
-      session_id: report.session_id,
-      model: report.model,
-      source: 'self',
-      purpose: 'agent-report',
-      ...result.delta,
-    });
-  }
-
-  return result;
+  if (error) throw new Error(`usage report failed: ${error.message}`);
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | {
+        delta_input: number | string;
+        delta_output: number | string;
+        delta_cache_read: number | string;
+        delta_cache_creation: number | string;
+        restarted: boolean;
+      }
+    | undefined;
+  if (!row) throw new Error('usage report returned no row');
+  // bigint columns arrive as strings through PostgREST.
+  return {
+    delta: {
+      input_tokens: Number(row.delta_input),
+      output_tokens: Number(row.delta_output),
+      cache_read_tokens: Number(row.delta_cache_read),
+      cache_creation_tokens: Number(row.delta_cache_creation),
+    },
+    restarted: row.restarted,
+  };
 }
 
 /**
@@ -225,6 +219,17 @@ export function recordServed(
 
 const PAGE_SIZE = 1000;
 
+/**
+ * Hard bound on rows fetched for one summary/fleet query. An agent can flood
+ * its own events (rate-limited, but still), and unbounded fetch + in-memory
+ * aggregation is a DoS lever. Beyond the cap the caller gets a 400 asking for
+ * a narrower window.
+ */
+const MAX_USAGE_ROWS = 100_000;
+
+/** Thrown when a usage query matches more than MAX_USAGE_ROWS events. */
+export class UsageRangeTooLargeError extends Error {}
+
 type UsageRow = TokenCounts & { model: string; source: UsageSource; agent_id: string | null };
 
 /** Fetch event rows in [since, until), paged past PostgREST's 1000-row cap. */
@@ -232,6 +237,11 @@ async function fetchUsageRows(since: Date, until: Date, agentId?: string): Promi
   const client = getSupabaseClient();
   const rows: UsageRow[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
+    if (rows.length >= MAX_USAGE_ROWS) {
+      throw new UsageRangeTooLargeError(
+        `usage query exceeds ${MAX_USAGE_ROWS} events — narrow the time range`,
+      );
+    }
     let query = client
       .from('llm_usage')
       .select('agent_id, model, source, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens')
@@ -312,9 +322,18 @@ export async function getFleetUsage(since: Date, until: Date): Promise<FleetUsag
     ),
   );
 
+  // Same served-exclusion rule as summarizeUsage: once an agent has direct
+  // ('native'/'self') rows, its 'served' estimates measure the same tokens
+  // again and would double-count.
+  const hasDirect = new Set<string>();
+  for (const row of rows) {
+    if (row.source !== 'served') hasDirect.add(row.agent_id as string);
+  }
+
   const byAgent = new Map<string, { totals: TokenCounts; byModel: Map<string, TokenCounts> }>();
   for (const row of rows) {
     const id = row.agent_id as string;
+    if (row.source === 'served' && hasDirect.has(id)) continue;
     let entry = byAgent.get(id);
     if (!entry) {
       entry = { totals: ZERO_COUNTS, byModel: new Map() };

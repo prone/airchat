@@ -2,7 +2,12 @@ import { NextRequest } from 'next/server';
 import { USAGE_WINDOWS, USAGE_WINDOW_MS, type UsageWindow } from '@airchat/shared';
 import { authenticateAgent, isAuthError, checkAgentRateLimit } from '@/lib/api-v2-auth';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
-import { getFleetUsage, getUsageSummary, UsageNotFoundError } from '@/lib/usage';
+import {
+  getFleetUsage,
+  getUsageSummary,
+  UsageNotFoundError,
+  UsageRangeTooLargeError,
+} from '@/lib/usage';
 
 const MAX_RANGE_MS = 90 * 24 * 60 * 60 * 1000;
 
@@ -79,6 +84,7 @@ export async function GET(request: NextRequest) {
     return jsonResponse({ usage });
   } catch (e) {
     if (e instanceof UsageNotFoundError) return errorResponse(e.message, 404);
+    if (e instanceof UsageRangeTooLargeError) return errorResponse(e.message, 400);
     console.error('[usage] query failed:', e);
     return errorResponse('Usage query failed', 500);
   }

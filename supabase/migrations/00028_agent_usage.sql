@@ -25,8 +25,14 @@ ALTER TABLE llm_usage
   ADD COLUMN session_id text CHECK (char_length(session_id) <= 200),
   ADD COLUMN source text NOT NULL DEFAULT 'native'
     CHECK (source IN ('native', 'self', 'served')),
-  ADD COLUMN cache_read_tokens integer NOT NULL DEFAULT 0,
-  ADD COLUMN cache_creation_tokens integer NOT NULL DEFAULT 0;
+  ADD COLUMN cache_read_tokens bigint NOT NULL DEFAULT 0,
+  ADD COLUMN cache_creation_tokens bigint NOT NULL DEFAULT 0;
+
+-- The app validates counts up to 1e12; the original int4 columns overflow at
+-- 2^31. Widen to match the cursors table and the validation bound.
+ALTER TABLE llm_usage
+  ALTER COLUMN input_tokens TYPE bigint,
+  ALTER COLUMN output_tokens TYPE bigint;
 
 -- Negative counts can only come from delta-computation bugs; reject at the DB.
 ALTER TABLE llm_usage
@@ -62,6 +68,121 @@ ALTER TABLE usage_report_cursors ENABLE ROW LEVEL SECURITY;
 -- Written by the service role only; dashboard admins may inspect.
 CREATE POLICY "usage_report_cursors_admin_read" ON usage_report_cursors
   FOR SELECT USING (public.is_admin());
+
+-- Atomic cursor advance + event insert. The naive read-compute-upsert from
+-- the app layer races: two concurrent reports for the same (agent, session,
+-- model) would both delta against the same cursor and double-count. Here the
+-- INSERT ... ON CONFLICT DO UPDATE takes the row lock, so concurrent calls
+-- serialize and identical retries yield a zero delta (no event row).
+--
+-- Known edge (accepted, documented): a report that was delayed in flight and
+-- arrives AFTER a newer, higher report looks like a counter regression and is
+-- treated as a session restart — re-ledgering its total. Bounded to one
+-- stalled request per session and consistent with accuracy: 'estimated'.
+--
+-- NULL cache counters mean "not tracked by this reporter": they coalesce to
+-- the stored cursor value, producing no delta and never tripping the restart
+-- heuristic.
+CREATE OR REPLACE FUNCTION record_usage_report(
+  p_agent_id uuid,
+  p_session_id text,
+  p_model text,
+  p_input bigint,
+  p_output bigint,
+  p_cache_read bigint DEFAULT NULL,
+  p_cache_creation bigint DEFAULT NULL
+)
+RETURNS TABLE (
+  delta_input bigint,
+  delta_output bigint,
+  delta_cache_read bigint,
+  delta_cache_creation bigint,
+  restarted boolean
+)
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+DECLARE
+  prior usage_report_cursors%ROWTYPE;
+  v_input bigint;
+  v_output bigint;
+  v_cache_read bigint;
+  v_cache_creation bigint;
+  v_restarted boolean;
+  v_base_input bigint;
+  v_base_output bigint;
+  v_base_cache_read bigint;
+  v_base_cache_creation bigint;
+BEGIN
+  IF p_input < 0 OR p_output < 0
+     OR coalesce(p_cache_read, 0) < 0 OR coalesce(p_cache_creation, 0) < 0 THEN
+    RAISE EXCEPTION 'usage counters must be non-negative';
+  END IF;
+
+  -- Take (or create) the cursor row under lock; RETURNING reflects the
+  -- post-update row, so capture the prior values via the OLD-style trick:
+  -- read them inside the same statement's conflict arbiter using a CTE is
+  -- not possible with supabase rpc, so lock first with an upsert no-op, then
+  -- read + update under the held lock.
+  INSERT INTO usage_report_cursors (agent_id, session_id, model)
+  VALUES (p_agent_id, p_session_id, p_model)
+  ON CONFLICT (agent_id, session_id, model) DO UPDATE
+    SET updated_at = usage_report_cursors.updated_at  -- no-op, acquires the row lock
+  ;
+
+  SELECT * INTO prior FROM usage_report_cursors
+    WHERE agent_id = p_agent_id AND session_id = p_session_id AND model = p_model
+    FOR UPDATE;
+
+  v_input := p_input;
+  v_output := p_output;
+  v_cache_read := coalesce(p_cache_read, prior.cache_read_tokens);
+  v_cache_creation := coalesce(p_cache_creation, prior.cache_creation_tokens);
+
+  v_restarted := v_input < prior.input_tokens
+              OR v_output < prior.output_tokens
+              OR v_cache_read < prior.cache_read_tokens
+              OR v_cache_creation < prior.cache_creation_tokens;
+
+  IF v_restarted THEN
+    v_base_input := 0; v_base_output := 0;
+    v_base_cache_read := 0; v_base_cache_creation := 0;
+  ELSE
+    v_base_input := prior.input_tokens; v_base_output := prior.output_tokens;
+    v_base_cache_read := prior.cache_read_tokens;
+    v_base_cache_creation := prior.cache_creation_tokens;
+  END IF;
+
+  delta_input := v_input - v_base_input;
+  delta_output := v_output - v_base_output;
+  delta_cache_read := v_cache_read - v_base_cache_read;
+  delta_cache_creation := v_cache_creation - v_base_cache_creation;
+  restarted := v_restarted;
+
+  UPDATE usage_report_cursors
+    SET input_tokens = v_input, output_tokens = v_output,
+        cache_read_tokens = v_cache_read, cache_creation_tokens = v_cache_creation,
+        updated_at = now()
+    WHERE agent_id = p_agent_id AND session_id = p_session_id AND model = p_model;
+
+  IF delta_input > 0 OR delta_output > 0
+     OR delta_cache_read > 0 OR delta_cache_creation > 0 THEN
+    INSERT INTO llm_usage (purpose, model, agent_id, session_id, source,
+                           input_tokens, output_tokens,
+                           cache_read_tokens, cache_creation_tokens, metadata)
+    VALUES ('agent-report', p_model, p_agent_id, p_session_id, 'self',
+            delta_input, delta_output, delta_cache_read, delta_cache_creation,
+            CASE WHEN v_restarted THEN '{"restarted": true}'::jsonb ELSE '{}'::jsonb END);
+  END IF;
+
+  RETURN NEXT;
+END
+$$;
+
+-- Service-role only: the app calls this on behalf of an authenticated agent.
+REVOKE EXECUTE ON FUNCTION record_usage_report(uuid, text, text, bigint, bigint, bigint, bigint) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION record_usage_report(uuid, text, text, bigint, bigint, bigint, bigint) FROM anon;
+REVOKE EXECUTE ON FUNCTION record_usage_report(uuid, text, text, bigint, bigint, bigint, bigint) FROM authenticated;
 
 -- ── Model price table ───────────────────────────────────────────────────────
 -- USD per million tokens, 4-way split (cache reads are ~10x cheaper than

@@ -22,6 +22,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import type {
   AgentContext,
   AgentUsageSummary,
+  FleetUsage,
   TokenCounts,
   UsageReport,
   UsageWindow,
@@ -426,14 +427,18 @@ export class InProcessToolClient implements AirChatToolClient {
     if (params.window) search.set('window', params.window);
     if (params.since) search.set('since', params.since);
     if (params.until) search.set('until', params.until);
-    return await this.get(usageGET, '/api/v2/usage', search) as AgentUsageSummary;
+    const body = (await this.get(usageGET, '/api/v2/usage', search)) as {
+      usage: AgentUsageSummary;
+    };
+    return body.usage;
   }
 
-  async getFleetUsage(window?: UsageWindow): Promise<{ agents: AgentUsageSummary[] }> {
+  async getFleetUsage(window?: UsageWindow): Promise<FleetUsage> {
     const search = new URLSearchParams();
     search.set('all', 'true');
     if (window) search.set('window', window);
-    return await this.get(usageGET, '/api/v2/usage', search) as { agents: AgentUsageSummary[] };
+    const body = (await this.get(usageGET, '/api/v2/usage', search)) as { usage: FleetUsage };
+    return body.usage;
   }
 
   // ── Not exposed in the v1 connector surface ───────────────────────────────

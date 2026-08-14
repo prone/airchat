@@ -131,17 +131,27 @@ export async function GET(request: NextRequest) {
     if (ids.length > 0) {
       try {
         const todayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
-        const { data: usageRows, error: usageError } = await admin
-          .from('llm_usage')
-          .select('agent_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens')
-          .gte('created_at', todayStart)
-          .in('agent_id', ids);
-        if (usageError) {
-          console.error('find_agents: llm_usage fetch failed:', usageError.message);
-        }
-        for (const u of usageRows ?? []) {
-          const row = u as TokenCounts & { agent_id: string };
-          tokensTodayById.set(row.agent_id, (tokensTodayById.get(row.agent_id) ?? 0) + totalTokens(row));
+        // PostgREST caps unbounded selects at 1000 rows — page explicitly so a
+        // busy day doesn't silently undercount.
+        const PAGE_SIZE = 1000;
+        for (let from = 0; ; from += PAGE_SIZE) {
+          const { data: usageRows, error: usageError } = await admin
+            .from('llm_usage')
+            .select('agent_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens')
+            .gte('created_at', todayStart)
+            .in('agent_id', ids)
+            .order('created_at', { ascending: true })
+            .order('id', { ascending: true })
+            .range(from, from + PAGE_SIZE - 1);
+          if (usageError) {
+            console.error('find_agents: llm_usage fetch failed:', usageError.message);
+            break;
+          }
+          for (const u of usageRows ?? []) {
+            const row = u as TokenCounts & { agent_id: string };
+            tokensTodayById.set(row.agent_id, (tokensTodayById.get(row.agent_id) ?? 0) + totalTokens(row));
+          }
+          if (!usageRows || usageRows.length < PAGE_SIZE) break;
         }
       } catch (err) {
         console.error('find_agents: llm_usage fetch failed:', err);

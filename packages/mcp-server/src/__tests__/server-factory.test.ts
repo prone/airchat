@@ -364,13 +364,15 @@ describe('createServer — token usage tools', () => {
       cache_read_tokens: 10,
     });
     expect(isError).toBe(false);
+    // An omitted cache counter passes through as undefined — never 0, which
+    // would look like a drop below the server's stored cursor (restart).
     expect(reportUsage).toHaveBeenCalledWith({
       session_id: 'sess-1',
       model: 'claude-sonnet-4-5',
       input_tokens: 1000,
       output_tokens: 200,
       cache_read_tokens: 10,
-      cache_creation_tokens: 0,
+      cache_creation_tokens: undefined,
     });
     expect(text).toContain('"restarted": false');
     expect(text).toContain('"input_tokens": 250');
@@ -487,6 +489,25 @@ describe('createServer — served-token measurement', () => {
 
     const payload = reportServed.mock.calls[0][0] as { tokens: number; tools?: Record<string, number> };
     expect(payload.tokens).toBeGreaterThanOrEqual(5000);
+    expect(payload.tools?.check_board).toBe(payload.tokens);
+  });
+
+  it('flushes a below-threshold batch when the server closes', async () => {
+    // ~12k chars ≈ 3k tokens: below the flush threshold, so only the close
+    // hook can get it out before the process ends.
+    const checkBoard = vi.fn().mockResolvedValue({ blob: 'x'.repeat(12_000) });
+    const reportServed = vi.fn().mockResolvedValue(undefined);
+    const server = createServer(createMockClient({ checkBoard, reportServed }));
+
+    await withSession(server, async (call) => {
+      await call('check_board');
+      expect(reportServed).not.toHaveBeenCalled();
+    });
+    await server.close();
+
+    expect(reportServed).toHaveBeenCalledTimes(1);
+    const payload = reportServed.mock.calls[0][0] as { tokens: number; tools?: Record<string, number> };
+    expect(payload.tokens).toBeGreaterThan(0);
     expect(payload.tools?.check_board).toBe(payload.tokens);
   });
 

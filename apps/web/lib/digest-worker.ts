@@ -213,6 +213,15 @@ export async function runDigestPass(now: Date = new Date()): Promise<DigestPassR
   // Revision retention: prune once per UTC day
   const today = now.toISOString().slice(0, 10);
   if (lastPruneDay !== today) {
+    // usage_report_cursors rows are permanent per (agent, session, model) —
+    // drop cursors idle for 30+ days. Fire-and-forget.
+    void client
+      .from('usage_report_cursors')
+      .delete()
+      .lt('updated_at', new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString())
+      .then(({ error }) => {
+        if (error) console.error('[digest] failed to prune usage_report_cursors:', error.message);
+      });
     const { data: pruned, error: pruneErr } = await client.rpc('prune_note_revisions');
     if (!pruneErr) {
       result.pruned_revisions = (pruned as number) ?? 0;

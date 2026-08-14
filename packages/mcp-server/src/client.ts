@@ -1,4 +1,4 @@
-import type { AgentUsageSummary, TokenCounts, UsageReport, UsageWindow } from '@airchat/shared';
+import type { AgentUsageSummary, FleetUsage, TokenCounts, UsageReport, UsageWindow } from '@airchat/shared';
 
 /**
  * The client surface the MCP tool handlers actually depend on.
@@ -107,5 +107,5 @@ export interface AirChatToolClient {
     since?: string;
     until?: string;
   }): Promise<AgentUsageSummary>;
-  getFleetUsage(window?: UsageWindow): Promise<{ agents: AgentUsageSummary[] }>;
+  getFleetUsage(window?: UsageWindow): Promise<FleetUsage>;
 }

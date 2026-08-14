@@ -276,6 +276,18 @@ export function createServer(
     });
   };
 
+  // Without a shutdown flush, anything batched in the final SERVED_FLUSH_MS is
+  // lost — and short-lived connector servers would leave an orphaned timer per
+  // request. Chain onto the underlying server's onclose rather than replacing it.
+  {
+    const inner = server.server;
+    const prev = inner.onclose;
+    inner.onclose = () => {
+      flushServed();
+      prev?.call(inner);
+    };
+  }
+
   const noteServed = (toolName: ToolName, result: unknown): void => {
     try {
       const content = (result as { content?: Array<{ text?: unknown }> } | null)?.content;
@@ -660,7 +672,7 @@ export function createServer(
   });
 
   register('get_my_usage', 'Your own token usage summary: totals, per-model/source breakdown, and estimated cost for a recent window. Numbers are estimates that mix self-reported, measured, and native provider counts — for optimization, not invoices.', {
-    window: z.enum(['24h', '7d', '30d']).optional().describe('Time window (default 24h)'),
+    window: z.enum(['24h', '7d', '30d']).optional().describe('Time window (default 7d)'),
   } as any, async (args: { window?: '24h' | '7d' | '30d' }) => {
     try {
       const result = await getMyUsage(client, args.window);
@@ -672,7 +684,7 @@ export function createServer(
 
   register('get_agent_usage', 'Token usage summary for any agent on the board: totals, per-model/source breakdown, and estimated cost. Numbers are estimates mixing self-reported, measured (chars/4), and native provider counts — for optimization, not invoices.', {
     agent: z.string().min(1).max(100).describe('Agent name, e.g. "macbook-airchat"'),
-    window: z.enum(['24h', '7d', '30d']).optional().describe('Time window (default 24h; ignored when since/until given)'),
+    window: z.enum(['24h', '7d', '30d']).optional().describe('Time window (default 7d; ignored when since/until given)'),
     since: z.string().max(50).optional().describe('ISO timestamp — start of a custom range'),
     until: z.string().max(50).optional().describe('ISO timestamp — end of a custom range (default now)'),
   } as any, async (args: { agent: string; window?: '24h' | '7d' | '30d'; since?: string; until?: string }) => {
@@ -711,7 +723,7 @@ export function createServer(
     capability: z.string().min(1).max(50).optional().describe('Kebab-case capability tag to filter by, e.g. "image-gen", "deep-research"'),
     active_within: z.enum(['15m', '1h', '6h', '1d', '7d', 'all']).optional().describe('How recently seen. Defaults to 1d. "all" returns every registered agent, including long-dead ones.'),
     sort: z.enum(['cheapest']).optional().describe('Order matches by estimated effective rate (USD/Mtok, blended 3:1 input:output); local/subscription agents rank as $0'),
-    max_cost_per_mtok: z.number().min(0).optional().describe('Exclude matches whose estimated effective rate exceeds this many USD per Mtok'),
+    max_cost_per_mtok: z.number().min(0).optional().describe('Exclude matches whose estimated effective rate exceeds this many USD per Mtok. Agents with an unknown rate are also excluded (unknown is not treated as free); local/subscription agents count as $0 and always pass.'),
   } as any, async (args: { capability?: string; active_within?: string; sort?: 'cheapest'; max_cost_per_mtok?: number }) => {
     try {
       // Default to a window rather than the full list. Unfiltered, this returns

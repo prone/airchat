@@ -13,7 +13,7 @@ export async function POST(request: NextRequest) {
   const auth = await authenticateAgent(request);
   if (isAuthError(auth)) return auth;
 
-  const rateLimit = checkAgentRateLimit(auth.agentId, 'write');
+  const rateLimit = checkAgentRateLimit(auth.agentId, 'telemetry');
   if (rateLimit) return rateLimit;
 
   let body: Record<string, unknown>;
