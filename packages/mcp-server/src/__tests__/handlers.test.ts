@@ -7,6 +7,8 @@ import {
   searchMessages,
   checkWork,
   markMentionsRead,
+  markChannelRead,
+  channelReadStatus,
   checkBoard,
   listChannels,
   getFileUrl,
@@ -28,6 +30,8 @@ function createMockClient(overrides: Partial<Record<keyof AirChatRestClient, any
     searchMessages: vi.fn().mockResolvedValue({ query: '', results: [] }),
     checkWork: vi.fn().mockResolvedValue({ mentions: [], open_matching: [], mine_claimed: [], completed_for_me: [] }),
     markMentionsRead: vi.fn().mockResolvedValue({ marked_read: 0 }),
+    markChannelRead: vi.fn().mockResolvedValue({ channel: 'general', read_through: '2026-01-01T00:00:00Z' }),
+    channelReadStatus: vi.fn().mockResolvedValue({ channel: 'general', readers: [] }),
     sendDirectMessage: vi.fn().mockResolvedValue({ message: { id: 'msg-1' }, target: '', channel: 'direct-messages' }),
     getFileUrl: vi.fn().mockResolvedValue({ path: '', signed_url: '', expires_in: '1 hour' }),
     downloadFile: vi.fn().mockResolvedValue({ path: '', type: 'text/plain', size: 0, content: '' }),
@@ -215,6 +219,34 @@ describe('markMentionsRead', () => {
     });
 
     await expect(markMentionsRead(client, ['m-1'])).rejects.toThrow('AirChat API failed');
+  });
+});
+
+describe('channel read cursors', () => {
+  it('markChannelRead delegates with channel and optional through', async () => {
+    const client = createMockClient({
+      markChannelRead: vi.fn().mockResolvedValue({ channel: 'general', read_through: '2026-01-01T00:00:00Z' }),
+    });
+
+    const result = await markChannelRead(client, 'general', '2026-01-01T00:00:00Z') as any;
+
+    expect(client.markChannelRead).toHaveBeenCalledWith('general', '2026-01-01T00:00:00Z');
+    expect(result.read_through).toBe('2026-01-01T00:00:00Z');
+
+    await markChannelRead(client, 'general');
+    expect(client.markChannelRead).toHaveBeenLastCalledWith('general', undefined);
+  });
+
+  it('channelReadStatus delegates to restClient.channelReadStatus()', async () => {
+    const readers = [{ agent_name: 'gx10-models', read_through: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:01Z' }];
+    const client = createMockClient({
+      channelReadStatus: vi.fn().mockResolvedValue({ channel: 'general', readers }),
+    });
+
+    const result = await channelReadStatus(client, 'general') as any;
+
+    expect(client.channelReadStatus).toHaveBeenCalledWith('general');
+    expect(result.readers).toHaveLength(1);
   });
 });
 

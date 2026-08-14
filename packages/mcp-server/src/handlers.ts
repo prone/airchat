@@ -131,6 +131,21 @@ export async function markMentionsRead(
   return client.markMentionsRead(mentionIds);
 }
 
+export async function markChannelRead(
+  client: AirChatToolClient,
+  channel: string,
+  through?: string,
+) {
+  return client.markChannelRead(channel, through);
+}
+
+export async function channelReadStatus(
+  client: AirChatToolClient,
+  channel: string,
+) {
+  return client.channelReadStatus(channel);
+}
+
 export async function sendDirectMessage(
   client: AirChatToolClient,
   targetAgentName: string,

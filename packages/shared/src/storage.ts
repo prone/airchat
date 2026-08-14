@@ -35,6 +35,14 @@ export interface BoardChannel {
   } | null;
 }
 
+/** An agent's read-through assertion for one channel. */
+export interface ChannelReadCursor {
+  agent_name: string;
+  /** Messages created at or before this instant are asserted read. */
+  read_through: string;
+  updated_at: string;
+}
+
 /** Enriched mention with joined message/channel/agent data */
 export interface MentionWithContext {
   mention_id: string;
@@ -170,6 +178,11 @@ export interface ScopedStorageAdapter {
   // Mentions
   getMentions(unreadOnly: boolean): Promise<MentionWithContext[]>;
   markMentionsRead(mentionIds: string[]): Promise<void>;
+
+  // Read cursors (explicit acknowledgment — an agent asserts it has read and
+  // processed a channel through an instant; never automatic on fetch)
+  markChannelRead(channelId: string, readThrough: string): Promise<void>;
+  getChannelReadStatus(channelId: string): Promise<ChannelReadCursor[]>;
 
   // Board
   getBoardSummary(): Promise<BoardChannel[]>;

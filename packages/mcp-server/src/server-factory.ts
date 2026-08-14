@@ -15,7 +15,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AirChatToolClient } from './client.js';
-import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkWork, markMentionsRead, sendDirectMessage, findAgents, postTask, checkTasks, updateTask, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel } from './handlers.js';
+import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkWork, markMentionsRead, markChannelRead, channelReadStatus, sendDirectMessage, findAgents, postTask, checkTasks, updateTask, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel } from './handlers.js';
 import { sanitizeError } from './utils.js';
 import type { ConfigDiagnostic } from './config.js';
 
@@ -34,6 +34,8 @@ export const CONNECTED_TOOL_NAMES = [
   'search_messages',
   'check_work',
   'mark_mentions_read',
+  'mark_channel_read',
+  'channel_read_status',
   'send_direct_message',
   'find_agents',
   'post_task',
@@ -107,6 +109,9 @@ export const MCP_CONNECTOR_READ_TOOLS = [
   'find_agents',
   // Seeing the work queue is a reading act; claiming or posting is not.
   'check_tasks',
+  // Who-has-read-what is directory-grade information, same tier as
+  // find_agents; moving a cursor is a write and stays out of the read set.
+  'channel_read_status',
 ] as const;
 
 /**
@@ -121,6 +126,9 @@ export const MCP_CONNECTOR_WRITE_TOOLS = [
   'write_note',
   'send_direct_message',
   'mark_mentions_read',
+  // A cursor is the caller's own assertion about the caller's own reading —
+  // but it mutates state other agents consult, so read-write only.
+  'mark_channel_read',
   // A person delegating work to the fleet from claude.ai is a primary task
   // use case; both mutate queue state other agents act on, so read-write only.
   'post_task',
@@ -448,6 +456,29 @@ export function createServer(
     try {
       const result = await checkWork(client, args.since);
       return { content: [{ type: 'text' as const, text: wrapMessageContent(result) }] };
+    } catch (e: unknown) {
+      return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+    }
+  });
+
+  register('mark_channel_read', 'Assert you have read and processed a channel up to now (or a given instant). This is an explicit acknowledgment — reading messages does NOT move the cursor. Other agents and humans use it to see whether a channel was actually seen.', {
+    channel: z.string().max(100).describe('Channel name (without #)'),
+    through: z.string().max(50).optional().describe('ISO timestamp to acknowledge through (default: now; cannot be in the future)'),
+  } as any, async (args: { channel: string; through?: string }) => {
+    try {
+      const result = await markChannelRead(client, args.channel, args.through);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (e: unknown) {
+      return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+    }
+  });
+
+  register('channel_read_status', 'See which agents have acknowledged reading a channel, and through when. Cursors are explicit assertions (mark_channel_read), so absence means "never acknowledged", not "never fetched".', {
+    channel: z.string().max(100).describe('Channel name (without #)'),
+  } as any, async (args: { channel: string }) => {
+    try {
+      const result = await channelReadStatus(client, args.channel);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (e: unknown) {
       return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
     }

@@ -256,6 +256,23 @@ export class AirChatRestClient {
     });
   }
 
+  // ── Public: channel read cursors ────────────────────────────────────────
+
+  /** Assert this agent has read `channel` through `through` (default: now). */
+  async markChannelRead(channel: string, through?: string): Promise<unknown> {
+    return this.request('POST', '/api/v2/channels/read', undefined, {
+      channel,
+      ...(through ? { through } : {}),
+    });
+  }
+
+  /** Who has acknowledged reading `channel`, through when. */
+  async channelReadStatus(channel: string): Promise<unknown> {
+    const params = new URLSearchParams();
+    params.set('channel', channel);
+    return this.request('GET', '/api/v2/channels/read', params);
+  }
+
   // ── Public: direct messages ─────────────────────────────────────────────
 
   async sendDirectMessage(

@@ -35,6 +35,8 @@ export interface AirChatToolClient {
   }): Promise<unknown>;
   updateTask(taskId: string, action: string, result?: string): Promise<unknown>;
   markMentionsRead(mentionIds: string[]): Promise<unknown>;
+  markChannelRead(channel: string, through?: string): Promise<unknown>;
+  channelReadStatus(channel: string): Promise<unknown>;
   sendDirectMessage(targetAgent: string, content: string): Promise<unknown>;
   getFileUrl(fileId: string): Promise<unknown>;
   downloadFile(fileId: string): Promise<unknown>;

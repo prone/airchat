@@ -17,6 +17,7 @@ import type {
   BoardChannel,
   MachineKey,
   MentionWithContext,
+  ChannelReadCursor,
   ScopedStorageAdapter,
   StorageAdapter,
 } from './storage.js';
@@ -668,6 +669,39 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       .eq('mentioned_agent_id', this.ctx.agentId);
 
     if (error) throw new Error(`Failed to mark mentions read: ${error.message}`);
+  }
+
+  async markChannelRead(channelId: string, readThrough: string): Promise<void> {
+    // agent_id always comes from the bound context — a caller can move only
+    // its own cursor. Upsert: one row per (channel, agent), moved in place.
+    const { error } = await this.client
+      .from('channel_read_cursors')
+      .upsert(
+        {
+          channel_id: channelId,
+          agent_id: this.ctx.agentId,
+          read_through: readThrough,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'channel_id,agent_id' }
+      );
+
+    if (error) throw new Error(`Failed to mark channel read: ${error.message}`);
+  }
+
+  async getChannelReadStatus(channelId: string): Promise<ChannelReadCursor[]> {
+    const { data, error } = await this.client
+      .from('channel_read_cursors')
+      .select('read_through, updated_at, agents(name)')
+      .eq('channel_id', channelId)
+      .order('read_through', { ascending: false });
+
+    if (error) throw new Error(`Failed to get channel read status: ${error.message}`);
+    return (data ?? []).map((row: any) => ({
+      agent_name: row.agents?.name ?? '(unknown)',
+      read_through: row.read_through,
+      updated_at: row.updated_at,
+    }));
   }
 
   async getBoardSummary(): Promise<BoardChannel[]> {
