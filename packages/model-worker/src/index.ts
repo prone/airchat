@@ -36,7 +36,7 @@ import {
   type DiscoveredModel,
   type ModelBackend,
 } from './backends.js';
-import { parseTaskBody, shapeResult } from './task-payload.js';
+import { parseEmbedBody, parseTaskBody, shapeEmbedResult, shapeResult } from './task-payload.js';
 
 const INVENTORY_REFRESH_MS = 60 * 60 * 1000;
 const INFERENCE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -208,6 +208,15 @@ async function serveTask(client: AirChatRestClient, task: TaskRow, models: Serve
     const model = pickModel(task, models);
     if (!model) {
       result = 'ERROR: no model on this worker matches the task';
+    } else if (model.kind === 'embed') {
+      if (!model.backendRef.embed) {
+        result = `ERROR: backend ${model.backend} cannot serve embeddings`;
+      } else {
+        const req = parseEmbedBody(task.body ?? task.title);
+        const embeddings = await model.backendRef.embed(model.name, req.input);
+        result = shapeEmbedResult(model.name, embeddings);
+        console.log(`[model-worker] task ${task.id} embedded ${req.input.length} input(s) with ${model.name}`);
+      }
     } else {
       const req = parseTaskBody(task.body ?? task.title);
       const messages: ChatMessage[] = req.messages;

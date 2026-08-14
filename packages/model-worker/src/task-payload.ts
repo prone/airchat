@@ -40,6 +40,9 @@ export function parseTaskBody(body: string): ModelTaskRequest {
       if (typeof parsed.prompt === 'string' && parsed.prompt.trim()) {
         return { model, messages: [{ role: 'user', content: parsed.prompt }], options };
       }
+      // Valid JSON naming a model but no chat fields (e.g. an embed body):
+      // keep the model so routing still resolves it.
+      return { model, messages: [{ role: 'user', content: body }], options };
     } catch {
       // fall through — treat as plain prompt
     }
@@ -53,4 +56,50 @@ export const MAX_RESULT_CHARS = 30_000;
 export function shapeResult(output: string): string {
   if (output.length <= MAX_RESULT_CHARS) return output;
   return `${output.slice(0, MAX_RESULT_CHARS)}\n\n[truncated: output was ${output.length} chars]`;
+}
+
+// ── Embedding tasks ─────────────────────────────────────────────────────────
+
+export interface EmbedTaskRequest {
+  model: string | null;
+  input: string[];
+}
+
+/** Embed task body: JSON { model?, input: string | string[] }, or plain text
+ *  treated as a single input. */
+export function parseEmbedBody(body: string): EmbedTaskRequest {
+  const trimmed = body.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      const model = typeof parsed.model === 'string' ? parsed.model : null;
+      if (typeof parsed.input === 'string' && parsed.input.trim()) {
+        return { model, input: [parsed.input] };
+      }
+      if (Array.isArray(parsed.input)) {
+        const input = parsed.input.filter((i): i is string => typeof i === 'string' && i.length > 0);
+        if (input.length > 0) return { model, input };
+      }
+    } catch {
+      // fall through — treat as a single plain input
+    }
+  }
+  return { model: null, input: [body] };
+}
+
+/**
+ * Vectors serialize large (a 768-dim float vector is ~7KB of JSON), and a
+ * truncated JSON array is worse than no answer — corrupt data that parses
+ * nowhere. Until file-upload overflow exists, refuse oversized batches with
+ * advice instead of shipping garbage.
+ */
+export function shapeEmbedResult(model: string, embeddings: number[][]): string {
+  const payload = JSON.stringify({
+    model,
+    count: embeddings.length,
+    dimensions: embeddings[0]?.length ?? 0,
+    embeddings,
+  });
+  if (payload.length <= MAX_RESULT_CHARS) return payload;
+  return `ERROR: embedding result is ${payload.length} chars, over the ${MAX_RESULT_CHARS} task-result limit — split the batch into smaller tasks (this one had ${embeddings.length} input(s) of ${embeddings[0]?.length ?? 0} dimensions)`;
 }

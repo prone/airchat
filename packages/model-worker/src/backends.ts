@@ -36,6 +36,9 @@ export interface ModelBackend {
   readonly name: string;
   discover(): Promise<DiscoveredModel[]>;
   chat(model: string, messages: ChatMessage[], options?: Record<string, unknown>): Promise<string>;
+  /** Embedding support is per-backend; absence means embed-* tasks fail
+   *  with a clear error rather than a nonsense chat completion. */
+  embed?(model: string, input: string[]): Promise<number[][]>;
 }
 
 const PRIVATE_HOST_RE =
@@ -109,6 +112,22 @@ export class OllamaBackend implements ModelBackend {
       throw new Error('Ollama response had no message content');
     }
     return data.message.content;
+  }
+
+  async embed(model: string, input: string[]): Promise<number[][]> {
+    const data = (await fetchJson(
+      `${this.baseUrl}/api/embed`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, input }),
+      },
+      this.inferenceTimeoutMs
+    )) as { embeddings?: number[][] };
+    if (!Array.isArray(data.embeddings)) {
+      throw new Error('Ollama embed response had no embeddings');
+    }
+    return data.embeddings;
   }
 }
 
@@ -238,6 +257,25 @@ export class OpenAICompatBackend implements ModelBackend {
       location,
       endpoint: this.baseUrl,
     }));
+  }
+
+  async embed(model: string, input: string[]): Promise<number[][]> {
+    const data = (await fetchJson(
+      `${this.baseUrl}/embeddings`,
+      {
+        method: 'POST',
+        headers: this.headers(),
+        body: JSON.stringify({ model, input }),
+      },
+      this.inferenceTimeoutMs
+    )) as { data?: Array<{ embedding?: number[] }> };
+    if (!Array.isArray(data.data)) {
+      throw new Error(`${this.name} embeddings response had no data`);
+    }
+    return data.data.map((d) => {
+      if (!Array.isArray(d.embedding)) throw new Error(`${this.name} embeddings entry had no vector`);
+      return d.embedding;
+    });
   }
 
   async chat(model: string, messages: ChatMessage[], options?: Record<string, unknown>): Promise<string> {

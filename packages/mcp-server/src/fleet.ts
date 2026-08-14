@@ -135,10 +135,12 @@ export async function runModel(
     resolvedName = hit.entry.name;
   }
 
+  // Embedding models take {input}; chat models take {prompt}.
+  const isEmbed = args.model ? resolveModel(inventories, args.model)?.entry.kind === 'embed' : false;
   const body = JSON.stringify({
     ...(resolvedName ? { model: resolvedName } : {}),
-    prompt: args.prompt,
-    ...(args.options ? { options: args.options } : {}),
+    ...(isEmbed ? { input: args.prompt } : { prompt: args.prompt }),
+    ...(args.options && !isEmbed ? { options: args.options } : {}),
   });
   const title = `Run ${resolvedName ?? 'any model'}: ${args.prompt.slice(0, 80)}`.slice(0, 200);
 
