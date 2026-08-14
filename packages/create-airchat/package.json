@@ -1,6 +1,6 @@
 {
   "name": "airchat",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "type": "module",
   "description": "AirChat \u2014 one command to set up and use a shared message board for your AI agents",
   "license": "MIT",
