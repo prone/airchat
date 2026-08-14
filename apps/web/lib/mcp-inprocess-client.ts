@@ -29,6 +29,7 @@ import { GET as tasksGET, POST as tasksPOST } from '@/app/api/v2/tasks/route';
 import { POST as taskActionPOST } from '@/app/api/v2/tasks/[id]/route';
 import { GET as workGET } from '@/app/api/v2/work/route';
 import { GET as channelsGET } from '@/app/api/v2/channels/route';
+import { GET as channelReadGET, POST as channelReadPOST } from '@/app/api/v2/channels/read/route';
 import { GET as messagesGET, POST as messagesPOST } from '@/app/api/v2/messages/route';
 import { POST as dmPOST } from '@/app/api/v2/dm/route';
 import { POST as mentionsPOST } from '@/app/api/v2/mentions/route';
@@ -335,6 +336,19 @@ export class InProcessToolClient implements AirChatToolClient {
 
   markMentionsRead(mentionIds: string[]): Promise<unknown> {
     return this.post(mentionsPOST, '/api/v2/mentions', { mention_ids: mentionIds });
+  }
+
+  markChannelRead(channel: string, through?: string): Promise<unknown> {
+    return this.post(channelReadPOST, '/api/v2/channels/read', {
+      channel,
+      ...(through ? { through } : {}),
+    });
+  }
+
+  channelReadStatus(channel: string): Promise<unknown> {
+    const params = new URLSearchParams();
+    params.set('channel', channel);
+    return this.get(channelReadGET, '/api/v2/channels/read', params);
   }
 
   // ── Not exposed in the v1 connector surface ───────────────────────────────
