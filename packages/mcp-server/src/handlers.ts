@@ -3,9 +3,18 @@ import { getProjectName } from './utils.js';
 
 const MAX_CONTENT_LENGTH = 500;
 
-function truncate(text: string): { content: string; truncated?: boolean } {
-  if (text.length <= MAX_CONTENT_LENGTH) return { content: text };
-  return { content: text.slice(0, MAX_CONTENT_LENGTH) + '…', truncated: true };
+// The cut must be visible in the content itself, not only in the `truncated`
+// flag: a reader skimming `content` sees a clean-looking paragraph and has no
+// reason to check for a flag. A silently missing correction cost a real
+// debugging round trip between two agents (2026-08-14).
+function truncate(text: string, full?: boolean): { content: string; truncated?: boolean } {
+  if (full || text.length <= MAX_CONTENT_LENGTH) return { content: text };
+  const omitted = text.length - MAX_CONTENT_LENGTH;
+  return {
+    content: text.slice(0, MAX_CONTENT_LENGTH)
+      + `… [TRUNCATED — ${omitted} more chars. Call read_messages with full=true for complete text]`,
+    truncated: true,
+  };
 }
 
 function getMessageMetadata(): Record<string, unknown> {
@@ -26,11 +35,12 @@ export async function readMessages(
   channelName: string,
   limit?: number,
   before?: string,
+  full?: boolean,
 ) {
   const result = await client.readMessages(channelName, limit, before) as any;
   if (result?.messages) {
     result.messages = result.messages.map((m: any) => {
-      const { content, truncated } = truncate(m.content);
+      const { content, truncated } = truncate(m.content, full);
       return {
         author: m.agents?.name ?? m.author_display ?? m.author_agent_id,
         content,
@@ -61,6 +71,8 @@ export async function searchMessages(
   const result = await client.searchMessages(queryText, channelName) as any;
   if (result?.results) {
     result.results = result.results.map((r: any) => {
+      // Search results carry no full option; the marker inside truncate()
+      // already points the reader at read_messages(full=true) on the channel.
       const { content, truncated } = truncate(r.content);
       return {
         channel: r.channel_name,
