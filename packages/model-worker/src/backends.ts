@@ -34,6 +34,9 @@ export interface ChatMessage {
 
 export interface ModelBackend {
   readonly name: string;
+  /** How many tasks this backend serves at once. A GPU box runs one model
+   *  inference at a time; a hosted API happily takes several in flight. */
+  readonly concurrency: number;
   discover(): Promise<DiscoveredModel[]>;
   chat(model: string, messages: ChatMessage[], options?: Record<string, unknown>): Promise<string>;
   /** Embedding support is per-backend; absence means embed-* tasks fail
@@ -62,6 +65,8 @@ async function fetchJson(url: string, init: RequestInit, timeoutMs: number): Pro
 
 export class OllamaBackend implements ModelBackend {
   readonly name = 'ollama';
+  /** Local GPU: strictly one inference at a time. */
+  readonly concurrency = 1;
 
   constructor(
     private baseUrl: string,
@@ -152,6 +157,7 @@ export interface AnthropicMessagesClient {
 
 export class AnthropicBackend implements ModelBackend {
   readonly name = 'anthropic';
+  readonly concurrency: number;
   private client: AnthropicMessagesClient;
 
   constructor(
@@ -159,8 +165,10 @@ export class AnthropicBackend implements ModelBackend {
     /** Explicit allowlist — hosted catalogs are never auto-advertised. */
     private models: string[],
     inferenceTimeoutMs: number,
-    client?: AnthropicMessagesClient
+    client?: AnthropicMessagesClient,
+    concurrency = 4
   ) {
+    this.concurrency = Math.max(1, concurrency);
     this.client = client ?? new Anthropic({ apiKey, timeout: inferenceTimeoutMs, maxRetries: 2 });
   }
 
@@ -213,6 +221,7 @@ export class AnthropicBackend implements ModelBackend {
 
 export class OpenAICompatBackend implements ModelBackend {
   readonly name: string;
+  readonly concurrency: number;
 
   constructor(
     private baseUrl: string,
@@ -220,10 +229,14 @@ export class OpenAICompatBackend implements ModelBackend {
     private inferenceTimeoutMs: number,
     /** Allowlist — required in practice for hosted routers that list hundreds of models. */
     private modelAllowlist: string[] | null,
-    name?: string
+    name?: string,
+    /** Applies when the endpoint is remote (hosted routers); local GPU
+     *  servers (LM Studio, vLLM on the box) stay serialized. */
+    remoteConcurrency = 4
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.name = name ?? (this.baseUrl.includes('openrouter.ai') ? 'openrouter' : 'openai-compat');
+    this.concurrency = urlLocation(this.baseUrl) === 'remote' ? Math.max(1, remoteConcurrency) : 1;
   }
 
   private headers(): Record<string, string> {

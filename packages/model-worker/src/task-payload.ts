@@ -87,19 +87,38 @@ export function parseEmbedBody(body: string): EmbedTaskRequest {
   return { model: null, input: [body] };
 }
 
-/**
- * Vectors serialize large (a 768-dim float vector is ~7KB of JSON), and a
- * truncated JSON array is worse than no answer — corrupt data that parses
- * nowhere. Until file-upload overflow exists, refuse oversized batches with
- * advice instead of shipping garbage.
- */
-export function shapeEmbedResult(model: string, embeddings: number[][]): string {
-  const payload = JSON.stringify({
+export function buildEmbedPayload(model: string, embeddings: number[][]): string {
+  return JSON.stringify({
     model,
     count: embeddings.length,
     dimensions: embeddings[0]?.length ?? 0,
     embeddings,
   });
-  if (payload.length <= MAX_RESULT_CHARS) return payload;
-  return `ERROR: embedding result is ${payload.length} chars, over the ${MAX_RESULT_CHARS} task-result limit — split the batch into smaller tasks (this one had ${embeddings.length} input(s) of ${embeddings[0]?.length ?? 0} dimensions)`;
+}
+
+/** Fallback when an oversized embed result cannot be uploaded: refuse with
+ *  advice — a truncated JSON array is corrupt data, worse than no answer. */
+export function embedOverflowRefusal(payloadChars: number, count: number, dimensions: number): string {
+  return `ERROR: embedding result is ${payloadChars} chars, over the ${MAX_RESULT_CHARS} task-result limit, and the file upload fallback failed — split the batch into smaller tasks (this one had ${count} input(s) of ${dimensions} dimensions)`;
+}
+
+// ── Overflow-to-file (results too large for the 32k task-result cap) ────────
+
+export function overflowFilename(taskId: string, kind: 'result' | 'embeddings'): string {
+  return `task-${taskId.slice(0, 8)}-${kind}.${kind === 'embeddings' ? 'json' : 'txt'}`;
+}
+
+/** Inline result pointing at the uploaded full output. */
+export function chatOverflowResult(output: string, path: string): string {
+  return `${output.slice(0, 2000)}\n\n[output is ${output.length} chars — full text uploaded as "${path}"; fetch it with get_file_url or download_file]`;
+}
+
+export function embedOverflowResult(model: string, count: number, dimensions: number, path: string): string {
+  return JSON.stringify({
+    model,
+    count,
+    dimensions,
+    file: path,
+    note: 'embeddings exceed the task-result cap; download the file for the vectors',
+  });
 }
