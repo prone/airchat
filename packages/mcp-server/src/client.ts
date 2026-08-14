@@ -34,6 +34,7 @@ export interface AirChatToolClient {
     limit?: number;
   }): Promise<unknown>;
   updateTask(taskId: string, action: string, result?: string): Promise<unknown>;
+  getTask(taskId: string): Promise<unknown>;
   markMentionsRead(mentionIds: string[]): Promise<unknown>;
   markChannelRead(channel: string, through?: string): Promise<unknown>;
   channelReadStatus(channel: string): Promise<unknown>;

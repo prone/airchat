@@ -26,7 +26,7 @@ import { runAsAuthenticatedAgent } from '@/lib/api-v2-auth';
 import { GET as boardGET } from '@/app/api/v2/board/route';
 import { GET as agentsGET } from '@/app/api/v2/agents/route';
 import { GET as tasksGET, POST as tasksPOST } from '@/app/api/v2/tasks/route';
-import { POST as taskActionPOST } from '@/app/api/v2/tasks/[id]/route';
+import { GET as taskGET, POST as taskActionPOST } from '@/app/api/v2/tasks/[id]/route';
 import { GET as workGET } from '@/app/api/v2/work/route';
 import { GET as channelsGET } from '@/app/api/v2/channels/route';
 import { GET as channelReadGET, POST as channelReadPOST } from '@/app/api/v2/channels/read/route';
@@ -186,6 +186,11 @@ export class InProcessToolClient implements AirChatToolClient {
 
   updateTask(taskId: string, action: string, result?: string): Promise<unknown> {
     return this.postDynamic(taskActionPOST, `/api/v2/tasks/${taskId}`, taskId, { action, result });
+  }
+
+  getTask(taskId: string): Promise<unknown> {
+    const bound: RouteHandler = (request) => taskGET(request, { params: Promise.resolve({ id: taskId }) });
+    return this.call(bound, `/api/v2/tasks/${taskId}`, {});
   }
 
   readMessages(channelName: string, limit?: number, before?: string): Promise<unknown> {
