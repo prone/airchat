@@ -16,6 +16,9 @@
  *                                e.g. https://openrouter.ai/api/v1 — optional
  *   MODEL_WORKER_OPENAI_KEY      bearer key for that backend — optional
  *   MODEL_WORKER_OPENAI_MODELS   comma allowlist (required for hosted routers)
+ *   MODEL_WORKER_ANTHROPIC_KEY   Anthropic API key — enables the Anthropic
+ *                                backend (hosted Claude models, official SDK)
+ *   MODEL_WORKER_ANTHROPIC_MODELS comma allowlist, default claude-haiku-4-5
  *   MODEL_WORKER_POLL_MS         default 20000
  *   MODEL_WORKER_SUFFIX          agent name suffix, default "models"
  */
@@ -26,6 +29,7 @@ import { homedir } from 'os';
 import { AirChatRestClient } from '@airchat/shared/rest-client';
 import { validateCard, modelToCapability, type AgentCard } from '@airchat/shared';
 import {
+  AnthropicBackend,
   OllamaBackend,
   OpenAICompatBackend,
   type ChatMessage,
@@ -51,6 +55,8 @@ interface WorkerConfig {
   openaiUrl: string | null;
   openaiKey: string | null;
   openaiModels: string[] | null;
+  anthropicKey: string | null;
+  anthropicModels: string[];
 }
 
 function loadConfig(): WorkerConfig {
@@ -98,6 +104,9 @@ function loadConfig(): WorkerConfig {
     openaiUrl: get('MODEL_WORKER_OPENAI_URL') ?? null,
     openaiKey: get('MODEL_WORKER_OPENAI_KEY') ?? null,
     openaiModels: openaiModels ? openaiModels.split(',').map((s) => s.trim()).filter(Boolean) : null,
+    anthropicKey: get('MODEL_WORKER_ANTHROPIC_KEY') ?? null,
+    anthropicModels: (get('MODEL_WORKER_ANTHROPIC_MODELS') ?? 'claude-haiku-4-5')
+      .split(',').map((s) => s.trim()).filter(Boolean),
   };
 }
 
@@ -238,6 +247,11 @@ async function main(): Promise<void> {
       config.openaiUrl, config.openaiKey, INFERENCE_TIMEOUT_MS, config.openaiModels
     ));
   }
+  if (config.anthropicKey) {
+    backends.push(new AnthropicBackend(
+      config.anthropicKey, config.anthropicModels, INFERENCE_TIMEOUT_MS
+    ));
+  }
   if (backends.length === 0) {
     console.error('[model-worker] no backends configured');
     process.exit(1);
@@ -276,6 +290,7 @@ async function main(): Promise<void> {
           backend: m.backend,
           location: m.location,
           endpoint: m.endpoint,
+          ...(m.protocol ? { protocol: m.protocol } : {}),
           ...(m.sizeBytes ? { size_bytes: m.sizeBytes } : {}),
           ...(m.quantization ? { quantization: m.quantization } : {}),
         })),

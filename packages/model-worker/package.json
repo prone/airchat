@@ -7,14 +7,17 @@
   "bin": "./dist/index.js",
   "scripts": {
     "build": "tsc",
+    "build:bundle": "node build-bundle.mjs",
     "dev": "tsc --watch",
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@airchat/shared": "*"
+    "@airchat/shared": "*",
+    "@anthropic-ai/sdk": "^0.115.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "esbuild": "^0.28.1",
     "typescript": "^6.0.0"
   }
 }
