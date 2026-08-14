@@ -79,8 +79,12 @@ export async function POST(
 
       case 'complete': {
         const result = body.result as string;
-        // Post the result to the channel first so the task can link to it.
-        let resultMessageId: string | undefined;
+        // Store FIRST: the guarded UPDATE is what decides whether this worker
+        // still owns the task — a janitor release (stale-claim timeout) can
+        // strip ownership between the precondition read and here. Announcing
+        // before the guard published false "done" messages for completions
+        // that then 409'd with the result never stored.
+        const done = await scoped.completeTask(id, result);
         try {
           const ch = await scoped.findChannelById(task.channel_id);
           if (ch) {
@@ -89,12 +93,15 @@ export async function POST(
               `[task ${task.id.slice(0, 8)} done] ${task.title}\n${result}`,
               { task_id: task.id, task_event: 'completed' },
             );
-            resultMessageId = (posted as { id?: string })?.id;
+            const resultMessageId = (posted as { id?: string })?.id;
+            if (resultMessageId) {
+              await scoped.linkTaskResultMessage(id, resultMessageId);
+              done.result_message_id = resultMessageId;
+            }
           }
         } catch {
-          // The completion must not fail because the announcement did.
+          // The stored completion must not fail because the announcement did.
         }
-        const done = await scoped.completeTask(id, result, resultMessageId);
         return jsonResponse({ task: done });
       }
 
