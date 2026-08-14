@@ -33,6 +33,10 @@ export interface Task {
   created_at: string;
   claimed_at: string | null;
   completed_at: string | null;
+  /** Channel name joined onto listTasks rows (`channels:channel_id(name)`)
+   *  so consumers can act in the task's channel without a membership-scoped
+   *  channel lookup. Absent on rows fetched without the join. */
+  channels?: { name: string } | null;
 }
 
 const MAX_TITLE = 200;

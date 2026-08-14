@@ -390,9 +390,12 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     channelId?: string;
     limit?: number;
   }): Promise<Task[]> {
+    // The channel-name join lets workers act in a task's channel (overflow
+    // uploads) without a channel listing — GET /api/v2/channels only returns
+    // channels the agent is a member of, while tasks match fleet-wide.
     let query = this.client
       .from('tasks')
-      .select('*')
+      .select('*, channels:channel_id(name)')
       .order('created_at', { ascending: false })
       .limit(Math.min(opts.limit ?? 50, 200));
 
