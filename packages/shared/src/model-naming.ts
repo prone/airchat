@@ -33,3 +33,20 @@ export function modelToCapability(kind: ModelKind, model: string): string | null
 export function inferModelKind(model: string): ModelKind {
   return /embed/i.test(model) ? 'embed' : 'llm';
 }
+
+/**
+ * Does a served model match a user-supplied reference? Accepts the exact
+ * registry name, the capability tag, or anything that normalizes to the same
+ * name — so "nomic-embed-text" matches the registry's
+ * "nomic-embed-text:latest" and "QWEN2.5-CODER:32B" matches
+ * "qwen2.5-coder:32b".
+ */
+export function modelMatches(
+  entry: { name: string; capability: string },
+  wanted: string,
+): boolean {
+  const w = wanted.trim();
+  return entry.name === w
+    || entry.capability === w
+    || normalizeModelName(entry.name) === normalizeModelName(w);
+}
