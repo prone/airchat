@@ -7,6 +7,8 @@ import {
   ALL_TOOL_NAMES,
   BASE_TOOL_NAMES,
   CONNECTED_TOOL_NAMES,
+  MCP_CONNECTOR_READ_TOOLS,
+  MCP_CONNECTOR_WRITE_TOOLS,
 } from '../server-factory.js';
 
 /**
@@ -41,6 +43,22 @@ function createMockClient(overrides: Record<string, unknown> = {}): AirChatRestC
     summarizeChannel: vi.fn().mockResolvedValue({ slug: 'channel-summary' }),
     getBacklinks: vi.fn().mockResolvedValue({ notes: [], messages: [] }),
     promoteThreadToNote: vi.fn().mockResolvedValue({ slug: 'n' }),
+    reportUsage: vi.fn().mockResolvedValue({
+      delta: { input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_creation_tokens: 0 },
+      restarted: false,
+    }),
+    reportServed: vi.fn().mockResolvedValue(undefined),
+    getUsage: vi.fn().mockResolvedValue({
+      agent: 'test-agent',
+      plan: null,
+      since: '2026-01-01T00:00:00Z',
+      until: '2026-01-02T00:00:00Z',
+      totals: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0 },
+      est_cost_usd: null,
+      breakdown: [],
+      accuracy: 'estimated',
+    }),
+    getFleetUsage: vi.fn().mockResolvedValue({ agents: [] }),
     ...overrides,
   } as unknown as AirChatRestClient;
 }
@@ -83,10 +101,17 @@ describe('createServer — construction', () => {
     expect(() => createServer(createMockClient())).not.toThrow();
   });
 
-  it('registers all 29 tools when a client is supplied', async () => {
+  it('registers all 32 tools when a client is supplied', async () => {
     const tools = await listTools(createServer(createMockClient()));
-    expect(tools).toHaveLength(29);
+    expect(tools).toHaveLength(32);
     expect(tools.map(t => t.name).sort()).toEqual([...ALL_TOOL_NAMES].sort());
+  });
+
+  it('the stdio surface includes the usage tools', async () => {
+    const names = (await listTools(createServer(createMockClient()))).map(t => t.name);
+    expect(names).toContain('report_token_usage');
+    expect(names).toContain('get_my_usage');
+    expect(names).toContain('get_agent_usage');
   });
 
   it('ALL_TOOL_NAMES has no duplicates and is exactly base + connected', () => {
@@ -306,6 +331,205 @@ describe('createServer — unknown arguments', () => {
     });
     expect(isError).toBe(true);
     expect(readNote).not.toHaveBeenCalled();
+  });
+});
+
+describe('createServer — connector usage-tool scoping', () => {
+  it('the read scope carries the two usage read tools but not report_token_usage', async () => {
+    expect(MCP_CONNECTOR_READ_TOOLS).toContain('get_my_usage');
+    expect(MCP_CONNECTOR_READ_TOOLS).toContain('get_agent_usage');
+    expect(MCP_CONNECTOR_READ_TOOLS).not.toContain('report_token_usage');
+    expect(MCP_CONNECTOR_WRITE_TOOLS).toContain('report_token_usage');
+
+    const tools = await listTools(createServer(createMockClient(), { tools: MCP_CONNECTOR_READ_TOOLS }));
+    const names = tools.map(t => t.name);
+    expect(names).toContain('get_my_usage');
+    expect(names).toContain('get_agent_usage');
+    expect(names).not.toContain('report_token_usage');
+  });
+});
+
+describe('createServer — token usage tools', () => {
+  it('report_token_usage forwards cumulative counters and returns delta + restarted + the estimate reminder', async () => {
+    const reportUsage = vi.fn().mockResolvedValue({
+      delta: { input_tokens: 250, output_tokens: 40, cache_read_tokens: 10, cache_creation_tokens: 0 },
+      restarted: false,
+    });
+    const server = createServer(createMockClient({ reportUsage }));
+    const { text, isError } = await callTool(server, 'report_token_usage', {
+      session_id: 'sess-1',
+      model: 'claude-sonnet-4-5',
+      input_tokens: 1000,
+      output_tokens: 200,
+      cache_read_tokens: 10,
+    });
+    expect(isError).toBe(false);
+    // An omitted cache counter passes through as undefined — never 0, which
+    // would look like a drop below the server's stored cursor (restart).
+    expect(reportUsage).toHaveBeenCalledWith({
+      session_id: 'sess-1',
+      model: 'claude-sonnet-4-5',
+      input_tokens: 1000,
+      output_tokens: 200,
+      cache_read_tokens: 10,
+      cache_creation_tokens: undefined,
+    });
+    expect(text).toContain('"restarted": false');
+    expect(text).toContain('"input_tokens": 250');
+    expect(text).toContain('estimates');
+  });
+
+  it('report_token_usage description states counters are cumulative', async () => {
+    const tools = await listTools(createServer(createMockClient()));
+    const tool = tools.find(t => t.name === 'report_token_usage');
+    expect(tool?.description).toContain('CUMULATIVE');
+    expect(tool?.description).toContain('never per-call deltas');
+  });
+
+  it('rejects negative, non-integer, and absurd token counts before the client is called', async () => {
+    for (const bad of [-1, 1.5, 1e13]) {
+      const reportUsage = vi.fn();
+      const server = createServer(createMockClient({ reportUsage }));
+      const { isError } = await callTool(server, 'report_token_usage', {
+        session_id: 's',
+        model: 'm',
+        input_tokens: bad,
+        output_tokens: 0,
+      });
+      expect(isError, `count ${bad} was accepted`).toBe(true);
+      expect(reportUsage).not.toHaveBeenCalled();
+    }
+  });
+
+  it('get_my_usage asks for the caller\'s own summary', async () => {
+    const getUsage = vi.fn().mockResolvedValue({ agent: 'test-agent', accuracy: 'estimated' });
+    const server = createServer(createMockClient({ getUsage }));
+    const { isError } = await callTool(server, 'get_my_usage', { window: '7d' });
+    expect(isError).toBe(false);
+    expect(getUsage).toHaveBeenCalledWith({ window: '7d' });
+  });
+
+  it('get_agent_usage passes agent and range through', async () => {
+    const getUsage = vi.fn().mockResolvedValue({ agent: 'peer', accuracy: 'estimated' });
+    const server = createServer(createMockClient({ getUsage }));
+    const { isError } = await callTool(server, 'get_agent_usage', {
+      agent: 'peer',
+      since: '2026-08-01T00:00:00Z',
+      until: '2026-08-10T00:00:00Z',
+    });
+    expect(isError).toBe(false);
+    expect(getUsage).toHaveBeenCalledWith({
+      agent: 'peer',
+      window: undefined,
+      since: '2026-08-01T00:00:00Z',
+      until: '2026-08-10T00:00:00Z',
+    });
+  });
+
+  it('find_agents forwards cost-aware routing options', async () => {
+    const listAgents = vi.fn().mockResolvedValue({ agents: [] });
+    const server = createServer(createMockClient({ listAgents }));
+    const { isError } = await callTool(server, 'find_agents', {
+      capability: 'coding',
+      sort: 'cheapest',
+      max_cost_per_mtok: 5,
+    });
+    expect(isError).toBe(false);
+    expect(listAgents).toHaveBeenCalledWith('coding', '1d', { sort: 'cheapest', max_cost_per_mtok: 5 });
+  });
+});
+
+/** Connect once and run several tool calls against the same server instance. */
+async function withSession(
+  server: ReturnType<typeof createServer>,
+  fn: (call: (name: string, args?: Record<string, unknown>) => Promise<unknown>) => Promise<void>,
+) {
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test', version: '0.0.0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  try {
+    await fn((name, args = {}) => client.callTool({ name, arguments: args }));
+  } finally {
+    await client.close();
+  }
+}
+
+describe('createServer — served-token measurement', () => {
+  it('flushes once a response pushes the batch past the token threshold', async () => {
+    // ~30k chars of JSON ≈ 7.5k estimated tokens — crosses 5000 in one call.
+    const checkBoard = vi.fn().mockResolvedValue({ blob: 'x'.repeat(30_000) });
+    const reportServed = vi.fn().mockResolvedValue(undefined);
+    const server = createServer(createMockClient({ checkBoard, reportServed }));
+
+    const { isError } = await callTool(server, 'check_board');
+    expect(isError).toBe(false);
+    expect(reportServed).toHaveBeenCalledTimes(1);
+    const payload = reportServed.mock.calls[0][0] as {
+      tokens: number;
+      session_id?: string;
+      tools?: Record<string, number>;
+    };
+    expect(payload.tokens).toBeGreaterThanOrEqual(5000);
+    expect(typeof payload.session_id).toBe('string');
+    expect(payload.tools?.check_board).toBe(payload.tokens);
+  });
+
+  it('accumulates across calls and flushes only when the threshold is crossed', async () => {
+    // ~12k chars ≈ 3k tokens per call: below the threshold alone, above it together.
+    const checkBoard = vi.fn().mockResolvedValue({ blob: 'x'.repeat(12_000) });
+    const reportServed = vi.fn().mockResolvedValue(undefined);
+    const server = createServer(createMockClient({ checkBoard, reportServed }));
+
+    await withSession(server, async (call) => {
+      await call('check_board');
+      expect(reportServed).not.toHaveBeenCalled();
+      await call('check_board');
+      expect(reportServed).toHaveBeenCalledTimes(1);
+    });
+
+    const payload = reportServed.mock.calls[0][0] as { tokens: number; tools?: Record<string, number> };
+    expect(payload.tokens).toBeGreaterThanOrEqual(5000);
+    expect(payload.tools?.check_board).toBe(payload.tokens);
+  });
+
+  it('flushes a below-threshold batch when the server closes', async () => {
+    // ~12k chars ≈ 3k tokens: below the flush threshold, so only the close
+    // hook can get it out before the process ends.
+    const checkBoard = vi.fn().mockResolvedValue({ blob: 'x'.repeat(12_000) });
+    const reportServed = vi.fn().mockResolvedValue(undefined);
+    const server = createServer(createMockClient({ checkBoard, reportServed }));
+
+    await withSession(server, async (call) => {
+      await call('check_board');
+      expect(reportServed).not.toHaveBeenCalled();
+    });
+    await server.close();
+
+    expect(reportServed).toHaveBeenCalledTimes(1);
+    const payload = reportServed.mock.calls[0][0] as { tokens: number; tools?: Record<string, number> };
+    expect(payload.tokens).toBeGreaterThan(0);
+    expect(payload.tools?.check_board).toBe(payload.tokens);
+  });
+
+  it('a failing reportServed never fails the tool response', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const checkBoard = vi.fn().mockResolvedValue({ blob: 'x'.repeat(30_000) });
+      const reportServed = vi.fn().mockRejectedValue(new Error('usage endpoint down'));
+      const server = createServer(createMockClient({ checkBoard, reportServed }));
+      const { isError, text } = await callTool(server, 'check_board');
+      expect(isError).toBe(false);
+      expect(text).toContain('xxxx');
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('does not measure when the client has no reportServed', async () => {
+    const checkBoard = vi.fn().mockResolvedValue({ blob: 'x'.repeat(30_000) });
+    const mock = createMockClient({ checkBoard, reportServed: undefined });
+    const { isError } = await callTool(createServer(mock), 'check_board');
+    expect(isError).toBe(false);
   });
 });
 

@@ -1,3 +1,5 @@
+import type { AgentUsageSummary, FleetUsage, TokenCounts, UsageReport, UsageWindow } from '@airchat/shared';
+
 /**
  * The client surface the MCP tool handlers actually depend on.
  *
@@ -9,7 +11,9 @@
  * Every method returns `unknown` because the handlers are pass-through: the
  * REST layer defines these shapes and the handlers reshape a few of them.
  * Widening to a concrete type here would duplicate the API contract in a second
- * place and let the two drift.
+ * place and let the two drift. The usage methods are the exception: their
+ * shapes live in @airchat/shared (the same module both implementations build
+ * on), so naming them here duplicates nothing.
  */
 export interface AirChatToolClient {
   checkBoard(): Promise<unknown>;
@@ -23,7 +27,11 @@ export interface AirChatToolClient {
   ): Promise<unknown>;
   searchMessages(query: string, channel?: string): Promise<unknown>;
   checkWork(since?: string): Promise<unknown>;
-  listAgents(capability?: string, activeWithin?: string): Promise<unknown>;
+  listAgents(
+    capability?: string,
+    activeWithin?: string,
+    opts?: { sort?: 'cheapest'; max_cost_per_mtok?: number },
+  ): Promise<unknown>;
   postTask(channel: string, title: string, body?: string, capabilityTags?: string[]): Promise<unknown>;
   listTasks(opts?: {
     status?: string;
@@ -33,7 +41,12 @@ export interface AirChatToolClient {
     forMe?: boolean;
     limit?: number;
   }): Promise<unknown>;
-  updateTask(taskId: string, action: string, result?: string): Promise<unknown>;
+  updateTask(
+    taskId: string,
+    action: string,
+    result?: string,
+    usage?: { model: string } & TokenCounts,
+  ): Promise<unknown>;
   getTask(taskId: string): Promise<unknown>;
   markMentionsRead(mentionIds: string[]): Promise<unknown>;
   markChannelRead(channel: string, through?: string): Promise<unknown>;
@@ -77,4 +90,22 @@ export interface AirChatToolClient {
     windowDays?: number,
     kind?: 'activity' | 'project',
   ): Promise<unknown>;
+  /** Cumulative per-session counters in, recorded delta out. */
+  reportUsage(report: UsageReport): Promise<{ delta: TokenCounts; restarted: boolean }>;
+  /**
+   * Best-effort served-token telemetry (never throws). Optional: the
+   * server-factory only measures tool responses when the client provides it.
+   */
+  reportServed?(payload: {
+    tokens: number;
+    session_id?: string;
+    tools?: Record<string, number>;
+  }): Promise<void>;
+  getUsage(params: {
+    agent?: string;
+    window?: UsageWindow;
+    since?: string;
+    until?: string;
+  }): Promise<AgentUsageSummary>;
+  getFleetUsage(window?: UsageWindow): Promise<FleetUsage>;
 }

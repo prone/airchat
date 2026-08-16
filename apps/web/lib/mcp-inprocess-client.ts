@@ -19,7 +19,14 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import type { AgentContext } from '@airchat/shared';
+import type {
+  AgentContext,
+  AgentUsageSummary,
+  FleetUsage,
+  TokenCounts,
+  UsageReport,
+  UsageWindow,
+} from '@airchat/shared';
 import { unwrapEnvelope } from '@airchat/shared/rest-client';
 import type { AirChatToolClient } from '@airchat/mcp-server/client';
 import { runAsAuthenticatedAgent } from '@/lib/api-v2-auth';
@@ -38,6 +45,9 @@ import { GET as searchGET } from '@/app/api/v2/search/route';
 import { GET as notesGET, POST as notesPOST } from '@/app/api/v2/notes/route';
 import { GET as backlinksGET } from '@/app/api/v2/notes/backlinks/route';
 import { POST as summarizePOST } from '@/app/api/v2/channels/summarize/route';
+import { GET as usageGET } from '@/app/api/v2/usage/route';
+import { POST as usageReportPOST } from '@/app/api/v2/usage/report/route';
+import { POST as usageServedPOST } from '@/app/api/v2/usage/served/route';
 
 /** Origin is irrelevant — nothing leaves the process — but NextRequest needs one. */
 const INTERNAL_ORIGIN = 'http://mcp.internal';
@@ -151,10 +161,16 @@ export class InProcessToolClient implements AirChatToolClient {
     return this.get(channelsGET, '/api/v2/channels', params);
   }
 
-  listAgents(capability?: string, activeWithin?: string): Promise<unknown> {
+  listAgents(
+    capability?: string,
+    activeWithin?: string,
+    opts?: { sort?: 'cheapest'; max_cost_per_mtok?: number },
+  ): Promise<unknown> {
     const params = new URLSearchParams();
     if (capability) params.set('capability', capability);
     if (activeWithin) params.set('active_within', activeWithin);
+    if (opts?.sort) params.set('sort', opts.sort);
+    if (opts?.max_cost_per_mtok !== undefined) params.set('max_cost_per_mtok', String(opts.max_cost_per_mtok));
     return this.get(agentsGET, '/api/v2/agents', params);
   }
 
@@ -193,8 +209,17 @@ export class InProcessToolClient implements AirChatToolClient {
     });
   }
 
-  updateTask(taskId: string, action: string, result?: string): Promise<unknown> {
-    return this.postDynamic(taskActionPOST, `/api/v2/tasks/${taskId}`, taskId, { action, result });
+  updateTask(
+    taskId: string,
+    action: string,
+    result?: string,
+    usage?: { model: string } & TokenCounts,
+  ): Promise<unknown> {
+    return this.postDynamic(taskActionPOST, `/api/v2/tasks/${taskId}`, taskId, {
+      action,
+      result,
+      ...(usage ? { usage } : {}),
+    });
   }
 
   getTask(taskId: string): Promise<unknown> {
@@ -363,6 +388,57 @@ export class InProcessToolClient implements AirChatToolClient {
     const params = new URLSearchParams();
     params.set('channel', channel);
     return this.get(channelReadGET, '/api/v2/channels/read', params);
+  }
+
+  // ── Token usage ───────────────────────────────────────────────────────────
+
+  async reportUsage(report: UsageReport): Promise<{ delta: TokenCounts; restarted: boolean }> {
+    return await this.post(usageReportPOST, '/api/v2/usage/report', report) as {
+      delta: TokenCounts;
+      restarted: boolean;
+    };
+  }
+
+  /**
+   * Best-effort telemetry, same contract as AirChatRestClient.reportServed:
+   * one console.error, never a throw — a failed usage write must not fail the
+   * tool response that triggered the flush.
+   */
+  async reportServed(payload: {
+    tokens: number;
+    session_id?: string;
+    tools?: Record<string, number>;
+  }): Promise<void> {
+    try {
+      await this.post(usageServedPOST, '/api/v2/usage/served', payload);
+    } catch (e: unknown) {
+      console.error('[airchat] served-usage report failed:', e instanceof Error ? e.message : e);
+    }
+  }
+
+  async getUsage(params: {
+    agent?: string;
+    window?: UsageWindow;
+    since?: string;
+    until?: string;
+  }): Promise<AgentUsageSummary> {
+    const search = new URLSearchParams();
+    if (params.agent) search.set('agent', params.agent);
+    if (params.window) search.set('window', params.window);
+    if (params.since) search.set('since', params.since);
+    if (params.until) search.set('until', params.until);
+    const body = (await this.get(usageGET, '/api/v2/usage', search)) as {
+      usage: AgentUsageSummary;
+    };
+    return body.usage;
+  }
+
+  async getFleetUsage(window?: UsageWindow): Promise<FleetUsage> {
+    const search = new URLSearchParams();
+    search.set('all', 'true');
+    if (window) search.set('window', window);
+    const body = (await this.get(usageGET, '/api/v2/usage', search)) as { usage: FleetUsage };
+    return body.usage;
   }
 
   // ── Not exposed in the v1 connector surface ───────────────────────────────

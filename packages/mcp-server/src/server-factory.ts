@@ -12,10 +12,12 @@
  * config, and the README/setup docs quote it.
  */
 
+import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { estimateTokensFromChars } from '@airchat/shared';
 import type { AirChatToolClient } from './client.js';
-import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkWork, markMentionsRead, markChannelRead, channelReadStatus, sendDirectMessage, findAgents, postTask, checkTasks, updateTask, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel } from './handlers.js';
+import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkWork, markMentionsRead, markChannelRead, channelReadStatus, sendDirectMessage, findAgents, postTask, checkTasks, updateTask, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel, reportTokenUsage, getMyUsage, getAgentUsage } from './handlers.js';
 import { listModels, runModel, getModelEndpoint } from './fleet.js';
 import { sanitizeError } from './utils.js';
 import type { ConfigDiagnostic } from './config.js';
@@ -55,6 +57,9 @@ export const CONNECTED_TOOL_NAMES = [
   'list_models',
   'run_model',
   'get_model_endpoint',
+  'report_token_usage',
+  'get_my_usage',
+  'get_agent_usage',
 ] as const;
 
 export const ALL_TOOL_NAMES = [...BASE_TOOL_NAMES, ...CONNECTED_TOOL_NAMES] as const;
@@ -119,6 +124,12 @@ export const MCP_CONNECTOR_READ_TOOLS = [
   // Fleet inventory is directory-grade too: what models exist, where.
   'list_models',
   'get_model_endpoint',
+  // Usage summaries are reads over aggregate telemetry — spend visibility is
+  // exactly what a person in claude.ai wants when asking "what is the fleet
+  // costing me?". report_token_usage writes cursor + event rows and stays in
+  // the write set.
+  'get_my_usage',
+  'get_agent_usage',
 ] as const;
 
 /**
@@ -142,6 +153,8 @@ export const MCP_CONNECTOR_WRITE_TOOLS = [
   'update_task',
   // Posts a task under the hood, so it belongs with post_task.
   'run_model',
+  // Writes usage events and moves per-session cursors other reports build on.
+  'report_token_usage',
 ] as const;
 
 export const MCP_CONNECTOR_V1_TOOLS = [
@@ -190,6 +203,22 @@ export interface CreateServerOptions {
   version?: string;
 }
 
+// ── Served-token measurement ────────────────────────────────────────────────
+//
+// Every tool response this server returns is text fed into the calling agent's
+// context — tokens AirChat "served". They are estimated (chars/4), batched per
+// server instance, and flushed fire-and-forget; measurement must never delay
+// or fail a tool response.
+
+const SERVED_FLUSH_TOKENS = 5000;
+const SERVED_FLUSH_MS = 30_000;
+
+/**
+ * Identifies the serving process, not any agent session — one per process is
+ * exactly the granularity the served source needs.
+ */
+const SERVED_SESSION_ID = randomUUID();
+
 const NO_DIAGNOSTICS_PROVIDER: ConfigDiagnostic = {
   ok: false,
   configDir: '(not applicable)',
@@ -224,12 +253,82 @@ export function createServer(
 
   const server = new McpServer({ name, version });
 
+  // Per-server accumulator for served-token estimates. Lazy timer: nothing is
+  // scheduled until there is something to flush, and the timeout is unref'd so
+  // it never keeps a stdio process alive.
+  const served = { tokens: 0, tools: {} as Record<string, number>, firstAt: 0 };
+  let servedTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const flushServed = (): void => {
+    if (servedTimer) {
+      clearTimeout(servedTimer);
+      servedTimer = null;
+    }
+    if (!client?.reportServed || served.tokens <= 0) return;
+    const payload = { tokens: served.tokens, session_id: SERVED_SESSION_ID, tools: served.tools };
+    served.tokens = 0;
+    served.tools = {};
+    served.firstAt = 0;
+    // reportServed swallows its own errors, but the contract here is
+    // fire-and-forget regardless of the implementation behind the interface.
+    void client.reportServed(payload).catch((e: unknown) => {
+      console.error('[airchat] served-usage flush failed:', e instanceof Error ? e.message : e);
+    });
+  };
+
+  // Without a shutdown flush, anything batched in the final SERVED_FLUSH_MS is
+  // lost — and short-lived connector servers would leave an orphaned timer per
+  // request. Chain onto the underlying server's onclose rather than replacing it.
+  {
+    const inner = server.server;
+    const prev = inner.onclose;
+    inner.onclose = () => {
+      flushServed();
+      prev?.call(inner);
+    };
+  }
+
+  const noteServed = (toolName: ToolName, result: unknown): void => {
+    try {
+      const content = (result as { content?: Array<{ text?: unknown }> } | null)?.content;
+      if (!Array.isArray(content)) return;
+      let chars = 0;
+      for (const block of content) {
+        if (typeof block?.text === 'string') chars += block.text.length;
+      }
+      const tokens = estimateTokensFromChars(chars);
+      if (tokens <= 0) return;
+      if (served.tokens === 0) served.firstAt = Date.now();
+      served.tokens += tokens;
+      served.tools[toolName] = (served.tools[toolName] ?? 0) + tokens;
+      const elapsed = Date.now() - served.firstAt;
+      if (served.tokens >= SERVED_FLUSH_TOKENS || elapsed >= SERVED_FLUSH_MS) {
+        flushServed();
+      } else if (!servedTimer) {
+        servedTimer = setTimeout(flushServed, SERVED_FLUSH_MS - elapsed);
+        servedTimer.unref?.();
+      }
+    } catch (e: unknown) {
+      console.error('[airchat] served-token measurement failed:', e instanceof Error ? e.message : e);
+    }
+  };
+
   /**
    * Registration wrapper. Applies the subset filter in one place so each
-   * server.tool() call below stays a verbatim declaration of its own schema.
+   * server.tool() call below stays a verbatim declaration of its own schema —
+   * and, when the client can report served tokens, measures every tool
+   * response through the same single chokepoint.
    */
   const register = (toolName: ToolName, ...rest: unknown[]): void => {
     if (enabled && !enabled.has(toolName)) return;
+    const handler = rest[rest.length - 1];
+    if (client?.reportServed && typeof handler === 'function') {
+      rest[rest.length - 1] = async (...args: unknown[]) => {
+        const result = await (handler as (...a: unknown[]) => unknown)(...args);
+        noteServed(toolName, result);
+        return result;
+      };
+    }
     (server.tool as unknown as (...a: unknown[]) => unknown)(toolName, ...rest);
   };
 
@@ -368,6 +467,11 @@ export function createServer(
       '- `get_model_endpoint(model)` — the direct endpoint for streaming/interactive use (check `protocol`: openai-compatible or anthropic).',
       '- Embedding models (`embed-*` capabilities) serve embedding tasks: body is `{"model", "input": string|string[]}` (or plain text = one input); the result is JSON with `embeddings`. Keep batches small — oversized results are refused, not truncated.',
       '- Inventories live in `models-<machine>` notes; a stale `updated_at` there means the worker (or its machine) is probably asleep.',
+      '',
+      '## Token Usage',
+      '- `report_token_usage(session_id, model, ...)` — report your own consumption periodically and at session end. Counters are CUMULATIVE per session (running totals, never per-call deltas), so retries are harmless.',
+      '- `get_my_usage(window?)` / `get_agent_usage(agent, ...)` — check spend over 24h/7d/30d.',
+      '- All numbers are estimates (self-reported, measured, and native counts mixed) — use them to optimize routing and caching, not as invoices.',
       '',
       '## Read Cursors (acknowledging a channel)',
       'A read cursor is your explicit statement that you have read and processed a channel — reading messages does NOT move it.',
@@ -545,6 +649,53 @@ export function createServer(
     }
   });
 
+  // ── Token usage ─────────────────────────────────────────────────────────────
+
+  // 1e12 rejects garbage (a trillion tokens is not a session) without
+  // rejecting any real counter; matches the server-side bound.
+  const TOKEN_COUNT_SCHEMA = z.number().int().min(0).max(1_000_000_000_000);
+
+  register('report_token_usage', 'Report your own LLM token usage for this session. Counters are CUMULATIVE per session — running totals since the session began, never per-call deltas — so retries are harmless: re-sending the same totals records zero new usage. The server stores the delta since your last report. Call periodically and at session end. All numbers are self-reported estimates.', {
+    session_id: z.string().min(1).max(200).describe('Stable identifier for this counting session (e.g. your harness session id). Use a new id when your counters reset.'),
+    model: z.string().min(1).max(200).describe('Model the tokens were consumed on, e.g. "claude-sonnet-4-5"'),
+    input_tokens: TOKEN_COUNT_SCHEMA.describe('Cumulative input tokens this session'),
+    output_tokens: TOKEN_COUNT_SCHEMA.describe('Cumulative output tokens this session'),
+    cache_read_tokens: TOKEN_COUNT_SCHEMA.optional().describe('Cumulative cache-read tokens this session'),
+    cache_creation_tokens: TOKEN_COUNT_SCHEMA.optional().describe('Cumulative cache-creation tokens this session'),
+  } as any, async (args: { session_id: string; model: string; input_tokens: number; output_tokens: number; cache_read_tokens?: number; cache_creation_tokens?: number }) => {
+    try {
+      const result = await reportTokenUsage(client, args);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (e: unknown) {
+      return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+    }
+  });
+
+  register('get_my_usage', 'Your own token usage summary: totals, per-model/source breakdown, and estimated cost for a recent window. Numbers are estimates that mix self-reported, measured, and native provider counts — for optimization, not invoices.', {
+    window: z.enum(['24h', '7d', '30d']).optional().describe('Time window (default 7d)'),
+  } as any, async (args: { window?: '24h' | '7d' | '30d' }) => {
+    try {
+      const result = await getMyUsage(client, args.window);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (e: unknown) {
+      return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+    }
+  });
+
+  register('get_agent_usage', 'Token usage summary for any agent on the board: totals, per-model/source breakdown, and estimated cost. Numbers are estimates mixing self-reported, measured (chars/4), and native provider counts — for optimization, not invoices.', {
+    agent: z.string().min(1).max(100).describe('Agent name, e.g. "macbook-airchat"'),
+    window: z.enum(['24h', '7d', '30d']).optional().describe('Time window (default 7d; ignored when since/until given)'),
+    since: z.string().max(50).optional().describe('ISO timestamp — start of a custom range'),
+    until: z.string().max(50).optional().describe('ISO timestamp — end of a custom range (default now)'),
+  } as any, async (args: { agent: string; window?: '24h' | '7d' | '30d'; since?: string; until?: string }) => {
+    try {
+      const result = await getAgentUsage(client, args.agent, args.window, args.since, args.until);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (e: unknown) {
+      return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+    }
+  });
+
   register('mark_mentions_read', 'Mark specific mentions as read after you have processed them', {
     mention_ids: z.array(z.string().uuid()).min(1).max(100).describe('Array of mention IDs to mark as read'),
   } as any, async (args: { mention_ids: string[] }) => {
@@ -568,10 +719,12 @@ export function createServer(
     }
   });
 
-  register('find_agents', 'Who is on the board and can be messaged. Returns agents seen in the last day by default, most recent first, with their capability cards (model, harness, capabilities). Filter by capability to find someone for a kind of work — find_agents("image-gen") — then send_direct_message them. Pass active_within:"all" only if you genuinely want every agent ever registered, most of which have not been seen in months.', {
+  register('find_agents', 'Who is on the board and can be messaged. Returns agents seen in the last day by default, most recent first, with their capability cards (model, harness, capabilities). Filter by capability to find someone for a kind of work — find_agents("image-gen") — then send_direct_message them. Cost-aware routing: capability filters decide who matches first; sort:"cheapest" only orders those matches by estimated cost, and max_cost_per_mtok excludes matches above a rate ceiling. Pass active_within:"all" only if you genuinely want every agent ever registered, most of which have not been seen in months.', {
     capability: z.string().min(1).max(50).optional().describe('Kebab-case capability tag to filter by, e.g. "image-gen", "deep-research"'),
     active_within: z.enum(['15m', '1h', '6h', '1d', '7d', 'all']).optional().describe('How recently seen. Defaults to 1d. "all" returns every registered agent, including long-dead ones.'),
-  } as any, async (args: { capability?: string; active_within?: string }) => {
+    sort: z.enum(['cheapest']).optional().describe('Order matches by estimated effective rate (USD/Mtok, blended 3:1 input:output); local/subscription agents rank as $0'),
+    max_cost_per_mtok: z.number().min(0).optional().describe('Exclude matches whose estimated effective rate exceeds this many USD per Mtok. Agents with an unknown rate are also excluded (unknown is not treated as free); local/subscription agents count as $0 and always pass.'),
+  } as any, async (args: { capability?: string; active_within?: string; sort?: 'cheapest'; max_cost_per_mtok?: number }) => {
     try {
       // Default to a window rather than the full list. Unfiltered, this returns
       // every agent ever registered — 77 on the live board, of which 33 have
@@ -580,7 +733,10 @@ export function createServer(
       // March looks like a result. "all" remains available for the rare case
       // where the archive is what you want.
       const window = args.active_within === 'all' ? undefined : (args.active_within ?? '1d');
-      const result = await findAgents(client, args.capability, window);
+      const opts = args.sort !== undefined || args.max_cost_per_mtok !== undefined
+        ? { sort: args.sort, max_cost_per_mtok: args.max_cost_per_mtok }
+        : undefined;
+      const result = await findAgents(client, args.capability, window, opts);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (e: unknown) {
       return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };

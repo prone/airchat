@@ -270,11 +270,18 @@ export async function resolveDashboardAdminAgent(): Promise<{ id: string; name: 
  */
 export function checkAgentRateLimit(
   agentId: string,
-  operation: 'read' | 'write' | 'gossip_write'
+  operation: 'read' | 'write' | 'gossip_write' | 'telemetry'
 ): NextResponse | null {
-  const limitMap = { read: RATE_LIMITS.read, write: RATE_LIMITS.write, gossip_write: RATE_LIMITS.gossip_write };
+  const limitMap = {
+    read: RATE_LIMITS.read,
+    write: RATE_LIMITS.write,
+    gossip_write: RATE_LIMITS.gossip_write,
+    telemetry: RATE_LIMITS.telemetry,
+  };
   const limit = limitMap[operation];
-  const result = checkRateLimit(agentId, limit.windowMs, limit.maxRequests);
+  // Key includes the operation so each bucket has its own window — otherwise
+  // high-volume telemetry flushes would consume the shared array and starve writes.
+  const result = checkRateLimit(`${operation}:${agentId}`, limit.windowMs, limit.maxRequests);
   if (!result.allowed) {
     return NextResponse.json(
       { error: 'Rate limit exceeded. Try again later.' },
