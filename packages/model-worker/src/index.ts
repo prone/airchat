@@ -68,6 +68,8 @@ interface WorkerConfig {
   openaiUrl: string | null;
   openaiKey: string | null;
   openaiModels: string[] | null;
+  /** Billing plan advertised on the card (AIRCHAT_PLAN) — 'local' makes the worker's tokens attribute at $0. */
+  plan: 'api' | 'subscription' | 'local' | undefined;
   anthropicKey: string | null;
   anthropicModels: string[];
   remoteConcurrency: number;
@@ -118,6 +120,15 @@ function loadConfig(): WorkerConfig {
     openaiUrl: get('MODEL_WORKER_OPENAI_URL') ?? null,
     openaiKey: get('MODEL_WORKER_OPENAI_KEY') ?? null,
     openaiModels: openaiModels ? openaiModels.split(',').map((s) => s.trim()).filter(Boolean) : null,
+    plan: (() => {
+      const raw = get('AIRCHAT_PLAN');
+      if (!raw) return undefined;
+      if (raw !== 'api' && raw !== 'subscription' && raw !== 'local') {
+        console.error(`Invalid AIRCHAT_PLAN "${raw}" — use api, subscription, or local.`);
+        process.exit(1);
+      }
+      return raw;
+    })(),
     anthropicKey: get('MODEL_WORKER_ANTHROPIC_KEY') ?? null,
     anthropicModels: (get('MODEL_WORKER_ANTHROPIC_MODELS') ?? 'claude-haiku-4-5')
       .split(',').map((s) => s.trim()).filter(Boolean),
@@ -346,7 +357,7 @@ async function main(): Promise<void> {
     machineName: config.machineName,
     privateKeyHex: config.privateKeyHex,
     agentName,
-    card: buildCard(models, config.machineName).card,
+    card: buildCard(models, config.machineName, config.plan).card,
   });
 
   const noteSlug = `models-${config.machineName}`;
@@ -355,7 +366,7 @@ async function main(): Promise<void> {
   // the notes route's properties byte cap; buildInventoryProperties truncates
   // to stay under it, but any other 4xx/5xx must not be fatal either).
   const publishInventory = async (): Promise<void> => {
-    const { card, onCard } = buildCard(models, config.machineName);
+    const { card, onCard } = buildCard(models, config.machineName, config.plan);
     try {
       await client.setCard(card);
     } catch (err) {
