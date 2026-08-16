@@ -31,6 +31,13 @@ function fleet(count: number, opts: { kind?: string; sizeStep?: number } = {}): 
 }
 
 describe('buildCard', () => {
+  it('carries the billing plan so inventory refreshes never wipe it', () => {
+    const { card } = buildCard([model({ name: 'qwen3:8b', sizeBytes: 5e9 })], 'workstation', 'local');
+    expect(card.plan).toBe('local');
+    const { card: noPlan } = buildCard([model({ name: 'qwen3:8b', sizeBytes: 5e9 })], 'workstation');
+    expect(noPlan.plan).toBeUndefined();
+  });
+
   it('advertises the generic llm tag when a chat model exists', () => {
     const { card } = buildCard([model({ name: 'qwen3:8b', sizeBytes: 5e9 })], 'workstation');
     expect(card.capabilities).toEqual(['llm', 'llm-qwen3-8b']);

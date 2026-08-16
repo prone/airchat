@@ -44,7 +44,11 @@ export interface BuiltCard {
   onCard: Set<string>;
 }
 
-export function buildCard(models: InventoryModelInfo[], machineName: string): BuiltCard {
+export function buildCard(
+  models: InventoryModelInfo[],
+  machineName: string,
+  plan?: AgentCard['plan'],
+): BuiltCard {
   // Biggest models win the card slots; the note still lists everything.
   const ranked = [...models].sort((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0));
   const generic = models.some((m) => m.kind === 'llm') ? ['llm'] : [];
@@ -52,6 +56,9 @@ export function buildCard(models: InventoryModelInfo[], machineName: string): Bu
   const card: AgentCard = {
     harness: `model-worker@${machineName}`,
     capabilities: [...generic, ...specific],
+    // The worker rebuilds this card on every inventory refresh, so the plan
+    // must ride along here — a plan set any other way would be wiped.
+    ...(plan ? { plan } : {}),
   };
   const check = validateCard(card);
   if (!check.ok || !check.card) throw new Error(`invalid agent card: ${check.error}`);
