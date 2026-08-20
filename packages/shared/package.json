@@ -24,7 +24,7 @@
     "dev": "tsc --watch"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.112.0"
+    "@supabase/supabase-js": "^2.112.3"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
