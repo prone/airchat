@@ -27,8 +27,8 @@
     "@airchat/cli": "*",
     "@airchat/shared": "*",
     "@types/node": "^22.0.0",
-    "esbuild": "^0.28.1",
-    "tsx": "^4.23.7",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.12",
     "typescript": "^6.0.0"
   }
 }
