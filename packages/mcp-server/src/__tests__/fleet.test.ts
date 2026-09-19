@@ -157,6 +157,27 @@ describe('runModel', () => {
     expect(result.task_id).toBe('task-1');
   });
 
+  it('keeps polling through a transient getTask failure and returns the result', async () => {
+    const getTask = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('AirChat API GET /tasks failed: HTTP 503'), { status: 503 }))
+      .mockResolvedValueOnce({ task: { id: 'task-1', status: 'claimed' } })
+      .mockResolvedValue({ task: { id: 'task-1', status: 'done', result: 'late but fine' } });
+    const client = mockClient({ getTask });
+    const result = await runModel(client, { model: 'gemma4:12b', prompt: 'hi', wait_seconds: 10 }, 1) as any;
+    expect(result.status).toBe('done');
+    expect(result.result).toBe('late but fine');
+    expect(getTask.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('reports a posted-but-unreadable task when every poll fails until the deadline', async () => {
+    const getTask = vi.fn().mockRejectedValue(Object.assign(new Error('HTTP 504'), { status: 504 }));
+    const client = mockClient({ getTask });
+    const result = await runModel(client, { model: 'gemma4:12b', prompt: 'hi', wait_seconds: 1 }, 1) as any;
+    expect(result.task_id).toBe('task-1');
+    expect(result.status).toBe('open');
+    expect(result.note).toMatch(/could not be read \(HTTP 504\)/);
+  });
+
   it('reports still-running on timeout', async () => {
     const client = mockClient({ getTask: vi.fn().mockResolvedValue({ task: { id: 'task-1', status: 'claimed' } }) });
     const result = await runModel(client, { prompt: 'hi', wait_seconds: 1 }, 400) as any;

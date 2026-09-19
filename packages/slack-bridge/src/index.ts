@@ -24,6 +24,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { AirChatRestClient } from '@airchat/shared/rest-client';
+import { Backoff, describeFailure, formatDelay } from '@airchat/shared';
 import {
   HUMAN_MESSAGES_CHANNEL,
   DIRECT_MESSAGES_CHANNEL,
@@ -320,8 +321,11 @@ function startForwarder(
   watchedChannels: string[],
 ): NodeJS.Timeout {
   let lastPollTime = new Date(Date.now() - 60_000).toISOString();
+  // After a failed poll: 30s doubling to 5m; ticks inside the window are skipped.
+  const backoff = new Backoff({ baseMs: 30_000, maxMs: 5 * 60_000 });
 
   const poll = async () => {
+    if (backoff.shouldSkip()) return;
     try {
       for (const channel of watchedChannels) {
         const result = await airchatClient.readMessages(channel, 50) as any;
@@ -349,8 +353,12 @@ function startForwarder(
           });
         }
       }
+      const recovered = backoff.success();
+      if (recovered) console.log(`[slack-bridge] poll recovered after ${recovered} failure(s)`);
     } catch (e: any) {
-      console.error('[slack-bridge] Poll error:', e.message);
+      const { delayMs, attempts, changed } = backoff.failure();
+      if (changed) console.error(`[slack-bridge] poll failed (${describeFailure(e)}); backing off ${formatDelay(delayMs)} after ${attempts} failure(s)`);
+      return; // keep lastPollTime so the missed window is re-read on recovery
     }
 
     lastPollTime = new Date().toISOString();

@@ -23,8 +23,11 @@
 
 import { getStorageAdapter, getSupabaseClient } from '@/lib/api-v2-auth';
 import type { AgentContext, Task } from '@airchat/shared';
+import { Backoff, describeFailure, formatDelay } from '@airchat/shared';
 
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+/** After a failed sweep: 5m doubling to 30m. Ticks inside the window are skipped. */
+const SWEEP_BACKOFF_MAX_MS = 30 * 60 * 1000;
 const ORPHAN_AGE_MS = 60 * 60 * 1000;
 /** "Active" for coverage purposes: last_seen bumps on any authenticated call
  *  (throttled to 5 min), so half an hour of silence means genuinely gone. */
@@ -180,6 +183,21 @@ async function sweep(): Promise<void> {
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 
 let janitorInterval: ReturnType<typeof setInterval> | null = null;
+const backoff = new Backoff({ baseMs: SWEEP_INTERVAL_MS, maxMs: SWEEP_BACKOFF_MAX_MS });
+
+/** One sweep with backoff bookkeeping: skip while a window is open, escalate on
+ *  failure, log once per transition, log once on recovery. */
+async function guardedSweep(): Promise<void> {
+  if (backoff.shouldSkip()) return;
+  try {
+    await sweep();
+    const recovered = backoff.success();
+    if (recovered) console.log(`[task-janitor] sweep recovered after ${recovered} failure(s)`);
+  } catch (err) {
+    const { delayMs, attempts, changed } = backoff.failure();
+    if (changed) console.error(`[task-janitor] sweep failed (${describeFailure(err)}); backing off ${formatDelay(delayMs)} after ${attempts} failure(s)`);
+  }
+}
 
 export function startTaskJanitor(): void {
   if (janitorInterval) return;
@@ -188,7 +206,7 @@ export function startTaskJanitor(): void {
     return;
   }
   console.log(`[task-janitor] started (sweep every ${SWEEP_INTERVAL_MS / 60000}m, claim timeout ${claimTimeoutMs() / 60000}m)`);
-  janitorInterval = setInterval(() => { sweep().catch((err) => console.error('[task-janitor] sweep failed:', err)); }, SWEEP_INTERVAL_MS);
+  janitorInterval = setInterval(() => { void guardedSweep(); }, SWEEP_INTERVAL_MS);
 }
 
 export function stopTaskJanitor(): void {
