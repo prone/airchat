@@ -13,6 +13,7 @@ import { verifyEnvelope, verifyRetraction, signData, signEnvelope } from '@airch
 import type { GossipEnvelope, RetractionEnvelope } from '@airchat/shared/gossip';
 import type { PatternSet } from '@airchat/shared/safety';
 import type { GossipStorageAdapter, GossipPeer, GossipInstanceConfig } from '@airchat/shared';
+import { Backoff, describeFailure, formatDelay } from '@airchat/shared';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -74,6 +75,9 @@ const agentFlags = new Map<string, { count: number; firstFlagAt: number }>();
 // actually changed (or on the heartbeat interval), and quarantine cleanup
 // runs on its own much slower cadence.
 const SYNC_INTERVAL_MS = 5 * 60 * 1000;
+/** After a failed loop (config/peer list unreadable): 5m doubling to 30m. */
+const SYNC_BACKOFF_MAX_MS = 30 * 60 * 1000;
+const syncBackoff = new Backoff({ baseMs: SYNC_INTERVAL_MS, maxMs: SYNC_BACKOFF_MAX_MS });
 const SYNC_HEARTBEAT_MS = 10 * 60 * 1000;
 const QUARANTINE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const CONFIG_CACHE_TTL_MS = 60_000;
@@ -484,6 +488,20 @@ async function checkPeerSuspension(gossip: GossipStorageAdapter, peerId: string)
 
 // ── Background sync loop ────────────────────────────────────────────────────
 
+/** syncLoop with backoff: a loop that cannot read its own config or peer list
+ *  (the database is the usual reason) waits longer before trying again. */
+async function guardedSyncLoop(): Promise<void> {
+  if (syncBackoff.shouldSkip()) return;
+  try {
+    await syncLoop();
+    const recovered = syncBackoff.success();
+    if (recovered) console.log(`[gossip] sync loop recovered after ${recovered} failure(s)`);
+  } catch (err) {
+    const { delayMs, attempts, changed } = syncBackoff.failure();
+    if (changed) console.error(`[gossip] sync loop failed (${describeFailure(err)}); backing off ${formatDelay(delayMs)} after ${attempts} failure(s)`);
+  }
+}
+
 async function syncLoop(): Promise<void> {
   const gossip = getGossipAdapter();
   const config = await getCachedInstanceConfig(gossip);
@@ -604,8 +622,8 @@ export function startSyncWorker(): void {
   // the API) must not be no-oped by a stale cached gossip_enabled=false.
   configCache = null;
   console.log(`[gossip] Sync worker started (polling every ${SYNC_INTERVAL_MS / 1000}s)`);
-  syncInterval = setInterval(() => { syncLoop().catch(console.error); }, SYNC_INTERVAL_MS);
-  syncLoop().catch(console.error);
+  syncInterval = setInterval(() => { void guardedSyncLoop(); }, SYNC_INTERVAL_MS);
+  void guardedSyncLoop();
 }
 
 /**

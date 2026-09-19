@@ -29,7 +29,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { AirChatRestClient } from '@airchat/shared/rest-client';
-import { modelToCapability, modelMatches } from '@airchat/shared';
+import { modelToCapability, modelMatches, Backoff, describeFailure, formatDelay } from '@airchat/shared';
 import { buildCard, buildInventoryNote, buildInventoryProperties } from './inventory.js';
 import {
   AnthropicBackend,
@@ -53,6 +53,7 @@ import {
 } from './task-payload.js';
 
 const INVENTORY_REFRESH_MS = 60 * 60 * 1000;
+const POLL_BACKOFF_MAX_MS = 5 * 60 * 1000;
 const INFERENCE_TIMEOUT_MS = 10 * 60 * 1000;
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -389,6 +390,11 @@ async function main(): Promise<void> {
 
   let lastInventoryAt = Date.now();
   let polling = false;
+  // Backoff after a failed poll: 20s doubling to 5m (+/-20% jitter). The
+  // interval timer keeps firing; ticks inside the window are skipped. This
+  // is what lets a struggling server recover instead of being polled at
+  // full rate by every worker in the fleet (the Sep 2026 outage lesson).
+  const backoff = new Backoff({ baseMs: config.pollMs, maxMs: POLL_BACKOFF_MAX_MS });
   // Per-backend in-flight counts: a GPU serializes (concurrency 1), a hosted
   // API takes several. Tasks over a backend's limit stay open for the next
   // tick (or another worker) instead of queueing behind our claim.
@@ -396,6 +402,7 @@ async function main(): Promise<void> {
 
   const tick = async (): Promise<void> => {
     if (polling) return; // guard the poll itself; serving runs detached below
+    if (backoff.shouldSkip()) return;
     polling = true;
     try {
       // Inventory refresh: hourly, or sooner if a backend was down at start
@@ -446,8 +453,14 @@ async function main(): Promise<void> {
             inFlight.set(backend.name, Math.max(0, (inFlight.get(backend.name) ?? 1) - 1));
           });
       }
+      const recovered = backoff.success();
+      if (recovered) console.log(`[model-worker] poll recovered after ${recovered} failure(s)`);
     } catch (err) {
-      console.error(`[model-worker] poll failed: ${err instanceof Error ? err.message : err}`);
+      const { delayMs, attempts, changed } = backoff.failure();
+      // One line per transition (first failure, each escalation), not per attempt.
+      if (changed) {
+        console.error(`[model-worker] poll failed (${describeFailure(err)}); backing off ${formatDelay(delayMs)} after ${attempts} failure(s)`);
+      }
     } finally {
       polling = false;
     }
