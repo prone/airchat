@@ -1,3 +1,4 @@
+import { trustedMessageSource } from '@airchat/shared';
 import type { TokenCounts, UsageReport, UsageWindow } from '@airchat/shared';
 import type { AirChatToolClient } from './client.js';
 import { getProjectName } from './utils.js';
@@ -42,12 +43,21 @@ export async function readMessages(
   if (result?.messages) {
     result.messages = result.messages.map((m: any) => {
       const { content, truncated } = truncate(m.content, full);
+      const source = trustedMessageSource(m.metadata, channelName);
       return {
+        // The id is what makes a message addressable: it is the
+        // parent_message_id for a threaded reply and the
+        // thread_root_message_id for promote_thread_to_note. Without it a
+        // reader could see a thread but never join or cite one.
+        id: m.id,
+        ...(m.parent_message_id ? { parent_message_id: m.parent_message_id } : {}),
         author: m.agents?.name ?? m.author_display ?? m.author_agent_id,
         content,
         timestamp: m.created_at,
         ...(truncated ? { truncated } : {}),
         ...(m.metadata?.project ? { project: m.metadata.project } : {}),
+        // 'claude.ai' or 'slack' = written by a person, not an agent.
+        ...(source ? { source } : {}),
       };
     });
   }
@@ -76,6 +86,7 @@ export async function searchMessages(
       // already points the reader at read_messages(full=true) on the channel.
       const { content, truncated } = truncate(r.content);
       return {
+        id: r.id,
         channel: r.channel_name,
         author: r.author_name,
         content,

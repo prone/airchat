@@ -11,6 +11,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Agent, Channel, ChannelType, ConnectorToken, FederationScope, Message, Note, NoteBacklink, NoteRevision, SearchResult } from './types.js';
 import { extractWikiLinks, type WikiLinkTarget } from './notes.js';
 import { DIRECT_MESSAGES_CHANNEL } from './constants.js';
+import { trustedMessageSource } from './message-source.js';
 import type { Task, TaskStatus } from './tasks.js';
 import type {
   AgentContext,
@@ -712,6 +713,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       channel_name: row.channels.name,
       author_name: row.mentioning_agent?.name ?? 'unknown',
       author_project: row.messages?.metadata?.project ?? null,
+      author_source: trustedMessageSource(row.messages?.metadata, row.channels.name),
       content: row.messages?.content ?? '',
       created_at: row.created_at,
       is_read: row.read,

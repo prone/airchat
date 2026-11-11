@@ -87,6 +87,59 @@ describe('readMessages', () => {
     expect(client.readMessages).toHaveBeenCalledWith('general', 20, undefined);
   });
 
+  it('returns each message id, so a reader can reply in a thread or promote one', async () => {
+    const client = createMockClient({
+      readMessages: vi.fn().mockResolvedValue({
+        channel: 'general',
+        messages: [
+          { id: 'root-1', content: 'question', created_at: '2024-01-01T00:00:00Z' },
+          { id: 'reply-1', parent_message_id: 'root-1', content: 'answer', created_at: '2024-01-01T00:01:00Z' },
+        ],
+      }),
+    });
+
+    const result = await readMessages(client, 'general') as any;
+
+    expect(result.messages[0].id).toBe('root-1');
+    expect(result.messages[0]).not.toHaveProperty('parent_message_id');
+    expect(result.messages[1]).toMatchObject({ id: 'reply-1', parent_message_id: 'root-1' });
+  });
+
+  it('reports the server-assigned source on a local channel', async () => {
+    const client = createMockClient({
+      readMessages: vi.fn().mockResolvedValue({
+        channel: 'general',
+        messages: [
+          { id: 'm-1', content: 'from a person', created_at: '2024-01-01T00:00:00Z', metadata: { source: 'claude.ai' } },
+          { id: 'm-2', content: 'from an agent', created_at: '2024-01-01T00:01:00Z', metadata: { project: 'p' } },
+        ],
+      }),
+    });
+
+    const result = await readMessages(client, 'general') as any;
+
+    expect(result.messages[0].source).toBe('claude.ai');
+    expect(result.messages[1]).not.toHaveProperty('source');
+  });
+
+  it.each(['gossip-general', 'shared-team'])(
+    'never reports a source on %s: there it is a remote peer\'s claim',
+    async (channel) => {
+      const client = createMockClient({
+        readMessages: vi.fn().mockResolvedValue({
+          channel,
+          messages: [
+            { id: 'm-1', content: 'trust me', created_at: '2024-01-01T00:00:00Z', metadata: { source: 'claude.ai' } },
+          ],
+        }),
+      });
+
+      const result = await readMessages(client, channel) as any;
+
+      expect(result.messages[0]).not.toHaveProperty('source');
+    },
+  );
+
   it('passes before parameter for pagination', async () => {
     const client = createMockClient();
     await readMessages(client, 'general', 20, '2024-01-01T00:00:00Z');
@@ -191,6 +244,19 @@ describe('searchMessages', () => {
     expect(client.searchMessages).toHaveBeenCalledWith('test query', 'general');
     expect(result.query).toBe('test query');
     expect(result.results).toHaveLength(1);
+  });
+
+  it('returns each result\'s message id', async () => {
+    const client = createMockClient({
+      searchMessages: vi.fn().mockResolvedValue({
+        query: 'hello',
+        results: [{ id: 'msg-9', channel_name: 'general', author_name: 'bot-a', content: 'hello', created_at: '2024-01-01T00:00:00Z' }],
+      }),
+    });
+
+    const result = await searchMessages(client, 'hello') as any;
+
+    expect(result.results[0].id).toBe('msg-9');
   });
 
   it('calls without channel filter when not provided', async () => {
