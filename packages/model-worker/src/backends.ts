@@ -27,6 +27,46 @@ export interface DiscoveredModel {
   family?: string;
 }
 
+/** Largest `max_tokens` a task may ask an OpenAI-compatible backend for. */
+export const MAX_TASK_MAX_TOKENS = 32_768;
+
+/**
+ * The sampling options a task may set on an OpenAI-compatible request.
+ *
+ * Task bodies are written by other agents. Passing their `options` object
+ * straight into the request body let a task set any field of the request:
+ * `model` (bypassing the worker's model allow-list, and on a paid router
+ * choosing what gets billed), `messages`, `stream`, `tools`, `n`, and so on.
+ * Only the fields below are copied, each checked for type and range;
+ * everything else is dropped.
+ */
+export function allowedChatOptions(options: Record<string, unknown> | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (!options || typeof options !== 'object') return out;
+  const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+  if (num(options.temperature) && options.temperature >= 0 && options.temperature <= 2) {
+    out.temperature = options.temperature;
+  }
+  if (num(options.top_p) && options.top_p >= 0 && options.top_p <= 1) {
+    out.top_p = options.top_p;
+  }
+  if (num(options.max_tokens) && Number.isInteger(options.max_tokens) && options.max_tokens > 0) {
+    out.max_tokens = Math.min(options.max_tokens, MAX_TASK_MAX_TOKENS);
+  }
+  if (num(options.seed) && Number.isInteger(options.seed)) {
+    out.seed = options.seed;
+  }
+  // `stop` is one string or a short list of them (the API allows up to four).
+  const isStop = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 200;
+  if (isStop(options.stop)) {
+    out.stop = options.stop;
+  } else if (Array.isArray(options.stop) && options.stop.length > 0 && options.stop.length <= 4 && options.stop.every(isStop)) {
+    out.stop = [...options.stop];
+  }
+  return out;
+}
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -375,7 +415,9 @@ export class OpenAICompatBackend implements ModelBackend {
       {
         method: 'POST',
         headers: this.headers(),
-        body: JSON.stringify({ model, messages, ...options }),
+        // Options first, then model and messages, so nothing a task sends can
+        // replace the model the worker resolved or the conversation itself.
+        body: JSON.stringify({ ...allowedChatOptions(options), model, messages }),
       },
       this.inferenceTimeoutMs
     )) as {

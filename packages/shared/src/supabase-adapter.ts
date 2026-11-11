@@ -9,7 +9,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Agent, Channel, ChannelDirectoryEntry, ChannelDirectoryPage, ChannelType, ConnectorToken, FederationScope, Message, Note, NoteBacklink, NoteRevision, SearchResult } from './types.js';
-import { extractWikiLinks, type WikiLinkTarget } from './notes.js';
+import { extractWikiLinks, MAX_LINKS_PER_NOTE_WRITE, MODEL_INVENTORY_TYPE, modelInventoryOwner, type WikiLinkTarget } from './notes.js';
 import { DIRECT_MESSAGES_CHANNEL } from './constants.js';
 import { trustedMessageSource } from './message-source.js';
 import type { Task, TaskStatus } from './tasks.js';
@@ -39,15 +39,20 @@ export class SupabaseStorageAdapter implements StorageAdapter {
   }
 
   async findAgentByDerivedKeyHash(hash: string): Promise<Agent | null> {
+    // The agent's machine is fetched alongside it: switching a machine off
+    // must stop every agent registered from it, not only new registrations.
+    // An agent with no machine (machine_id is null) has nothing to check.
     const { data, error } = await this.client
       .from('agents')
-      .select('*')
+      .select('*, machine_keys(active)')
       .eq('derived_key_hash', hash)
       .eq('active', true)
       .single();
 
     if (error || !data) return null;
-    return data as Agent;
+    const { machine_keys: machine, ...agent } = data as Agent & { machine_keys?: { active: boolean } | null };
+    if (machine && machine.active === false) return null;
+    return agent as Agent;
   }
 
   async findMachineByPublicKey(machineName: string): Promise<MachineKey | null> {
@@ -1207,8 +1212,36 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     const existing = await this.findNoteInScope(scope, input.slug);
     let saved: Note;
 
+    // A model inventory tells other agents where to send prompts, so only the
+    // machine's own model worker may publish one: the note `models-<machine>`
+    // written by the agent `<machine>-models`. Without this any agent could
+    // publish an inventory pointing a model name at an endpoint it controls.
+    // The same agent is the only one that may change a note that already is
+    // an inventory.
+    const claimsInventory = input.properties?.type === MODEL_INVENTORY_TYPE;
+    const isInventory = (existing?.properties as Record<string, unknown> | undefined)?.type === MODEL_INVENTORY_TYPE;
+    const ownsInventorySlug = scope === null && this.ctx.agentName === modelInventoryOwner(input.slug);
+    if ((claimsInventory || (isInventory && scope === null)) && !ownsInventorySlug) {
+      throw new Error(
+        `PROTECTED: a model inventory is the global note models-<machine>, ` +
+        `and only the agent <machine>-models may write it.`
+      );
+    }
+    // The worker publishing its own inventory takes the note over if someone
+    // else got to the name first (a stub from a link, or a note squatting on
+    // it), so nobody can block a machine from publishing.
+    const reclaimsInventory = claimsInventory && ownsInventorySlug;
+
+    // A stub is a placeholder made when someone linked to a note that did not
+    // exist yet. Whoever writes the real note is its creator; the linker is
+    // not, and must not be able to protect or lock a note they never wrote.
+    const takesOwnership = !!existing
+      && existing.created_by !== this.ctx.agentId
+      && (existing.is_stub || reclaimsInventory);
+    const isCreator = !!existing && (existing.created_by === this.ctx.agentId || takesOwnership);
+
     if (existing) {
-      if (existing.protected && existing.created_by !== this.ctx.agentId) {
+      if (existing.protected && !isCreator) {
         throw new Error(
           'PROTECTED: this note only accepts writes from its creator. ' +
           'Propose changes via a message @mentioning them instead.'
@@ -1234,7 +1267,8 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
           updated_by: this.ctx.agentId,
           updated_at: new Date().toISOString(),
           is_stub: false,
-          ...(input.protect !== undefined && existing.created_by === this.ctx.agentId
+          ...(takesOwnership ? { created_by: this.ctx.agentId } : {}),
+          ...(input.protect !== undefined && isCreator
             ? { protected: input.protect }
             : {}),
           current_revision: existing.current_revision + 1,
@@ -1381,7 +1415,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
   }): Promise<any> {
     let query = this.client
       .from('notes')
-      .select('slug, channel_id, title, is_stub, protected, current_revision, updated_at, properties, channels:channel_id(name)')
+      .select('slug, channel_id, title, is_stub, protected, current_revision, updated_at, properties, channels:channel_id(name), creator:created_by(name), updater:updated_by(name)')
       .order('updated_at', { ascending: false })
       .limit(Math.min(opts.limit ?? 50, 200));
 
@@ -1422,6 +1456,11 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       current_revision: n.current_revision,
       updated_at: n.updated_at,
       properties: n.properties,
+      // Who created the note and who wrote it last, by agent name. Properties
+      // are free-form and any agent can write a note, so a reader that acts
+      // on them (the model inventory does) needs to know whose they are.
+      created_by_name: n.creator?.name ?? null,
+      updated_by_name: n.updater?.name ?? null,
     }));
   }
 
@@ -1455,6 +1494,9 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
             .from('messages')
             .select('id, content, created_at, author_agent_id, channels:channel_id(name), agents:author_agent_id(name)')
             .in('id', messageIds)
+            // A quarantined message is held back from agents everywhere
+            // else; its opening words must not surface here either.
+            .eq('quarantined', false)
         : Promise.resolve({ data: [] }),
     ]);
 
@@ -1535,6 +1577,16 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     if (channelName === null || channelName === undefined || channelName === 'global') {
       return null;
     }
+    // Notes are readable by every agent, and #direct-messages is the one
+    // channel that is not. A note filed there would look private and be
+    // public, so the scope does not exist for notes: reads find nothing and
+    // writes are refused.
+    if (channelName === DIRECT_MESSAGES_CHANNEL) {
+      if (createIfMissing) {
+        throw new Error('PROTECTED: notes cannot be kept in direct-messages. Use a project channel or the global scope.');
+      }
+      return undefined;
+    }
     if (createIfMissing) {
       const id = await this.findOrCreateChannel(channelName);
       await this.ensureChannelMembership(id);
@@ -1571,10 +1623,17 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
 
     const rows: Array<{ source_type: string; source_id: string; target_channel_id: string | null; target_slug: string }> = [];
 
-    for (const link of links) {
+    // Each link costs lookups and may create a stub note, so one write is
+    // only allowed so many. Links past the cap still render as text; they are
+    // simply not recorded as backlinks and get no stub.
+    for (const link of links.slice(0, MAX_LINKS_PER_NOTE_WRITE)) {
       let targetScope: string | null | undefined;
       if (link.global) {
         targetScope = null;
+      } else if (link.channel === DIRECT_MESSAGES_CHANNEL) {
+        // No notes live in the direct-messages scope, so there is nothing to
+        // link to and no stub to create there.
+        continue;
       } else if (link.channel) {
         // Cross-channel link: record only if the channel exists (never create
         // a channel as a side effect of a link)

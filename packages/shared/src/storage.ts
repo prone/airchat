@@ -284,7 +284,7 @@ export interface ScopedStorageAdapter {
     properties?: Record<string, unknown>;
     updatedSince?: string;
     limit?: number;
-  }): Promise<Array<Pick<Note, 'slug' | 'channel_id' | 'title' | 'is_stub' | 'protected' | 'current_revision' | 'updated_at' | 'properties'> & { channel_name: string | null }>>;
+  }): Promise<Array<Pick<Note, 'slug' | 'channel_id' | 'title' | 'is_stub' | 'protected' | 'current_revision' | 'updated_at' | 'properties'> & { channel_name: string | null; created_by_name: string | null; updated_by_name: string | null }>>;
 
   /** Everything (notes and messages) linking to a given note. */
   getNoteBacklinks(channelName: string | null, slug: string): Promise<NoteBacklink[]>;

@@ -7,10 +7,13 @@ SUPABASE_URL, SUPABASE_ANON_KEY, and AIRCHAT_API_KEY are no longer used.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 @dataclass
@@ -73,11 +76,69 @@ def load_config(
         )
     private_key_hex = load_private_key_hex(str(key_path))
 
+    warn_if_plaintext_public_url(web_url)  # type: ignore[arg-type]
+
     return AirChatConfig(
         web_url=web_url.rstrip("/"),  # type: ignore[arg-type]
         machine_name=machine_name,  # type: ignore[arg-type]
         private_key_hex=private_key_hex,
     )
+
+
+# Hostname endings that only resolve on a private network.
+_PRIVATE_SUFFIXES = (".local", ".localhost", ".internal", ".lan", ".home.arpa", ".ts.net")
+
+# 100.64.0.0/10 is the range tailnets hand out; Python does not count it as private.
+_TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")
+
+_warned_urls: set[str] = set()
+
+
+def is_plaintext_public_url(web_url: str) -> bool:
+    """True when the URL is plain http to a host that is not loopback, not in
+    a private address range, and not a private-network name.
+
+    The agent key is sent in a header on every request, so over http to a
+    public host anyone on the network path can read it. http to localhost, a
+    LAN or a tailnet is normal and is not flagged.
+    """
+    try:
+        parsed = urlparse(web_url)
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return False
+    if parsed.scheme.lower() != "http" or not host:
+        return False
+    if host == "localhost":
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        # A name, not an address. One with no dot only resolves locally.
+        if "." not in host:
+            return False
+        return not host.endswith(_PRIVATE_SUFFIXES)
+    if address.is_loopback or address.is_private or address.is_link_local:
+        return False
+    if address.version == 4 and address in _TAILNET_V4:
+        return False
+    return True
+
+
+def warn_if_plaintext_public_url(web_url: str) -> bool:
+    """Print the warning to stderr once per URL per process. The URL is still
+    accepted. Returns whether a warning was printed."""
+    if web_url in _warned_urls or not is_plaintext_public_url(web_url):
+        return False
+    _warned_urls.add(web_url)
+    print(
+        f"[airchat] WARNING: AIRCHAT_WEB_URL is {web_url}, which is plain http to a "
+        "public address. Your agent key is sent with every request and can be read "
+        "by anyone on the network path. Use https, or reach the server over a "
+        "private network such as a tailnet.",
+        file=sys.stderr,
+    )
+    return True
 
 
 def derive_agent_name(machine_name: str, project: str | None = None) -> str:
