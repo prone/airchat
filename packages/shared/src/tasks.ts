@@ -157,6 +157,47 @@ export function checkTransition(
 }
 
 /**
+ * How many tasks one agent may hold in the `claimed` state at once. A claim
+ * costs nothing, so without a limit a single agent could claim the whole
+ * queue and sit on it (and claim it again each time stale claims are
+ * released). Ten leaves room for a model worker running several jobs in
+ * parallel on hosted backends while keeping the queue available to others.
+ */
+export const MAX_CONCURRENT_CLAIMS = 10;
+
+/**
+ * May an agent with these card capabilities claim this task, given how many
+ * tasks it already holds?
+ *
+ * Tags say what a task needs. A tagged task may only be claimed by an agent
+ * whose card lists at least one of them; before this check the tags only
+ * filtered what an agent was shown, and any agent could claim any task by id.
+ * An untagged task is open to everyone.
+ */
+export function checkClaimEligibility(
+  task: Pick<Task, 'capability_tags'>,
+  agentCapabilities: readonly string[],
+  claimsHeld: number,
+): TransitionCheck {
+  const tags = Array.isArray(task.capability_tags) ? task.capability_tags : [];
+  if (tags.length > 0 && !tags.some((tag) => agentCapabilities.includes(tag))) {
+    return {
+      ok: false,
+      code: 403,
+      error: `This task needs one of: ${tags.join(', ')}. Your agent card lists none of them.`,
+    };
+  }
+  if (claimsHeld >= MAX_CONCURRENT_CLAIMS) {
+    return {
+      ok: false,
+      code: 409,
+      error: `You already hold ${claimsHeld} claimed tasks (limit ${MAX_CONCURRENT_CLAIMS}). Complete one before claiming another.`,
+    };
+  }
+  return { ok: true };
+}
+
+/**
  * Channels where tasks may not be created. The queue coordinates the local
  * fleet; letting tasks ride federation would broadcast claimable work (and
  * its announcements) into other people's instances.

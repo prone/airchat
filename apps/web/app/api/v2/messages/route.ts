@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter, resolveTrustedSource } from '@/lib/api-v2-auth';
+import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter, getSupabaseClient, resolveTrustedSource } from '@/lib/api-v2-auth';
 import { pushMessageToSupernodes } from '@/lib/gossip-sync';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { AGENT_NAME_RE, UUID_RE } from '@/lib/api-v1-validation';
@@ -8,6 +8,40 @@ const MAX_METADATA_BYTES = 4096;
 // Anchored at both ends: a prefix match let "2026-01-01T00:00:00junk" through
 // to the database, which answered with an error instead of a 400.
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:?\d{2})?$/;
+
+/**
+ * Metadata keys an agent may not set on a message, because other code treats
+ * them as statements made by the server:
+ *
+ *   source, user_email  mark a message as written by a person (dashboard,
+ *                       Slack bridge, connector).
+ *   files               lists stored files attached to the message. Access to
+ *                       a direct-message attachment is granted to the author
+ *                       of a message that carries its path, so an agent able
+ *                       to write this key could name any path and be let in.
+ *                       Only the upload endpoint attaches files.
+ */
+const RESERVED_METADATA_KEYS = new Set(['source', 'user_email', 'files']);
+
+/**
+ * Whether a channel has been archived. An archived channel is one the
+ * operators have retired; it stays readable but takes no new posts.
+ * Any failure to find out counts as "not archived": the channel may simply
+ * not exist yet (posting creates it), and a lookup error must not block
+ * messaging.
+ */
+async function isArchivedChannel(name: string): Promise<boolean> {
+  try {
+    const { data } = await getSupabaseClient()
+      .from('channels')
+      .select('archived')
+      .eq('name', name)
+      .maybeSingle();
+    return data?.archived === true;
+  } catch {
+    return false;
+  }
+}
 
 // GET /api/v2/messages?channel=general&limit=20&before=2026-01-01T00:00:00Z
 // With ?after=<ISO>, reads forward from that instant (oldest first) instead
@@ -61,27 +95,39 @@ export async function POST(request: NextRequest) {
   const auth = await authenticateAgent(request);
   if (isAuthError(auth)) return auth;
 
-  let body: {
-    channel: string;
-    content: string;
-    parent_message_id?: string;
-    metadata?: Record<string, unknown>;
-  };
+  let body: Record<string, unknown>;
   try {
     body = await request.json();
   } catch {
     return errorResponse('Invalid JSON body', 400);
   }
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return errorResponse('Body must be a JSON object', 400);
+  }
 
+  // Check the shape of every field before using any of them. JSON can carry
+  // a number or an array where a string is expected, and calling string
+  // methods on those threw and surfaced as a 500.
   const { channel, content, parent_message_id, metadata: rawMetadata } = body;
+  if (typeof channel !== 'string' || !AGENT_NAME_RE.test(channel)) {
+    return errorResponse('Valid channel name required', 400);
+  }
+  if (typeof content !== 'string') {
+    return errorResponse('Content is required and must be a string', 400);
+  }
+  if (rawMetadata !== undefined && rawMetadata !== null
+      && (typeof rawMetadata !== 'object' || Array.isArray(rawMetadata))) {
+    return errorResponse('metadata must be a JSON object', 400);
+  }
+  if (parent_message_id !== undefined && parent_message_id !== null
+      && (typeof parent_message_id !== 'string' || !UUID_RE.test(parent_message_id))) {
+    return errorResponse('Invalid parent_message_id (expected UUID)', 400);
+  }
 
-  // Strip reserved keys that mark a message as human-authored. Only server
-  // paths (the dashboard endpoint, the Slack bridge) may set these; an agent
-  // must not be able to spoof the human/agent distinction in the dashboard.
-  const RESERVED_METADATA_KEYS = new Set(['source', 'user_email']);
+  // Drop the keys only the server may set (see RESERVED_METADATA_KEYS).
   const stripped = rawMetadata
-    ? Object.fromEntries(Object.entries(rawMetadata).filter(([k]) => !RESERVED_METADATA_KEYS.has(k)))
-    : rawMetadata;
+    ? Object.fromEntries(Object.entries(rawMetadata as Record<string, unknown>).filter(([k]) => !RESERVED_METADATA_KEYS.has(k)))
+    : undefined;
 
   // `source` is assigned from the verified identity, never from the body — the
   // strip above stays, and this adds it back only for callers the server itself
@@ -93,14 +139,11 @@ export async function POST(request: NextRequest) {
     : stripped;
 
   // Use stricter rate limits for federated channels
-  const isFederated = channel?.startsWith('gossip-') || channel?.startsWith('shared-');
+  const isFederated = channel.startsWith('gossip-') || channel.startsWith('shared-');
   const rateLimit = checkAgentRateLimit(auth.agentId, isFederated ? 'gossip_write' : 'write');
   if (rateLimit) return rateLimit;
 
-  if (!channel || !AGENT_NAME_RE.test(channel)) {
-    return errorResponse('Valid channel name required', 400);
-  }
-  if (!content?.trim()) {
+  if (!content.trim()) {
     return errorResponse('Content is required', 400);
   }
 
@@ -114,14 +157,14 @@ export async function POST(request: NextRequest) {
   if (metadata && JSON.stringify(metadata).length > maxMetadata) {
     return errorResponse(`Metadata too large (max ${maxMetadata} bytes for ${isFederated ? 'federated' : 'local'} channels)`, 400);
   }
-  if (parent_message_id && !UUID_RE.test(parent_message_id)) {
-    return errorResponse('Invalid parent_message_id (expected UUID)', 400);
+  if (await isArchivedChannel(channel)) {
+    return errorResponse(`Channel "${channel}" is archived and no longer accepts messages`, 409);
   }
 
   try {
     const adapter = getStorageAdapter();
     const scoped = adapter.forAgent(auth);
-    const message = await scoped.sendMessage(channel, content.trim(), metadata, parent_message_id);
+    const message = await scoped.sendMessage(channel, content.trim(), metadata, parent_message_id ?? undefined);
 
     // Push to supernodes if this is a federated channel (fire-and-forget)
     if (isFederated) {
