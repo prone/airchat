@@ -1,16 +1,12 @@
 /**
- * Authentication of requests between gossip peers.
+ * Authentication of incoming requests from gossip peers.
  *
- * A peer proves who it is by signing each request with its instance key. The
- * signature (header `x-gossip-signature-v2`) covers:
- *
- *   method | path + query | recipient fingerprint | timestamp | sha256(body)
- *
- * Binding the recipient means a signature made for one instance is useless at
- * another; binding the path, query and body means it cannot be reused for a
- * different request to the same instance. The receiver rebuilds the signed
- * text with ITS OWN fingerprint as the recipient, so a request addressed to
- * anyone else fails verification.
+ * A peer signs each request with its instance key; what the signature covers
+ * and why is described in @airchat/shared/gossip (request-signature.ts). In
+ * short: method, path and query, the RECIPIENT's fingerprint, a timestamp and
+ * a hash of the body. This module is the receiving side. It rebuilds the
+ * signed text with this instance's own fingerprint as the recipient, so a
+ * request that was signed for any other instance fails verification.
  *
  * Compatibility with older instances
  * ----------------------------------
@@ -22,15 +18,22 @@
  *    still accept them.
  *  - Incoming requests are verified against the new signature whenever it is
  *    present. A request carrying only the old signature is refused unless the
- *    operator sets `GOSSIP_ACCEPT_LEGACY_SIGNATURES=true`. Set it only while
- *    peers you depend on are still running the old code, and unset it once
- *    they have upgraded: while it is on, the replay described above works
- *    against this instance.
+ *    operator sets the environment variable
+ *    `GOSSIP_ACCEPT_LEGACY_SIGNATURES=true` (default: refused). Set it only
+ *    while peers you depend on are still running the old code, and unset it
+ *    once they have upgraded: while it is on, the replay described above
+ *    works against this instance.
  */
 
-import crypto from 'node:crypto';
 import type { NextRequest, NextResponse } from 'next/server';
-import { signData, verifySignature } from '@airchat/shared/gossip';
+import {
+  verifySignature,
+  buildRequestSignPayload,
+  GOSSIP_FINGERPRINT_HEADER as FINGERPRINT_HEADER,
+  GOSSIP_TIMESTAMP_HEADER as TIMESTAMP_HEADER,
+  GOSSIP_LEGACY_SIGNATURE_HEADER as LEGACY_SIGNATURE_HEADER,
+  GOSSIP_SIGNATURE_V2_HEADER as SIGNATURE_V2_HEADER,
+} from '@airchat/shared/gossip';
 import type { GossipInstanceConfig, GossipPeer, GossipStorageAdapter } from '@airchat/shared';
 import { errorResponse } from '@/lib/api-v1-response';
 import { getGossipAdapter } from '@/lib/api-v2-auth';
@@ -38,10 +41,7 @@ import { checkIpRateLimit, checkRateLimit } from '@/lib/rate-limit';
 import { clientIp } from '@/lib/client-ip';
 import { checkGossipNonce } from '@/lib/gossip-nonce';
 
-export const FINGERPRINT_HEADER = 'x-gossip-fingerprint';
-export const TIMESTAMP_HEADER = 'x-gossip-timestamp';
-export const LEGACY_SIGNATURE_HEADER = 'x-gossip-signature';
-export const SIGNATURE_V2_HEADER = 'x-gossip-signature-v2';
+export { signPeerRequest, buildRequestSignPayload, canonicalRequestTarget } from '@airchat/shared/gossip';
 
 /** An instance fingerprint: the first 16 hex characters of sha256(public key). */
 export const FINGERPRINT_RE = /^[0-9a-f]{16}$/;
@@ -53,82 +53,10 @@ const SIGNATURE_RE = /^[A-Za-z0-9+/=_-]{16,128}$/;
 const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/;
 
 const REQUEST_WINDOW_MS = 5 * 60 * 1000;
-const GOSSIP_PATH_MARKER = '/api/v2/gossip/';
 
 /** Whether requests signed only with the old timestamp signature are accepted. */
 export function legacySignaturesAccepted(): boolean {
   return process.env.GOSSIP_ACCEPT_LEGACY_SIGNATURES === 'true';
-}
-
-/**
- * The path and query of a gossip request in the form both sides sign.
- *
- * Only the part of the path from `/api/v2/gossip/` on is used, so a reverse
- * proxy that serves the instance under a path prefix does not break
- * signatures. Query parameters are decoded, sorted and re-encoded so that two
- * URL libraries escaping the same value differently still agree.
- */
-export function canonicalRequestTarget(url: URL): string {
-  const at = url.pathname.lastIndexOf(GOSSIP_PATH_MARKER);
-  const path = at >= 0 ? url.pathname.slice(at) : url.pathname;
-  const params = [...url.searchParams.entries()].sort(([ak, av], [bk, bv]) =>
-    ak === bk ? (av < bv ? -1 : av > bv ? 1 : 0) : ak < bk ? -1 : 1,
-  );
-  const query = new URLSearchParams(params).toString();
-  return query ? `${path}?${query}` : path;
-}
-
-/** The exact text covered by a v2 request signature. */
-export function buildRequestSignPayload(parts: {
-  method: string;
-  url: URL;
-  recipientFingerprint: string;
-  timestamp: string;
-  body: string;
-}): string {
-  // A JSON array rather than a joined string, so no field can run into the next.
-  return JSON.stringify([
-    'airchat-gossip-request-v2',
-    parts.method.toUpperCase(),
-    canonicalRequestTarget(parts.url),
-    parts.recipientFingerprint,
-    parts.timestamp,
-    crypto.createHash('sha256').update(parts.body, 'utf-8').digest('hex'),
-  ]);
-}
-
-/**
- * Headers that authenticate an outgoing request to one specific peer.
- *
- * Includes the old timestamp-only signature alongside the new one so peers on
- * earlier versions keep accepting us (see the note at the top of this file).
- */
-export function signPeerRequest(
-  privateKey: string,
-  request: {
-    method: string;
-    url: string;
-    senderFingerprint: string;
-    recipientFingerprint: string;
-    body?: string;
-    /** Defaults to now. */
-    timestamp?: string;
-  },
-): Record<string, string> {
-  const timestamp = request.timestamp ?? new Date().toISOString();
-  const payload = buildRequestSignPayload({
-    method: request.method,
-    url: new URL(request.url),
-    recipientFingerprint: request.recipientFingerprint,
-    timestamp,
-    body: request.body ?? '',
-  });
-  return {
-    [FINGERPRINT_HEADER]: request.senderFingerprint,
-    [TIMESTAMP_HEADER]: timestamp,
-    [LEGACY_SIGNATURE_HEADER]: signData(privateKey, timestamp),
-    [SIGNATURE_V2_HEADER]: signData(privateKey, payload),
-  };
 }
 
 /** Read a request body as text, giving up once it exceeds `maxBytes`. */

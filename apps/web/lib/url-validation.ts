@@ -323,7 +323,8 @@ async function requestPinned(
 
   return new Promise<Response>((resolve, reject) => {
     let settled = false;
-    let deadline: ReturnType<typeof setTimeout> | undefined;
+    // `req` and `deadline` are created below; these two only run from
+    // callbacks, by which time both exist.
     const finish = (outcome: () => void) => {
       if (settled) return;
       settled = true;
@@ -378,7 +379,7 @@ async function requestPinned(
       },
     );
 
-    deadline = setTimeout(() => fail(new Error(`Peer request timed out: ${url}`)), timeoutMs);
+    const deadline = setTimeout(() => fail(new Error(`Peer request timed out: ${url}`)), timeoutMs);
     req.setTimeout(timeoutMs, () => fail(new Error(`Peer request timed out: ${url}`)));
     req.on('error', (error: Error) => finish(() => reject(error)));
     if (body) req.write(body);
