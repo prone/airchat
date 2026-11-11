@@ -22,6 +22,7 @@ vi.mock('@/lib/api-v2-auth', () => ({
     countAgentsByMachine: async () => 0,
   }),
   getSupabaseClient: () => ({ from: () => ({ upsert }) }),
+  forgetCachedAgent: () => {},
 }));
 
 const ip = { allowed: true };

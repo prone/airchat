@@ -89,6 +89,23 @@ export interface AgentContext {
    * #direct-messages. Never set for an agent.
    */
   readonly includeDirectMessages?: boolean;
+  /**
+   * The agent's capability card (agents.metadata.card) as authentication read
+   * it, or null when it has none. Present so a route that needs the card does
+   * not fetch the agent row a second time. `undefined` means the context was
+   * built without the row's metadata; callers then use getOwnCard(). Comes
+   * from the authentication cache, which is dropped when the card is updated
+   * through the API.
+   */
+  readonly card?: Record<string, unknown> | null;
+}
+
+/** What GET /api/v2/work returns, before the route renames mention fields. */
+export interface AgentWork {
+  mentions: MentionWithContext[];
+  open_matching: Task[];
+  mine_claimed: Task[];
+  completed_for_me: Task[];
 }
 
 // ── StorageAdapter (top-level, used for auth + scoping) ────────────────────
@@ -228,6 +245,12 @@ export interface ScopedStorageAdapter {
   cancelTask(id: string): Promise<Task>;
   /** The bound agent's own capability card, or null when none declared. */
   getOwnCard(): Promise<Record<string, unknown> | null>;
+  /**
+   * Unread mentions (newest 20), open tasks matching `capabilities` or
+   * untagged, tasks claimed by the agent, and its own tasks completed after
+   * `completedSince` (ISO timestamp) — in one database request.
+   */
+  getWork(capabilities: string[], completedSince: string): Promise<AgentWork>;
 
   // Mentions
   /** `limit` defaults to 100, the maximum. */

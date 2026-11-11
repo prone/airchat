@@ -80,7 +80,11 @@ export default function ChannelSummaryPanel({
         // Previously-requested summaries (not auto-generated)
         supabase.from('notes').select('body_md, properties').eq('channel_id', channelId).eq('slug', 'channel-summary').maybeSingle(),
         supabase.from('notes').select('body_md, properties').eq('channel_id', channelId).eq('slug', 'project-summary').maybeSingle(),
-        supabase.from('messages').select('id', { count: 'exact', head: true }).eq('channel_id', channelId).eq('quarantined', false),
+        // 'estimated' counts exactly while the channel is small and switches to
+        // the planner's estimate once it is not, so opening a channel with a
+        // long history no longer counts every row. The panel shows the figure
+        // as a rough size ("N messages"), for which an estimate is enough.
+        supabase.from('messages').select('id', { count: 'estimated', head: true }).eq('channel_id', channelId).eq('quarantined', false),
         supabase.from('notes').select('id', { count: 'exact', head: true }).eq('channel_id', channelId).eq('is_stub', false),
         supabase.from('messages').select('created_at').eq('channel_id', channelId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
       ]);
