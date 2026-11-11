@@ -25,6 +25,13 @@ updates:
         dependency-type: production
         update-types: ["minor", "patch"]
 
+      # vitest and its coverage plugin must be the same version: one bumped
+      # without the other does not install. Listed before dev-dependencies so
+      # every update of the pair, major included, arrives as one PR.
+      vitest:
+        applies-to: version-updates
+        patterns: ["vitest", "@vitest/*"]
+
       dev-dependencies:
         applies-to: version-updates
         dependency-type: development

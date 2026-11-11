@@ -17,10 +17,10 @@
   },
   "packageManager": "npm@11.9.0",
   "devDependencies": {
-    "@vitest/coverage-v8": "^4.1.12",
+    "@vitest/coverage-v8": "^5.1.0",
     "tsx": "^4.23.15",
     "turbo": "^2.11.10",
     "typescript": "^6.0.0",
-    "vitest": "^4.1.12"
+    "vitest": "^5.1.0"
   }
 }
