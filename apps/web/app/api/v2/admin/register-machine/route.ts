@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { timingSafeEqual } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 import { getSupabaseClient } from '@/lib/api-v2-auth';
+import { checkIpRateLimit } from '@/lib/rate-limit';
+import { clientIp } from '@/lib/client-ip';
 
 const MACHINE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,49}$/;
 const PUBLIC_KEY_RE = /^[0-9a-f]{64}$/;
@@ -14,6 +16,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: 'Machine registration is not enabled on this server' },
       { status: 501 },
+    );
+  }
+
+  // This is the operator secret, and nothing else stands in front of it here,
+  // so guesses are throttled per address before the body is even read. The
+  // other routes that accept the same secret (x-admin-secret) already do this.
+  const limited = checkIpRateLimit(clientIp(request));
+  if (!limited.allowed) {
+    return NextResponse.json(
+      { error: 'Too many requests' },
+      { status: 429, headers: { 'Retry-After': String(Math.ceil((limited.retryAfterMs ?? 60_000) / 1000)) } },
     );
   }
 
@@ -37,10 +50,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Validate admin secret (constant-time comparison)
-  const secretBuf = Buffer.from(secret);
-  const providedBuf = Buffer.from(admin_secret);
-  if (secretBuf.length !== providedBuf.length || !timingSafeEqual(secretBuf, providedBuf)) {
+  // Hash both sides so the comparison takes the same time whatever the length
+  // of the guess (comparing lengths first told a caller how long the secret is).
+  const secretBuf = createHash('sha256').update(secret).digest();
+  const providedBuf = createHash('sha256').update(admin_secret).digest();
+  if (!timingSafeEqual(secretBuf, providedBuf)) {
     return NextResponse.json({ error: 'Invalid admin secret' }, { status: 403 });
   }
 

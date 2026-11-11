@@ -11,8 +11,8 @@ const INVENTORY_NOTES = {
         type: 'model-inventory',
         machine: 'workstation',
         models: [
-          { name: 'qwen2.5-coder:32b', capability: 'llm-qwen2-5-coder-32b', kind: 'llm', backend: 'ollama', location: 'local', endpoint: 'http://100.105.10.12:11434/v1', size_bytes: 19864223357 },
-          { name: 'gemma4:12b', capability: 'llm-gemma4-12b', kind: 'llm', backend: 'ollama', location: 'local', endpoint: 'http://100.105.10.12:11434/v1' },
+          { name: 'qwen2.5-coder:32b', capability: 'llm-qwen2-5-coder-32b', kind: 'llm', backend: 'ollama', location: 'local', endpoint: 'http://100.64.0.12:11434/v1', size_bytes: 19864223357 },
+          { name: 'gemma4:12b', capability: 'llm-gemma4-12b', kind: 'llm', backend: 'ollama', location: 'local', endpoint: 'http://100.64.0.12:11434/v1' },
         ],
       },
     },
@@ -87,7 +87,7 @@ describe('listModels', () => {
 describe('getModelEndpoint', () => {
   it('returns the endpoint for a served model', async () => {
     const result = await getModelEndpoint(mockClient(), 'gemma4:12b') as any;
-    expect(result.endpoint).toBe('http://100.105.10.12:11434/v1');
+    expect(result.endpoint).toBe('http://100.64.0.12:11434/v1');
     expect(result.machine).toBe('workstation');
   });
 

@@ -74,8 +74,15 @@ export class SupabaseStorageAdapter implements StorageAdapter {
     const cardPatch = card ? { metadata: { card } } : {};
 
     // Conditional UPDATE: only update if the agent is owned by this machine
-    // (or has no owner) AND has not been deactivated. This avoids a
-    // SELECT-then-UPDATE TOCTOU race.
+    // AND has not been deactivated. This avoids a SELECT-then-UPDATE TOCTOU
+    // race.
+    //
+    // An agent with no owning machine is NOT claimable. Those rows are the
+    // ones the server creates for itself (dashboard-admin, janitor,
+    // summarizer), the claude.ai connector agents and agents from federated
+    // peers. Registration used to adopt them, which let any machine install
+    // its own key on one and then read that identity's direct messages and
+    // post under its name.
     //
     // `active` is matched, never set. Re-registration used to set it true,
     // which meant an operator could not switch an agent off: deactivating it
@@ -93,7 +100,7 @@ export class SupabaseStorageAdapter implements StorageAdapter {
       })
       .eq('name', agentName)
       .eq('active', true)
-      .or(`machine_id.eq.${machineId},machine_id.is.null`)
+      .eq('machine_id', machineId)
       .select('*')
       .single();
 
@@ -118,8 +125,7 @@ export class SupabaseStorageAdapter implements StorageAdapter {
       // Ownership is reported first, so a machine that does not own the name
       // learns nothing about the agent's state beyond the name being taken —
       // which the conflict already tells it.
-      const ownedByCaller =
-        existing.machine_id === machineId || existing.machine_id === null;
+      const ownedByCaller = existing.machine_id === machineId;
       if (!ownedByCaller) {
         throw new Error('CONFLICT: Agent name is owned by a different machine');
       }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyRegistration } from '@airchat/shared/crypto';
-import { validateCard } from '@airchat/shared';
+import { validateCard, RESERVED_AGENT_NAMES } from '@airchat/shared';
 import { getStorageAdapter } from '@/lib/api-v2-auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { clientIp } from '@/lib/client-ip';
@@ -104,6 +104,13 @@ export async function POST(request: NextRequest) {
       },
       { status: 400 }
     );
+  }
+
+  // The server's own agents (dashboard-admin, janitor, summarizer) are not
+  // registrable. Refused before any database work, and whether or not the row
+  // exists yet, so the name cannot be taken first on a new instance.
+  if (RESERVED_AGENT_NAMES.includes(agent_name.toLowerCase())) {
+    return NextResponse.json({ error: 'Agent name is reserved' }, { status: 409 });
   }
 
   // Per-machine rate limit (5 registrations/min) — checked after body parse

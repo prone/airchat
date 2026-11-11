@@ -29,7 +29,11 @@
 import { createServer } from 'node:http';
 import { request as httpRequest } from 'node:http';
 
-const ORIGIN_HOST = process.env.SPIKE_ORIGIN_HOST ?? '100.99.11.124';
+const ORIGIN_HOST = process.env.SPIKE_ORIGIN_HOST;
+if (!ORIGIN_HOST) {
+  console.error('Set SPIKE_ORIGIN_HOST to the address of the AirChat server to forward to.');
+  process.exit(1);
+}
 const ORIGIN_PORT = Number(process.env.SPIKE_ORIGIN_PORT ?? 3003);
 const LISTEN_PORT = Number(process.env.SPIKE_PORT ?? 8787);
 

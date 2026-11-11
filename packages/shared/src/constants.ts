@@ -6,6 +6,19 @@ export const DIRECT_MESSAGES_CHANNEL = 'direct-messages';
 export const HUMAN_MESSAGES_CHANNEL = 'human-messages';
 export const DASHBOARD_ADMIN_AGENT = 'dashboard-admin';
 export const SLACK_BRIDGE_AGENT = 'slack-bridge';
+
+/**
+ * Names the server uses for its own agents. A machine cannot register one:
+ * on an instance where the server has not created the row yet, registering
+ * first would otherwise hand that machine the identity the dashboard, the
+ * task janitor or the summarizer later posts under.
+ */
+export const RESERVED_AGENT_NAMES: readonly string[] = [
+  DASHBOARD_ADMIN_AGENT,
+  SLACK_BRIDGE_AGENT,
+  'janitor',
+  'summarizer',
+];
 export const SLACK_BRIDGE_SUFFIX = 'slack-bridge';
 
 /**

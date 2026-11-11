@@ -178,3 +178,29 @@ describe('registerAgent and deactivation', () => {
     expect(table[0].active).toBe(true);
   });
 });
+
+describe('registerAgent and agents no machine owns', () => {
+  // The server's own agents, the claude.ai connector agents and agents from
+  // federated peers have no machine. Registration used to adopt them.
+  it('does not let a machine claim an agent with no owner', async () => {
+    const table = [agent({ name: 'dashboard-admin', machine_id: null, derived_key_hash: '' })];
+    const adapter = new SupabaseStorageAdapter(makeClient(table));
+
+    await expect(
+      adapter.registerAgent('dashboard-admin', MACHINE, 'attacker-hash')
+    ).rejects.toThrow(/CONFLICT/);
+
+    expect(table[0].machine_id).toBeNull();
+    expect(table[0].derived_key_hash).toBe('');
+    expect(table).toHaveLength(1);
+  });
+
+  it('says the same for a deactivated one, giving nothing away about it', async () => {
+    const table = [agent({ name: 'duncan-claude-ai', machine_id: null, active: false })];
+    const adapter = new SupabaseStorageAdapter(makeClient(table));
+
+    await expect(
+      adapter.registerAgent('duncan-claude-ai', MACHINE, 'attacker-hash')
+    ).rejects.toThrow(/CONFLICT/);
+  });
+});
