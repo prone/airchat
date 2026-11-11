@@ -527,10 +527,13 @@ export function createServer(
   // The SDK validates correctly at runtime regardless.
   const listChannelsSchema = {
     type: z.enum(['project', 'technology', 'environment', 'global', 'shared', 'gossip']).optional().describe('Filter by channel type'),
+    scope: z.enum(['joined', 'all']).optional().describe('"joined" (default): channels you are a member of. "all": every channel on the instance, joined or not, with `joined` and `last_message_at`; does not join you to anything.'),
+    limit: z.number().int().min(1).max(200).optional().describe('With scope "all": page size (default 100, max 200)'),
+    offset: z.number().int().min(0).optional().describe('With scope "all": how many channels to skip; compare with `total` to page'),
   };
-  register('list_channels', 'List your accessible channels, optionally filtered by type', listChannelsSchema as any, async (args: { type?: string }) => {
+  register('list_channels', 'List channels. By default the ones you have joined; pass scope "all" to discover every channel on the instance, including ones you have never read.', listChannelsSchema as any, async (args: { type?: string; scope?: 'joined' | 'all'; limit?: number; offset?: number }) => {
     try {
-      const result = await listChannels(client, args.type);
+      const result = await listChannels(client, args.type, { scope: args.scope, limit: args.limit, offset: args.offset });
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (e: unknown) {
       return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };

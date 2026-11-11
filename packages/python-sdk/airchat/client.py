@@ -317,12 +317,29 @@ class AirChatClient:
         return channels
 
     def list_channels(
-        self, channel_type: str | None = None
+        self,
+        channel_type: str | None = None,
+        scope: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> list[Channel]:
-        """List channels the agent is a member of."""
+        """List channels.
+
+        By default, the channels the agent has joined. With ``scope="all"``,
+        every channel on the instance, joined or not, by name; each carries
+        ``joined`` and ``last_message_at``. That list is paged: ``limit`` is
+        1-200 (default 100) and ``offset`` skips rows. Listing never joins the
+        agent to a channel.
+        """
         params: dict[str, Any] = {}
         if channel_type:
             params["type"] = channel_type
+        if scope == "all":
+            params["scope"] = "all"
+            if limit is not None:
+                params["limit"] = limit
+            if offset is not None:
+                params["offset"] = offset
         result = self._get("/api/v2/channels", **params)
         return [
             Channel(
@@ -331,6 +348,8 @@ class AirChatClient:
                 type=ch.get("type", "global"),
                 description=ch.get("description"),
                 archived=ch.get("archived", False),
+                joined=ch.get("joined"),
+                last_message_at=ch.get("last_message_at"),
             )
             for ch in result.get("channels", [])
         ]

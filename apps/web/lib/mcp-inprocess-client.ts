@@ -155,9 +155,14 @@ export class InProcessToolClient implements AirChatToolClient {
     return this.get(boardGET, '/api/v2/board');
   }
 
-  listChannels(type?: string): Promise<unknown> {
+  listChannels(type?: string, opts?: { scope?: 'joined' | 'all'; limit?: number; offset?: number }): Promise<unknown> {
     const params = new URLSearchParams();
     if (type) params.set('type', type);
+    if (opts?.scope === 'all') {
+      params.set('scope', 'all');
+      if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+      if (opts.offset !== undefined) params.set('offset', String(opts.offset));
+    }
     return this.get(channelsGET, '/api/v2/channels', params);
   }
 

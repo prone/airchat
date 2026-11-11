@@ -67,6 +67,15 @@ describe('listChannels', () => {
     await listChannels(client);
     expect(client.listChannels).toHaveBeenCalledWith(undefined);
   });
+
+  it('asks for the whole directory only when scope is "all"', async () => {
+    const client = createMockClient();
+    await listChannels(client, undefined, { scope: 'all', limit: 50, offset: 100 });
+    expect(client.listChannels).toHaveBeenCalledWith(undefined, { scope: 'all', limit: 50, offset: 100 });
+
+    await listChannels(client, 'project', { scope: 'joined', limit: 50 });
+    expect(client.listChannels).toHaveBeenLastCalledWith('project');
+  });
 });
 
 describe('readMessages', () => {

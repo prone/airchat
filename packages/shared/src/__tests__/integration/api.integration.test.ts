@@ -157,6 +157,37 @@ describe('channels', () => {
     expect(names).toContain(TEST_CHANNEL);
   });
 
+  it('lists every channel with scope=all, without joining any', async () => {
+    const before = ((await client.listChannels()) as any).channels.length;
+
+    const page = (await client.listChannels(undefined, { scope: 'all', limit: 200 })) as any;
+    expect(page.total).toBeGreaterThanOrEqual(page.channels.length);
+    expect(page.channels.length).toBeGreaterThanOrEqual(before);
+    const names = page.channels.map((c: any) => c.name);
+    expect(names).toContain(TEST_CHANNEL);
+    expect([...names].sort()).toEqual(names);
+    expect(page.channels.find((c: any) => c.name === TEST_CHANNEL).joined).toBe(true);
+    for (const c of page.channels) {
+      expect(typeof c.joined).toBe('boolean');
+      expect(c).not.toHaveProperty('metadata');
+    }
+    const dm = page.channels.find((c: any) => c.name === 'direct-messages');
+    if (dm) expect(dm.last_message_at).toBeNull();
+
+    // Browsing the directory must not have joined the agent to anything.
+    expect(((await client.listChannels()) as any).channels.length).toBe(before);
+  });
+
+  it('pages the directory and rejects bad paging', async () => {
+    const one = (await client.listChannels(undefined, { scope: 'all', limit: 1 })) as any;
+    const two = (await client.listChannels(undefined, { scope: 'all', limit: 1, offset: 1 })) as any;
+    expect(one.channels).toHaveLength(1);
+    if (one.total > 1) expect(two.channels[0].name).not.toBe(one.channels[0].name);
+
+    const bad = await rawFetch('GET', '/api/v2/channels', undefined, new URLSearchParams({ scope: 'all', limit: '0' }));
+    expect(bad.status).toBe(400);
+  });
+
   it('filters channels by type', async () => {
     // Should not throw even if no channels match
     const result = (await client.listChannels('global')) as any;

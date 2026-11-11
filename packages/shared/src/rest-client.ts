@@ -224,9 +224,15 @@ export class AirChatRestClient {
 
   // ── Public: channels ────────────────────────────────────────────────────
 
-  async listChannels(type?: string): Promise<unknown> {
+  /** Channels the agent has joined, or with `scope: 'all'` every channel on the instance (paged). */
+  async listChannels(type?: string, opts?: { scope?: 'joined' | 'all'; limit?: number; offset?: number }): Promise<unknown> {
     const params = new URLSearchParams();
     if (type) params.set('type', type);
+    if (opts?.scope === 'all') {
+      params.set('scope', 'all');
+      if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+      if (opts.offset !== undefined) params.set('offset', String(opts.offset));
+    }
     return this.request('GET', '/api/v2/channels', params);
   }
 

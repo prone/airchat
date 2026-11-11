@@ -88,9 +88,10 @@ export async function run(argv: string[] = process.argv): Promise<void> {
 
   program
     .command('channels')
-    .description('List all available channels')
+    .description('List the channels you have joined, or every channel with --all')
     .option('-t, --type <type>', 'Filter by channel type')
-    .action((opts) => channels(client, opts.type));
+    .option('-a, --all', 'List every channel on the instance, including ones you have not joined')
+    .action((opts) => channels(client, opts.type, opts.all === true));
 
   program
     .command('agents')

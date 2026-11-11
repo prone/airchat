@@ -8,7 +8,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Agent, Channel, ChannelType, ConnectorToken, FederationScope, Message, Note, NoteBacklink, NoteRevision, SearchResult } from './types.js';
+import type { Agent, Channel, ChannelDirectoryEntry, ChannelDirectoryPage, ChannelType, ConnectorToken, FederationScope, Message, Note, NoteBacklink, NoteRevision, SearchResult } from './types.js';
 import { extractWikiLinks, type WikiLinkTarget } from './notes.js';
 import { DIRECT_MESSAGES_CHANNEL } from './constants.js';
 import { trustedMessageSource } from './message-source.js';
@@ -549,6 +549,70 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       return channels.filter((c) => c.type === type);
     }
     return channels;
+  }
+
+  async listAllChannels(
+    opts: { type?: string; limit?: number; offset?: number } = {},
+  ): Promise<ChannelDirectoryPage> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 100, 200));
+    const offset = Math.max(0, opts.offset ?? 0);
+
+    let query = this.client
+      .from('channels')
+      .select('id, name, type, federation_scope, description, created_at', { count: 'exact' })
+      .eq('archived', false)
+      .order('name', { ascending: true })
+      .range(offset, offset + limit - 1);
+    if (opts.type) query = query.eq('type', opts.type);
+
+    const [{ data: rows, error, count }, { data: memberships, error: memberError }] = await Promise.all([
+      query,
+      this.client.from('channel_memberships').select('channel_id').eq('agent_id', this.ctx.agentId),
+    ]);
+    if (error) throw new Error(`Failed to list channels: ${error.message}`);
+    if (memberError) throw new Error(`Failed to list channels: ${memberError.message}`);
+
+    const joined = new Set((memberships ?? []).map((m: { channel_id: string }) => m.channel_id));
+    const channels = (rows ?? []) as Array<Omit<ChannelDirectoryEntry, 'joined' | 'last_message_at'>>;
+
+    // Newest visible message per channel. One indexed lookup each
+    // (idx_messages_channel_created), run a few at a time so a page of 200
+    // channels cannot open 200 connections at once.
+    const lastMessageAt = new Map<string, string | null>();
+    const LOOKUPS_AT_ONCE = 20;
+    for (let i = 0; i < channels.length; i += LOOKUPS_AT_ONCE) {
+      await Promise.all(channels.slice(i, i + LOOKUPS_AT_ONCE).map(async (ch) => {
+        // Activity in #direct-messages is other agents' private traffic.
+        if (ch.name === DIRECT_MESSAGES_CHANNEL) return;
+        const { data, error: latestError } = await this.client
+          .from('messages')
+          .select('created_at')
+          .eq('channel_id', ch.id)
+          .eq('quarantined', false)
+          .order('created_at', { ascending: false })
+          .limit(1);
+        if (latestError) throw new Error(`Failed to list channels: ${latestError.message}`);
+        lastMessageAt.set(ch.id, (data as Array<{ created_at: string }> | null)?.[0]?.created_at ?? null);
+      }));
+    }
+
+    return {
+      // Named fields, not a spread: a directory row must never carry channel
+      // metadata or its creator, whatever the query happened to return.
+      channels: channels.map((ch) => ({
+        id: ch.id,
+        name: ch.name,
+        type: ch.type,
+        federation_scope: ch.federation_scope,
+        description: ch.description,
+        created_at: ch.created_at,
+        joined: joined.has(ch.id),
+        last_message_at: lastMessageAt.get(ch.id) ?? null,
+      })),
+      total: count ?? channels.length,
+      limit,
+      offset,
+    };
   }
 
   async findChannelByName(name: string): Promise<Channel | null> {
