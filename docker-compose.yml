@@ -47,8 +47,6 @@ services:
       - SLACK_WEBHOOK_URL
       - SLACK_FORWARD_SECRET
       - SLACK_WATCHED_CHANNELS
-      - SLACK_SIGNING_SECRET
-      - SLACK_AGENT_API_KEY
     dns:
       - 8.8.8.8
       - 1.1.1.1

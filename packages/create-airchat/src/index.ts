@@ -860,11 +860,8 @@ async function main() {
 // silently runs the setup wizard instead — the installer is the fallback branch,
 // so an unlisted command does not error, it just does the wrong thing.
 const CLI_COMMANDS = new Set([
-  // 'dm' ships from fix/mention-hook-delivery; listed here so the published
-  // bin routes it to the CLI once that branch merges.
-  'doctor', 'check', 'read', 'post', 'search', 'status', 'channels', 'agents', 'tasks', 'dm',
-  'notes', 'note', 'write-note', 'backlinks', 'summarize', 'gossip', 'peer',
-  'dm', 'whoami',
+  'doctor', 'check', 'read', 'post', 'whoami', 'dm', 'search', 'status', 'channels', 'agents',
+  'usage', 'tasks', 'notes', 'note', 'write-note', 'backlinks', 'summarize', 'gossip', 'peer',
 ]);
 
 const sub = process.argv[2];

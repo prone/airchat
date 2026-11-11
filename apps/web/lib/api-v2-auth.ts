@@ -1,10 +1,9 @@
-// TODO [post-launch]: The migration (00008) defines scoped Postgres roles
-// (airchat_agent_api for messaging, airchat_registrar for registration) but
-// this module only uses the service role. Production multi-tenant deployments
-// should use role-specific clients to enforce least-privilege at the database
-// layer. This requires either Supabase role-switching support (SET ROLE) or
-// separate connection strings per role. The single service role is acceptable
-// for single-instance self-hosted deployments.
+// Every database call from the API goes through the service role, which
+// bypasses row-level security; the checks in the storage adapter and the routes
+// are what decide who may read or write what. Migration 00008 also defines
+// narrower Postgres roles (airchat_agent_api, airchat_registrar). Nothing uses
+// them: supabase-js cannot switch role per request. An operator hosting several
+// tenants on one database should not rely on them as a boundary.
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { NextRequest, NextResponse } from 'next/server';
