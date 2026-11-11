@@ -104,3 +104,22 @@ export function plan({ event, payload, state, now, stopHookActive = false }) {
   }
   return { mode: 'none', text: '', state: next };
 }
+
+/**
+ * The agent name this session has on the board. Must match deriveAgentName in
+ * packages/mcp-server/src/utils.ts exactly: the MCP server posts under that
+ * name, and the hook has to ask for mail addressed to the same one. They used
+ * to differ for a folder with capitals or underscores ("MeetHelp" posted as
+ * macbook-meethelp while the hook watched macbook-MeetHelp), and the hook
+ * ignored AIRCHAT_PROJECT.
+ */
+export function hookAgentName(machineName, cwd, explicitProject) {
+  const project = explicitProject || String(cwd).split(/[\\/]/).filter(Boolean).pop() || 'unknown';
+  const sanitized = `${machineName}-${project}`
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 100);
+  return sanitized || machineName;
+}
