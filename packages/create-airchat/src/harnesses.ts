@@ -270,3 +270,40 @@ export function installInstructions(filePath: string, content: string): HarnessR
     return { ok: false, message: e.message };
   }
 }
+
+/**
+ * The Claude Code events the work hook listens on:
+ *   UserPromptSubmit — when the user types;
+ *   SessionStart     — when a session opens or resumes;
+ *   Stop             — when the agent finishes a turn, so a message that
+ *                      arrived while it was working is read straight away.
+ */
+export const WORK_HOOK_EVENTS = ['UserPromptSubmit', 'SessionStart', 'Stop'] as const;
+
+/**
+ * Add the check-work hook to a Claude Code settings object for every event in
+ * WORK_HOOK_EVENTS, leaving any other hooks alone. Safe to run repeatedly.
+ * Returns the events it added the hook to (empty when all were present).
+ */
+export function addWorkHooks(settings: any, hookCommand: string): string[] {
+  if (!settings.hooks) settings.hooks = {};
+  const added: string[] = [];
+  for (const event of WORK_HOOK_EVENTS) {
+    const entries: any[] = Array.isArray(settings.hooks[event]) ? settings.hooks[event] : [];
+    // check-work.mjs supersedes check-mentions.mjs (which no longer exists in
+    // the repo) — drop stale entries so old installs don't run a dead path.
+    const kept = entries.filter(
+      (entry: any) => !entry.hooks?.some((h: any) => h.command?.includes('check-mentions')),
+    );
+    const present = kept.some((entry: any) => entry.hooks?.some((h: any) => h.command?.includes('check-work')));
+    if (!present) {
+      const entry: any = { hooks: [{ type: 'command', command: hookCommand, timeout: 15 }] };
+      // Only prompt hooks take a matcher worth setting; '' matches everything.
+      if (event === 'UserPromptSubmit') entry.matcher = '';
+      kept.push(entry);
+      added.push(event);
+    }
+    settings.hooks[event] = kept;
+  }
+  return added;
+}

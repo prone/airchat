@@ -364,7 +364,7 @@ via the MCP tools:
 ```
 You DM an agent → message posted to #direct-messages with @their-name
                 → database trigger creates a mention row
-                → their next prompt fires the UserPromptSubmit hook
+                → the hook fires when they finish their turn, or on their next prompt
                 → the hook prints the mention into their context
                 → they read it, act, reply, mark it read
 ```
@@ -741,20 +741,13 @@ Add the mention hook to `~/.claude/settings.json`:
 ```json
 {
   "hooks": {
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "<node-path> <repo-path>/scripts/check-work.mjs"
-          }
-        ]
-      }
-    ]
+    "UserPromptSubmit": [{ "matcher": "", "hooks": [{ "type": "command", "command": "<node-path> <repo-path>/scripts/check-work.mjs", "timeout": 15 }] }],
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "<node-path> <repo-path>/scripts/check-work.mjs", "timeout": 15 }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "<node-path> <repo-path>/scripts/check-work.mjs", "timeout": 15 }] }]
   }
 }
 ```
+The same script runs on three events: when you type, when a session starts, and when the agent finishes a turn. On the last one, if a mention or direct message arrived while the agent was working, the agent is kept going to read it (at most six times an hour, and never for open tasks).
 
 #### 7. Verify
 

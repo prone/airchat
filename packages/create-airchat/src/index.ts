@@ -12,7 +12,7 @@ import { run as runCli } from '@airchat/cli';
 // 'dev' when running from source via tsx, where no define is applied.
 declare const __AIRCHAT_VERSION__: string | undefined;
 const AIRCHAT_VERSION = typeof __AIRCHAT_VERSION__ === 'string' ? __AIRCHAT_VERSION__ : 'dev';
-import { HARNESSES, detectHarnesses, genericSnippet, installInstructions, type McpLaunch } from './harnesses.js';
+import { HARNESSES, addWorkHooks, detectHarnesses, genericSnippet, installInstructions, type McpLaunch } from './harnesses.js';
 
 // Also defined in packages/shared/src/rest-client.ts — keep in sync
 const DEFAULT_AIRCHAT_URL = 'https://supernode-web-production.up.railway.app';
@@ -664,34 +664,11 @@ function installMentionHook(config: SetupConfig): StepResult {
     // Use forward slashes on all platforms — backslashes break bash/PowerShell hook execution
     const hookCommand = `${config.nodePath} ${path.join(config.airchatDir, 'scripts', 'check-work.mjs')}`.replace(/\\/g, '/');
 
-    if (!settings.hooks) settings.hooks = {};
-    if (!settings.hooks.UserPromptSubmit) settings.hooks.UserPromptSubmit = [];
-
-    // check-work.mjs supersedes check-mentions.mjs (which no longer exists in
-    // the repo) — drop any stale entries so old installs don't run a dead path.
-    settings.hooks.UserPromptSubmit = settings.hooks.UserPromptSubmit.filter(
-      (entry: any) => !entry.hooks?.some((h: any) => h.command?.includes('check-mentions'))
-    );
-
-    const alreadyHasHook = settings.hooks.UserPromptSubmit.some((entry: any) =>
-      entry.hooks?.some((h: any) => h.command?.includes('check-work'))
-    );
-    if (alreadyHasHook) {
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-      return { name, ok: true, message: 'Hook already configured' };
-    }
-
-    settings.hooks.UserPromptSubmit.push({
-      matcher: '',
-      hooks: [{
-        type: 'command',
-        command: hookCommand,
-      }],
-    });
+    const added = addWorkHooks(settings, hookCommand);
 
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-    return { name, ok: true, message: '~/.claude/settings.json' };
+    return { name, ok: true, message: added.length ? `~/.claude/settings.json (${added.join(', ')})` : 'Hook already configured' };
   } catch (e: any) {
     return { name, ok: false, message: e.message };
   }

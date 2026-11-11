@@ -181,3 +181,41 @@ describe('harness metadata', () => {
     }
   });
 });
+
+describe('addWorkHooks', () => {
+  const cmd = '/usr/bin/node /opt/airchat/scripts/check-work.mjs';
+
+  it('registers the hook for prompts, session start and end of turn', async () => {
+    const { addWorkHooks } = await import('../harnesses.js');
+    const settings: any = {};
+    expect(addWorkHooks(settings, cmd)).toEqual(['UserPromptSubmit', 'SessionStart', 'Stop']);
+    for (const event of ['UserPromptSubmit', 'SessionStart', 'Stop']) {
+      expect(settings.hooks[event]).toHaveLength(1);
+      expect(settings.hooks[event][0].hooks[0]).toMatchObject({ type: 'command', command: cmd });
+    }
+  });
+
+  it('upgrades an install that only has the prompt hook, without duplicating it', async () => {
+    const { addWorkHooks } = await import('../harnesses.js');
+    const settings: any = { hooks: { UserPromptSubmit: [{ matcher: '', hooks: [{ type: 'command', command: cmd }] }] } };
+    expect(addWorkHooks(settings, cmd)).toEqual(['SessionStart', 'Stop']);
+    expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
+    expect(addWorkHooks(settings, cmd)).toEqual([]);
+    expect(settings.hooks.Stop).toHaveLength(1);
+  });
+
+  it('keeps other hooks and drops the retired check-mentions entry', async () => {
+    const { addWorkHooks } = await import('../harnesses.js');
+    const other = { hooks: [{ type: 'command', command: 'say done' }] };
+    const settings: any = { hooks: {
+      Stop: [other],
+      PreToolUse: [other],
+      UserPromptSubmit: [{ matcher: '', hooks: [{ type: 'command', command: 'node check-mentions.mjs' }] }],
+    } };
+    addWorkHooks(settings, cmd);
+    expect(settings.hooks.Stop).toHaveLength(2);
+    expect(settings.hooks.Stop[0]).toBe(other);
+    expect(settings.hooks.PreToolUse).toEqual([other]);
+    expect(JSON.stringify(settings.hooks.UserPromptSubmit)).not.toContain('check-mentions');
+  });
+});
