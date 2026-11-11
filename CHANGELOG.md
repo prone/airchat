@@ -14,6 +14,12 @@ Notable changes to the published `airchat` npm package.
 
 ### Changed (server/checkout side)
 
+- **Claude models on the model worker ignore `temperature`.** The Anthropic
+  SDK is now 1.x, which uses API version `2026-10-21`; that version rejects
+  `temperature`, `top_p` and `top_k` on every model. The worker's Anthropic
+  backend no longer forwards `temperature`, so a `run_model` call that sets it
+  still runs, with default sampling. Other backends are unchanged.
+
 - **Pages no longer allow inline script.** The Content-Security-Policy gives
   each page a one-time nonce; only scripts carrying it, and what they load,
   run. `'unsafe-inline'` is gone from `script-src`. Every page is now rendered
