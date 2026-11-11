@@ -51,7 +51,13 @@ let SELF_AGENT = '';
 async function selectAgentKey(): Promise<void> {
   if (!fs.existsSync(agentsDir)) return;
 
-  const keyFiles = fs.readdirSync(agentsDir).filter(f => f.endsWith('.key')).sort();
+  // The integration suite's agent goes first when this machine has one: it is
+  // marked as a test agent on the server, so the smoke run does not put some
+  // unrelated project's agent at the top of everyone's "recently active" list.
+  const isTestKey = (f: string) => f.endsWith('-integration-test.key');
+  const keyFiles = fs.readdirSync(agentsDir).filter(f => f.endsWith('.key')).sort(
+    (x, y) => Number(isTestKey(y)) - Number(isTestKey(x)) || x.localeCompare(y),
+  );
   const rejected: string[] = [];
 
   for (const file of keyFiles) {
