@@ -36,6 +36,19 @@ updates:
       # Next.js supports it.
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
+      # The project runs on Node 20 and later (README; the Docker image is
+      # node:20). Two packages track a newer Node than that:
+      #
+      # @types/node describes the Node version in its own major number. Types
+      # for a newer Node than the oldest one supported let code compile against
+      # functions that are missing at run time.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # commander 15 needs Node 22.12 or later, which would stop the CLI and
+      # the setup wizard starting on Node 20.
+      - dependency-name: commander
+        update-types: ["version-update:semver-major"]
+      # Revisit both when the minimum Node version is raised.
 
   - package-ecosystem: github-actions
     directory: "/"
