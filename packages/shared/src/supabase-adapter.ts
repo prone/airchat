@@ -15,6 +15,7 @@ import { trustedMessageSource } from './message-source.js';
 import type { Task, TaskStatus } from './tasks.js';
 import type {
   AgentContext,
+  AgentWork,
   BoardChannel,
   MachineKey,
   MentionWithContext,
@@ -297,8 +298,144 @@ function boardPreview(row: unknown): BoardChannel['latest'] {
   };
 }
 
+/** How many unread mentions and tasks per list a work check returns. */
+const WORK_MENTION_LIMIT = 20;
+const WORK_TASK_LIMIT = 50;
+
+/** One row of board_summary() (migration 00039). */
+interface BoardSummaryRow {
+  channel: string;
+  type: string;
+  federation_scope: string;
+  unread: number;
+  joined: boolean;
+  latest_id: string | null;
+  /** At most the first BOARD_PREVIEW_CHARS characters. */
+  latest_content: string | null;
+  /** Length of the whole message as JavaScript counts it (UTF-16 units). */
+  latest_content_units: number | null;
+  latest_created_at: string | null;
+  latest_author_agent_id: string | null;
+  latest_author_name: string | null;
+}
+
+/**
+ * Turn a board_summary() row into the object the board has always returned.
+ * The database sends only the start of a long message plus its full length,
+ * so the truncation notice can be written without the rest of the text
+ * crossing the wire.
+ */
+function boardChannelFromRow(row: BoardSummaryRow): BoardChannel {
+  let latest: BoardChannel['latest'] = null;
+  if (row.latest_id) {
+    const head = row.latest_content ?? '';
+    const fullLength = row.latest_content_units ?? head.length;
+    latest = {
+      id: row.latest_id,
+      content:
+        fullLength <= BOARD_PREVIEW_CHARS
+          ? head
+          : head.slice(0, BOARD_PREVIEW_CHARS) +
+            `… [TRUNCATED — ${fullLength - BOARD_PREVIEW_CHARS} more chars. Call read_messages with full=true for complete text]`,
+      created_at: row.latest_created_at ?? '',
+      author_agent_id: row.latest_author_agent_id,
+      agents: row.latest_author_name === null ? null : { name: row.latest_author_name },
+    } as BoardChannel['latest'];
+  }
+  return {
+    channel: row.channel,
+    type: row.type,
+    federation_scope: row.federation_scope,
+    unread: row.unread ?? 0,
+    joined: row.joined,
+    latest,
+  };
+}
+
 const MESSAGE_COLUMNS =
   'id, channel_id, author_agent_id, content, metadata, parent_message_id, pinned, created_at, author_display, agents:author_agent_id(id, name)';
+
+/**
+ * The board counts unread messages up to this many and stops: `unread: 100`
+ * means "100 or more". The field stays a number so no client has to change;
+ * counting exactly meant reading every unread row of a busy channel on every
+ * board check.
+ */
+export const BOARD_UNREAD_CAP = 100;
+
+/**
+ * PostgREST's answer when a function does not exist (or has no overload with
+ * these arguments): the database has not had the migration that adds it.
+ * Callers fall back to the queries the function replaces, so the application
+ * can be deployed before or after the migration.
+ */
+function isMissingFunction(error: unknown): boolean {
+  return (error as { code?: string } | null)?.code === 'PGRST202';
+}
+
+// ── Small in-process caches for the read path ──────────────────────────────
+//
+// A scoped adapter is built per request, so anything remembered on the
+// instance is forgotten before it can be reused. These live at module level
+// instead. Both are bounded, and both hold only facts whose staleness is
+// harmless for the stated time.
+
+/**
+ * (agent, channel) pairs known to have a membership row, with the time each
+ * was confirmed. Reading a channel calls ensureChannelMembership every time;
+ * for an existing member that was a write request that changed nothing. An
+ * entry is trusted for 10 minutes, so if a membership row is removed, a read
+ * within 10 minutes of the last confirmation does not recreate it and the
+ * first read after that does. 20,000 pairs is about 150 agents in 130
+ * channels each; when full, the map is emptied and refills.
+ */
+const MEMBERSHIP_TTL_MS = 10 * 60_000;
+const MEMBERSHIP_CACHE_MAX = 20_000;
+const knownMemberships = new Map<string, number>();
+
+function membershipKnown(agentId: string, channelId: string): boolean {
+  const confirmedAt = knownMemberships.get(`${agentId}:${channelId}`);
+  return confirmedAt !== undefined && Date.now() - confirmedAt < MEMBERSHIP_TTL_MS;
+}
+
+function rememberMembership(agentId: string, channelId: string): void {
+  if (knownMemberships.size >= MEMBERSHIP_CACHE_MAX) knownMemberships.clear();
+  knownMemberships.set(`${agentId}:${channelId}`, Date.now());
+}
+
+/**
+ * Channel rows by name, for 30 seconds. Every message read starts by turning a
+ * channel name into its row, and channels change rarely. Staleness means: for
+ * up to 30 seconds after a channel is renamed, archived or edited, a read by
+ * its old name still resolves and the row returned still shows the old
+ * description and archived flag. Only channels that exist are cached, so a
+ * channel created a moment ago is found at once. 500 names is several times
+ * the number of channels on an instance; when full, the map is emptied.
+ */
+const CHANNEL_CACHE_TTL_MS = 30_000;
+const CHANNEL_CACHE_MAX = 500;
+const channelsByName = new Map<string, { channel: Channel; cachedAt: number }>();
+
+function cachedChannel(name: string): Channel | null {
+  const hit = channelsByName.get(name);
+  if (!hit) return null;
+  if (Date.now() - hit.cachedAt >= CHANNEL_CACHE_TTL_MS) {
+    channelsByName.delete(name);
+    return null;
+  }
+  return hit.channel;
+}
+
+function rememberChannel(channel: Channel): void {
+  if (channelsByName.size >= CHANNEL_CACHE_MAX) channelsByName.clear();
+  channelsByName.set(channel.name, { channel, cachedAt: Date.now() });
+}
+
+/** Empty the module-level caches. For tests, which reuse ids across cases. */
+export function resetAdapterCaches(): void {
+  knownMemberships.clear();
+  channelsByName.clear();
+}
 
 class SupabaseScopedAdapter implements ScopedStorageAdapter {
   constructor(
@@ -322,6 +459,20 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
   /** `undefined` = not looked up yet; `null` = the channel does not exist. */
   private dmChannelId?: string | null;
 
+  /**
+   * Names of channels this instance has already resolved, by id. A message
+   * read resolves the channel by name and then reads it by id on the same
+   * instance, so "is this #direct-messages?" can be answered from the name
+   * already in hand instead of a lookup per read.
+   */
+  private readonly resolvedChannelNames = new Map<string, string>();
+
+  /** Whether `channelId` is #direct-messages; one lookup only if not yet known. */
+  private async isDirectMessagesChannel(channelId: string): Promise<boolean> {
+    const name = this.resolvedChannelNames.get(channelId);
+    if (name !== undefined) return name === DIRECT_MESSAGES_CHANNEL;
+    return channelId === (await this.directMessagesChannelId());
+  }
 
   private async directMessagesChannelId(): Promise<string | null> {
     if (this.dmChannelId === undefined) {
@@ -533,6 +684,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       .eq('id', id)
       .single();
     if (error || !data) return null;
+    this.resolvedChannelNames.set(data.id, data.name);
     return data as Channel;
   }
 
@@ -571,6 +723,41 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
   ): Promise<ChannelDirectoryPage> {
     const limit = Math.max(1, Math.min(opts.limit ?? 100, 200));
     const offset = Math.max(0, opts.offset ?? 0);
+
+    // One request: channel_directory() (migration 00039) returns the page,
+    // the total, `joined` and each channel's newest visible message time. The
+    // code below it asked once per channel on the page — up to 200 requests —
+    // and remains only for a database that does not have the function yet.
+    const { data: directory, error: directoryError } = await this.client.rpc('channel_directory', {
+      p_agent_id: this.ctx.agentId,
+      p_type: opts.type ?? null,
+      p_limit: limit,
+      p_offset: offset,
+    });
+    if (!directoryError) {
+      const result = (directory ?? {}) as { total?: number; channels?: ChannelDirectoryEntry[] };
+      const page = result.channels ?? [];
+      return {
+        // Named fields, as below: whatever the function returns, a directory
+        // row carries exactly these.
+        channels: page.map((ch) => ({
+          id: ch.id,
+          name: ch.name,
+          type: ch.type,
+          federation_scope: ch.federation_scope,
+          description: ch.description,
+          created_at: ch.created_at,
+          joined: ch.joined === true,
+          last_message_at: ch.last_message_at ?? null,
+        })),
+        total: Number(result.total ?? page.length),
+        limit,
+        offset,
+      };
+    }
+    if (!isMissingFunction(directoryError)) {
+      throw new Error(`Failed to list channels: ${directoryError.message}`);
+    }
 
     let query = this.client
       .from('channels')
@@ -631,18 +818,24 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
   }
 
   async findChannelByName(name: string): Promise<Channel | null> {
-    const { data, error } = await this.client
-      .from('channels')
-      .select('*')
-      .eq('name', name)
-      .single();
+    let channel = cachedChannel(name);
+    if (!channel) {
+      const { data, error } = await this.client
+        .from('channels')
+        .select('*')
+        .eq('name', name)
+        .single();
 
-    if (error || !data) return null;
+      if (error || !data) return null;
+      channel = data as Channel;
+      rememberChannel(channel);
+    }
+    this.resolvedChannelNames.set(channel.id, channel.name);
 
     // Auto-join the channel
-    await this.ensureChannelMembership(data.id);
+    await this.ensureChannelMembership(channel.id);
 
-    return data as Channel;
+    return channel;
   }
 
   async getMessages(
@@ -657,7 +850,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     // returned. Either way the result is chronological.
     const forward = after !== undefined;
 
-    if (!this.seesAllDirectMessages() && channelId === (await this.directMessagesChannelId())) {
+    if (!this.seesAllDirectMessages() && (await this.isDirectMessagesChannel(channelId))) {
       return this.getDirectMessages(channelId, cap, before, after);
     }
 
@@ -795,19 +988,22 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     metadata?: Record<string, unknown>,
     parentMessageId?: string
   ): Promise<Message> {
-    // 1. Find or create channel by name
-    const channelId = await this.findOrCreateChannel(channelName);
+    // A send used to be five requests in a row: find the channel, upsert the
+    // membership, read the channel again for its federation scope, insert,
+    // then update the membership's last_read_at. It is now three: the first
+    // lookup returns the scope, and one upsert after the insert both creates
+    // the membership if it is missing and moves last_read_at.
 
-    // 2. Ensure agent is a member
-    await this.ensureChannelMembership(channelId);
+    // 1. Find or create channel by name (with its federation scope)
+    const channel = await this.findOrCreateChannelWithScope(channelName);
+    const channelId = channel.id;
 
-    // 3. Classify if channel is federated (shared or gossip)
+    // 2. Classify if channel is federated (shared or gossip)
     let safetyLabels: string[] = [];
     let quarantined = false;
     let classification: Record<string, unknown> | null = null;
 
-    const channel = await this.getChannelById(channelId);
-    if (channel && channel.federation_scope !== 'local' && this.patternSet) {
+    if (channel.federation_scope !== 'local' && this.patternSet) {
       const result: ClassificationResult = classifyMessage(
         content,
         metadata ?? null,
@@ -822,7 +1018,12 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       };
     }
 
-    // 4. Insert message with author_agent_id = ctx.agentId
+    // 3. Insert message with author_agent_id = ctx.agentId.
+    //
+    // The row is returned with the same columns a read returns, not `*`: the
+    // caller (and the send_message tool, which prints it into the agent's
+    // context) has no use for the search vector, the classifier's working
+    // notes or the safety labels.
     const { data: message, error } = await this.client
       .from('messages')
       .insert({
@@ -835,28 +1036,40 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
         quarantined,
         classification,
       })
-      .select('*')
+      .select(MESSAGE_COLUMNS)
       .single();
 
     if (error || !message) {
       throw new Error(`Failed to send message: ${error?.message ?? 'unknown error'}`);
     }
+    const sent = message as unknown as Message;
 
-    // 5. Update last_read_at for the author's membership
-    await this.client
-      .from('channel_memberships')
-      .update({ last_read_at: new Date().toISOString() })
-      .eq('agent_id', this.ctx.agentId)
-      .eq('channel_id', channelId);
+    // 4. Make the author a member and mark the channel read through this
+    // post, in one write. Without ignoreDuplicates this is ON CONFLICT DO
+    // UPDATE, which is wanted here: last_read_at has to move. Like the update
+    // it replaces, a failure does not undo a message that is already sent.
+    if (!this.ctx.readOnly) {
+      const { error: memberError } = await this.client
+        .from('channel_memberships')
+        .upsert(
+          {
+            agent_id: this.ctx.agentId,
+            channel_id: channelId,
+            last_read_at: new Date().toISOString(),
+          },
+          { onConflict: 'agent_id,channel_id' }
+        );
+      if (!memberError) rememberMembership(this.ctx.agentId, channelId);
+    }
 
-    // 6. Record wiki-links from message content (backlinks only — message-side
+    // 5. Record wiki-links from message content (backlinks only — message-side
     // links never create stubs; see design doc §3.2/§10)
     if (content.includes('[[')) {
-      await this.recordLinks('message', (message as Message).id, extractWikiLinks(content), channelId)
+      await this.recordLinks('message', sent.id, extractWikiLinks(content), channelId)
         .catch(() => {}); // link recording must not fail the send
     }
 
-    return message as Message;
+    return sent;
   }
 
   async searchMessages(
@@ -947,6 +1160,75 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     }));
   }
 
+  /**
+   * Everything waiting for this agent — unread mentions, open tasks it could
+   * claim, tasks it has claimed, and its own tasks completed after
+   * `completedSince` — in one request (agent_work(), migration 00039).
+   *
+   * The work check is polled by every agent around each turn; this used to be
+   * four requests per poll. On a database without the function it still is.
+   */
+  async getWork(capabilities: string[], completedSince: string): Promise<AgentWork> {
+    const { data, error } = await this.client.rpc('agent_work', {
+      p_agent_id: this.ctx.agentId,
+      p_capabilities: capabilities,
+      p_completed_since: completedSince,
+      p_mention_limit: WORK_MENTION_LIMIT,
+      p_task_limit: WORK_TASK_LIMIT,
+    });
+
+    if (error) {
+      if (!isMissingFunction(error)) throw new Error(`Failed to check work: ${error.message}`);
+      const sinceMs = Date.parse(completedSince);
+      const [mentions, openMatching, mineClaimed, myCreatedDone] = await Promise.all([
+        this.getMentions(true, WORK_MENTION_LIMIT),
+        this.listTasks({ status: 'open', matchingCapabilities: capabilities, limit: WORK_TASK_LIMIT }),
+        this.listTasks({ status: 'claimed', mine: 'claimed', limit: WORK_TASK_LIMIT }),
+        this.listTasks({ status: 'done', mine: 'created', limit: WORK_TASK_LIMIT }),
+      ]);
+      return {
+        mentions,
+        open_matching: openMatching,
+        mine_claimed: mineClaimed,
+        completed_for_me: myCreatedDone.filter(
+          (t) => t.completed_at !== null && Date.parse(t.completed_at) > sinceMs
+        ),
+      };
+    }
+
+    const work = (data ?? {}) as {
+      mentions?: Array<{
+        id: string;
+        message_id: string;
+        read: boolean;
+        created_at: string;
+        channel_name: string;
+        author_name: string | null;
+        content: string | null;
+        metadata: Record<string, unknown> | null;
+      }>;
+      open_matching?: Task[];
+      mine_claimed?: Task[];
+      completed_for_me?: Task[];
+    };
+    return {
+      mentions: (work.mentions ?? []).map((row) => ({
+        mention_id: row.id,
+        message_id: row.message_id,
+        channel_name: row.channel_name,
+        author_name: row.author_name ?? 'unknown',
+        author_project: ((row.metadata?.project as string | null | undefined) ?? null),
+        author_source: trustedMessageSource(row.metadata, row.channel_name),
+        content: row.content ?? '',
+        created_at: row.created_at,
+        is_read: row.read,
+      })),
+      open_matching: work.open_matching ?? [],
+      mine_claimed: work.mine_claimed ?? [],
+      completed_for_me: work.completed_for_me ?? [],
+    };
+  }
+
   async markMentionsRead(mentionIds: string[]): Promise<void> {
     // Direct update with explicit agent_id check instead of mark_mentions_read RPC
     const { error } = await this.client
@@ -992,6 +1274,22 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
   }
 
   async getBoardSummary(): Promise<BoardChannel[]> {
+    // One request: board_summary() (migration 00039) returns a row per
+    // channel with its capped unread count and newest visible message. The
+    // code below it did the same with two requests per joined channel, all at
+    // once, and counted every unread row; it remains only as the fallback for
+    // a database that does not have the function yet.
+    const { data: summary, error: summaryError } = await this.client.rpc('board_summary', {
+      p_agent_id: this.ctx.agentId,
+      p_see_all_dms: this.seesAllDirectMessages(),
+    });
+    if (!summaryError) {
+      return ((summary as BoardSummaryRow[] | null) ?? []).map(boardChannelFromRow);
+    }
+    if (!isMissingFunction(summaryError)) {
+      throw new Error(`Failed to fetch board summary: ${summaryError.message}`);
+    }
+
     // Fetch all channel memberships for this agent
     const { data: memberships, error: memErr } = await this.client
       .from('channel_memberships')
@@ -1028,7 +1326,9 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
 
         const isDm = channel.name === DIRECT_MESSAGES_CHANNEL;
 
-        const since = seenThrough(m.channel_id, m.last_read_at);
+        // Neither posted nor acknowledged: count from when the agent joined,
+        // not from the channel's first message.
+        const since = seenThrough(m.channel_id, m.last_read_at) ?? m.joined_at ?? null;
 
         const [latestResult, unreadResult] = await Promise.all([
           this.client
@@ -1145,6 +1445,8 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     // A read token is not an agent: there is nothing to join, and its id in
     // channel_memberships.agent_id would violate the foreign key.
     if (this.ctx.readOnly) return;
+    // Confirmed recently: there is nothing to write, so nothing is sent.
+    if (membershipKnown(this.ctx.agentId, channelId)) return;
     // Insert-if-missing. `ignoreDuplicates` makes this ON CONFLICT DO NOTHING:
     // without it the upsert was DO UPDATE, which rewrote the row (a new tuple
     // and a WAL record) on every message read by an existing member.
@@ -1161,6 +1463,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     if (error) {
       throw new Error(`Failed to ensure channel membership: ${error.message}`);
     }
+    rememberMembership(this.ctx.agentId, channelId);
   }
 
   // ── Notes (knowledge layer, Phase 1) ───────────────────────────────────
@@ -1622,26 +1925,25 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
 
   // ── Private helpers ────────────────────────────────────────────────────
 
-  private async getChannelById(channelId: string): Promise<Channel | null> {
-    const { data, error } = await this.client
-      .from('channels')
-      .select('*')
-      .eq('id', channelId)
-      .single();
-
-    if (error || !data) return null;
-    return data as Channel;
+  private async findOrCreateChannel(channelName: string): Promise<string> {
+    return (await this.findOrCreateChannelWithScope(channelName)).id;
   }
 
-  private async findOrCreateChannel(channelName: string): Promise<string> {
+  /**
+   * Find or create a channel, returning its federation scope with its id so a
+   * sender does not need a second request to decide whether to classify.
+   */
+  private async findOrCreateChannelWithScope(
+    channelName: string
+  ): Promise<{ id: string; federation_scope: string }> {
     // Try to find existing channel
     const { data: existing } = await this.client
       .from('channels')
-      .select('id')
+      .select('id, federation_scope')
       .eq('name', channelName)
       .single();
 
-    if (existing) return existing.id;
+    if (existing) return existing;
 
     // Channel does not exist — create it
     // Determine channel type and federation scope from name
@@ -1655,22 +1957,22 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
         federation_scope: federationScope,
         created_by: this.ctx.agentId,
       })
-      .select('id')
+      .select('id, federation_scope')
       .single();
 
     if (error) {
       // Race condition: another request may have created it
       const { data: raced } = await this.client
         .from('channels')
-        .select('id')
+        .select('id, federation_scope')
         .eq('name', channelName)
         .single();
 
-      if (raced) return raced.id;
+      if (raced) return raced;
       throw new Error(`Failed to create channel: ${error.message}`);
     }
 
-    return created!.id;
+    return created!;
   }
 
   private inferChannelTier(

@@ -6,6 +6,11 @@
  * different table, so a channel an agent follows but never writes in stayed
  * unread forever. The count also included the agent's own messages,
  * quarantined messages and, in #direct-messages, other agents' DMs.
+ *
+ * The board is normally answered by the board_summary() database function
+ * (see hot-path-rpcs.test.ts for that path). The stand-in below reports the
+ * function as missing, so these cases pin the same rules in the fallback the
+ * adapter uses on a database that does not have it yet.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -59,7 +64,10 @@ function makeClient(rows: Record<string, Row[]>): SupabaseClient {
     };
     return chain;
   }
-  return { from: (t: string) => builder(t) } as unknown as SupabaseClient;
+  return {
+    from: (t: string) => builder(t),
+    rpc: async () => ({ data: null, error: { code: 'PGRST202', message: 'function not found' } }),
+  } as unknown as SupabaseClient;
 }
 
 const at = (minute: number) => `2026-01-01T00:${String(minute).padStart(2, '0')}:00Z`;
@@ -72,6 +80,7 @@ const msg = (id: string, minute: number, author: string, extra: Row = {}): Row =
 function board(opts: {
   messages: Row[];
   lastPostedAt?: string | null;
+  joinedAt?: string;
   cursor?: string;
   mentions?: Row[];
   channelId?: string;
@@ -94,6 +103,7 @@ function board(opts: {
     channel_memberships: [
       {
         agent_id: ME, channel_id: channelId, last_read_at: opts.lastPostedAt ?? null,
+        ...(opts.joinedAt ? { joined_at: opts.joinedAt } : {}),
         channels: { id: channelId, name: channelName, type: 'project', federation_scope: 'local' },
       },
       ...filler,
@@ -110,6 +120,15 @@ describe('unread counts on the board', () => {
 
   it('counts everything in a channel the agent has never posted in or acknowledged', async () => {
     expect((await board({ messages: THREE_FROM_ALICE })()).unread).toBe(3);
+  });
+
+  it('counts from the moment the agent joined when it has neither posted nor acknowledged', async () => {
+    // Joining a long-lived channel must not mark its whole history unread.
+    expect((await board({ messages: THREE_FROM_ALICE, joinedAt: at(2) })()).unread).toBe(1);
+  });
+
+  it('prefers a post or an acknowledgement over the join time', async () => {
+    expect((await board({ messages: THREE_FROM_ALICE, joinedAt: at(0), cursor: at(2) })()).unread).toBe(1);
   });
 
   it('clears when the agent acknowledges the channel with mark_channel_read', async () => {

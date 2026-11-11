@@ -4,6 +4,11 @@
  * Before this, an agent could only list channels it had already joined, plus a
  * discovery list on the board that vanished after five joins. A dashboard or a
  * new agent had no way to find an older or quiet channel.
+ *
+ * The directory is normally answered by the channel_directory() database
+ * function (see hot-path-rpcs.test.ts). The stand-in below reports it as
+ * missing, so these cases pin the same rules in the fallback the adapter uses
+ * on a database that does not have it yet.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -45,7 +50,10 @@ function makeClient(rows: Record<string, Row[]>, writes: string[] = [], failTabl
     };
     return chain;
   }
-  return { from: (t: string) => builder(t) } as unknown as SupabaseClient;
+  return {
+    from: (t: string) => builder(t),
+    rpc: async () => ({ data: null, error: { code: 'PGRST202', message: 'function not found' } }),
+  } as unknown as SupabaseClient;
 }
 
 const channel = (name: string, extra: Row = {}): Row => ({

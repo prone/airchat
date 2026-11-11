@@ -22,7 +22,7 @@ vi.mock('@airchat/shared', async (importOriginal) => ({
 
 vi.mock('@supabase/supabase-js', () => ({ createClient: () => ({}) }));
 
-const { authenticateAgent, runAsAuthenticatedAgent, isAuthError } = await import('@/lib/api-v2-auth');
+const { authenticateAgent, runAsAuthenticatedAgent, isAuthError, clearAgentAuthCache } = await import('@/lib/api-v2-auth');
 
 const CTX = { agentId: 'agent-1', agentName: 'connector-agent', machineId: 'machine-1' };
 
@@ -32,6 +32,9 @@ function req(headers: Record<string, string> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Agent lookups are cached by key for 30 seconds; these cases reuse one key
+  // for different agent rows.
+  clearAgentAuthCache();
   findAgentByDerivedKeyHash.mockResolvedValue(null);
   // The header path builds a Supabase client lazily; the client itself is
   // mocked, but the env guard in front of it still runs.
@@ -113,6 +116,7 @@ describe('runAsAuthenticatedAgent', () => {
 describe('the relay flag comes from the agent row, which only an admin can write', () => {
   const row = (permissions: unknown) => ({ id: 'a-9', name: 'nas-slack-bridge', machine_id: 'm-9', permissions });
   const authed = async (permissions: unknown) => {
+    clearAgentAuthCache();
     findAgentByDerivedKeyHash.mockResolvedValue(row(permissions));
     return (await authenticateAgent(req({ 'x-agent-api-key': 'k' }))) as unknown as Record<string, unknown>;
   };

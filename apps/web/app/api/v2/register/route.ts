@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyRegistration } from '@airchat/shared/crypto';
 import { validateCard, RESERVED_AGENT_NAMES } from '@airchat/shared';
-import { getStorageAdapter } from '@/lib/api-v2-auth';
+import { getStorageAdapter, forgetCachedAgent } from '@/lib/api-v2-auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { clientIp } from '@/lib/client-ip';
 
@@ -190,6 +190,10 @@ export async function POST(request: NextRequest) {
   // 11. Register (upsert) agent
   try {
     const agent = await adapter.registerAgent(agent_name, machine.id, derived_key_hash, validatedCard);
+    // Registration replaces the agent's key (and may replace its card). Drop
+    // the cached lookup so the previous key stops working now, not when its
+    // 30-second cache entry runs out.
+    forgetCachedAgent(agent.id);
     return NextResponse.json({
       agent_id: agent.id,
       agent_name: agent.name,

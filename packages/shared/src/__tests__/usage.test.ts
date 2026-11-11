@@ -173,6 +173,26 @@ describe('summarizeUsage', () => {
     expect(summary.est_cost_usd).toBeCloseTo(0.04 * 5);
   });
 
+  it('gives the same summary for rows the database already summed as for the events themselves', () => {
+    // The API now asks the database for one row per (model, source) with the
+    // number of events it covers, instead of every event.
+    const events = [
+      row('claude-opus-4-8', 'native', counts(1_000_000, 100_000)),
+      row('claude-opus-4-8', 'native', counts(500_000, 50_000)),
+      row('claude-opus-4-8', 'native', counts(1, 1)),
+      row('unknown-model', 'served', counts(40_000, 0)),
+      row('unknown-model', 'served', counts(2, 0)),
+    ];
+    const summed = [
+      { ...row('claude-opus-4-8', 'native', counts(1_500_001, 150_001)), events: 3 },
+      { ...row('unknown-model', 'served', counts(40_002, 0)), events: 2 },
+    ];
+    const fromEvents = summarizeUsage(events, 'a', 'api', since, until, PRICES);
+    const fromSums = summarizeUsage(summed, 'a', 'api', since, until, PRICES);
+    expect(fromSums).toEqual(fromEvents);
+    expect(fromSums.breakdown.map((b) => b.events)).toEqual([3, 2]);
+  });
+
   it('returns null cost when nothing can be priced, and zero totals on no rows', () => {
     const empty = summarizeUsage([], 'a', null, since, until, PRICES);
     expect(empty.totals).toEqual(ZERO_COUNTS);

@@ -156,18 +156,41 @@ export async function authenticateConnector(
     return unauthorized(request, 'Invalid token');
   }
 
-  void adapter.touchConnectorToken(record.id);
+  noteConnectorTokenUse(record.id);
 
+  const card = (agent.metadata as Record<string, unknown> | null | undefined)?.card;
   return {
     ctx: {
       agentId: agent.id,
       agentName: agent.name,
       machineId: agent.machine_id ?? '',
+      // Carried so the work check does not read the agent row again.
+      card: card && typeof card === 'object' ? (card as Record<string, unknown>) : null,
     },
     tokenId: record.id,
     // Anything unrecognised degrades to read-only rather than opening up.
     scope: record.scope === 'read-write' ? 'read-write' : 'read',
   };
+}
+
+// last_used_at answers "is this token still in use?", which needs minutes of
+// precision, not one UPDATE per tool call. Same throttle as last_seen_at in
+// api-v2-auth: at most one write per token per five minutes, remembered in
+// process. After a restart the first call writes again, which is harmless.
+const TOKEN_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
+const tokenTouchedAt = new Map<string, number>();
+
+function noteConnectorTokenUse(tokenId: string): void {
+  const now = Date.now();
+  if (now - (tokenTouchedAt.get(tokenId) ?? 0) < TOKEN_TOUCH_INTERVAL_MS) return;
+  tokenTouchedAt.set(tokenId, now);
+  // Best-effort and never awaited; touchConnectorToken swallows its own errors.
+  void getStorageAdapter().touchConnectorToken(tokenId);
+}
+
+/** Forget which tokens were stamped recently. For tests. */
+export function clearConnectorTokenTouches(): void {
+  tokenTouchedAt.clear();
 }
 
 /**
@@ -178,16 +201,16 @@ export async function authenticateConnector(
  */
 async function lookupAgent(
   agentId: string
-): Promise<{ id: string; name: string; machine_id: string | null } | null> {
+): Promise<{ id: string; name: string; machine_id: string | null; metadata?: unknown } | null> {
   const { data, error } = await getSupabaseClient()
     .from('agents')
-    .select('id, name, machine_id')
+    .select('id, name, machine_id, metadata')
     .eq('id', agentId)
     .eq('active', true)
     .single();
 
   if (error || !data) return null;
-  return data as { id: string; name: string; machine_id: string | null };
+  return data as { id: string; name: string; machine_id: string | null; metadata?: unknown };
 }
 
 export function isConnectorAuthError(

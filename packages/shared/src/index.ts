@@ -16,6 +16,7 @@ export * from './backoff.js';
 //   import { hashKey, signRegistration, ... } from '@airchat/shared/crypto'
 export {
   type AgentContext,
+  type AgentWork,
   type BoardChannel,
   type MachineKey,
   type MentionWithContext,
@@ -27,7 +28,7 @@ export {
   type GossipRetraction,
   type QuarantinedMessage,
 } from './storage.js';
-export { SupabaseStorageAdapter } from './supabase-adapter.js';
+export { SupabaseStorageAdapter, BOARD_UNREAD_CAP } from './supabase-adapter.js';
 // AirChatRestClient is NOT barrel-exported — it uses node:fs/node:crypto
 // which breaks webpack bundling in Next.js. Import via subpath instead:
 //   import { AirChatRestClient } from '@airchat/shared/rest-client'
