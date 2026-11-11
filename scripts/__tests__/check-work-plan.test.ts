@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  plan, shouldRequest, normalizeState, emptyState,
+  plan, shouldRequest, normalizeState, emptyState, hookAgentName,
   REMINDER_INTERVAL_MS, MAX_STOP_PICKUPS_PER_HOUR, FAILURE_BACKOFF_MS,
   // @ts-expect-error — plain .mjs module without type declarations
 } from '../check-work-plan.mjs';
@@ -147,5 +147,37 @@ describe('shouldRequest', () => {
   it('does not call the server for a stop that follows a pickup', () => {
     expect(shouldRequest({ event: 'Stop', stopHookActive: true, state: emptyState(), now: NOW })).toBe(false);
     expect(shouldRequest({ event: 'Stop', stopHookActive: false, state: emptyState(), now: NOW })).toBe(true);
+  });
+});
+
+describe('hookAgentName matches the name the MCP server posts under', () => {
+  it('agrees with deriveAgentName for awkward folder names', async () => {
+    const { deriveAgentName } = await import('../../packages/mcp-server/src/utils.js');
+    const original = process.cwd;
+    const saved = process.env.AIRCHAT_PROJECT;
+    delete process.env.AIRCHAT_PROJECT;
+    try {
+      for (const folder of ['MeetHelp', 'MGPC_Meetings', 'Pentest App', 'claudehelp', 'a.b--c_', 'x'.repeat(150)]) {
+        const cwd = `/Users/someone/projects/${folder}`;
+        process.cwd = () => cwd;
+        expect(hookAgentName('macbook', cwd, undefined)).toBe(deriveAgentName('macbook'));
+      }
+    } finally {
+      process.cwd = original;
+      if (saved !== undefined) process.env.AIRCHAT_PROJECT = saved;
+    }
+  });
+
+  it('lower-cases and hyphenates', () => {
+    expect(hookAgentName('macbook', '/Users/x/projects/MeetHelp', undefined)).toBe('macbook-meethelp');
+    expect(hookAgentName('macbook', '/Users/x/projects/MGPC_Meetings', undefined)).toBe('macbook-mgpc-meetings');
+  });
+
+  it('honours AIRCHAT_PROJECT, as the server does', () => {
+    expect(hookAgentName('macbook', '/Users/x/projects/whatever', 'Claude Projects')).toBe('macbook-claude-projects');
+  });
+
+  it('handles a Windows path', () => {
+    expect(hookAgentName('windows-gpu', 'C:\\Users\\duncan\\projects\\AirChat', undefined)).toBe('windows-gpu-airchat');
   });
 });

@@ -1,6 +1,6 @@
-import { plan, shouldRequest, normalizeState } from './check-work-plan.mjs';
+import { plan, shouldRequest, normalizeState, hookAgentName } from './check-work-plan.mjs';
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { join, basename } from 'path';
+import { join } from 'path';
 import { homedir } from 'os';
 import crypto from 'crypto';
 
@@ -53,9 +53,7 @@ try {
 } catch { process.exit(0); }
 
 // ── Derive agent name ───────────────────────────────────────────────────────
-const cwd = process.cwd();
-const dirName = basename(cwd);
-const agentName = `${MACHINE_NAME}-${dirName}`;
+const agentName = hookAgentName(MACHINE_NAME, process.cwd(), process.env.AIRCHAT_PROJECT);
 
 // ── State — PER AGENT ───────────────────────────────────────────────────────
 //
