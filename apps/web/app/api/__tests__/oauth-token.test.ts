@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 
 /**
  * The token endpoint is where an authorization code becomes an access token, so
@@ -41,6 +41,8 @@ const state = {
   codes: [] as Row[],
   access: [] as Row[],
   refresh: [] as Row[],
+  /** admin_users: who may hold a connector grant. */
+  admins: [] as Row[],
   consumeSucceeds: true,
   nextId: 1,
   updates: [] as { table: string; patch: Row; filters: [string, string, unknown][] }[],
@@ -57,6 +59,7 @@ function tableFor(name: string): Row[] {
   if (name === 'oauth_authorization_codes') return state.codes;
   if (name === 'connector_tokens') return state.access;
   if (name === 'oauth_refresh_tokens') return state.refresh;
+  if (name === 'admin_users') return state.admins;
   throw new Error(`unexpected table ${name}`);
 }
 
@@ -209,6 +212,7 @@ beforeEach(() => {
   state.codes = [{ ...CODE_ROW, code_hash: sha('the-code') }];
   state.access = [];
   state.refresh = [];
+  state.admins = [{ user_id: 'user-1' }];
   state.consumeSucceeds = true;
   state.nextId = 1;
   state.updates = [];
@@ -559,6 +563,136 @@ describe('refresh grant: a retry is not theft', () => {
     const b = await (await POST(refreshRequest(first.refresh_token))).json();
     expect(b.refresh_token).not.toBe(a.refresh_token);
     expect(b.access_token).not.toBe(a.access_token);
+  });
+});
+
+/**
+ * Without OAUTH_ROTATION_SECRET the successor used to be signed with the
+ * service-role key itself. It is now signed with a key derived from it, and
+ * tokens rotated under the old scheme must still be recognised.
+ */
+describe('refresh grant: the signing key when no rotation secret is set', () => {
+  const legacyPair = (parent: Row) => {
+    const derive = (label: string) =>
+      createHmac('sha256', 'test-service-role-key').update(`${label}\0${parent.id}\0${parent.token_hash}`).digest('hex');
+    return { access: 'acx_' + derive('airchat-oauth-access-v1'), refresh: 'acr_' + derive('airchat-oauth-refresh-v1') };
+  };
+
+  it('does not sign with the service-role key directly', async () => {
+    const first = await exchange();
+    const parent = { ...state.refresh[0] };
+    const second = await (await POST(refreshRequest(first.refresh_token))).json();
+    expect(second.refresh_token).not.toBe(legacyPair(parent).refresh);
+    expect(second.access_token).not.toBe(legacyPair(parent).access);
+  });
+
+  it('prefers OAUTH_ROTATION_SECRET when it is set', async () => {
+    const first = await exchange();
+    const parent = { ...state.refresh[0] };
+    vi.stubEnv('OAUTH_ROTATION_SECRET', 'a-dedicated-secret');
+    const second = await (await POST(refreshRequest(first.refresh_token))).json();
+    const derive = (label: string) =>
+      createHmac('sha256', 'a-dedicated-secret').update(`${label}\0${parent.id}\0${parent.token_hash}`).digest('hex');
+    expect(second.refresh_token).toBe('acr_' + derive('airchat-oauth-refresh-v1'));
+  });
+
+  /** A grant whose first rotation happened before the key changed. */
+  async function rotatedUnderOldKey() {
+    const first = await exchange();
+    const parent = state.refresh[0];
+    const old = legacyPair(parent);
+    parent.consumed_at = new Date().toISOString();
+    state.access[0].revoked_at = new Date().toISOString();
+    state.access.push({ id: 'old-access', token_hash: sha(old.access), agent_id: 'agent-1', revoked_at: null });
+    state.refresh.push({
+      ...parent, id: 'old-successor', token_hash: sha(old.refresh),
+      access_token_id: 'old-access', consumed_at: null, revoked_at: null,
+    });
+    return { first, old };
+  }
+
+  it('still treats a replayed token rotated under the old key as reuse', async () => {
+    const { first } = await rotatedUnderOldKey();
+    state.refresh[0].consumed_at = longAgo();
+
+    const replay = await POST(refreshRequest(first.refresh_token));
+    expect(replay.status).toBe(400);
+    expect((await replay.json()).error_description).toMatch(/reuse/i);
+    // Nothing new was minted and the family is dead.
+    expect(state.refresh).toHaveLength(2);
+    expect(liveRefresh()).toHaveLength(0);
+    expect(liveAccess()).toHaveLength(0);
+  });
+
+  it('answers a retry of such a token with the pair already issued', async () => {
+    const { first, old } = await rotatedUnderOldKey();
+    const retry = await POST(refreshRequest(first.refresh_token));
+    expect(retry.status).toBe(200);
+    const again = await retry.json();
+    expect(again.refresh_token).toBe(old.refresh);
+    expect(again.access_token).toBe(old.access);
+    expect(state.refresh).toHaveLength(2);
+  });
+
+  it('keeps rotating a successor that was issued under the old key', async () => {
+    const { old } = await rotatedUnderOldKey();
+    const res = await POST(refreshRequest(old.refresh));
+    expect(res.status).toBe(200);
+    expect(liveRefresh()).toHaveLength(1);
+  });
+});
+
+/**
+ * Consent requires a dashboard admin. A refresh used to renew the grant
+ * without asking whether that was still true, so removing someone from the
+ * admin list left their connector working indefinitely.
+ */
+describe('refresh grant: the user must still be an admin', () => {
+  it('ends the grant when the user has been removed from the admin list', async () => {
+    const first = await exchange();
+    state.admins = [];
+
+    const res = await POST(refreshRequest(first.refresh_token));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('invalid_grant');
+    // The whole grant goes, including the access token still in the client's hands.
+    expect(liveRefresh()).toHaveLength(0);
+    expect(liveAccess()).toHaveLength(0);
+    expect(state.refresh).toHaveLength(1);
+  });
+
+  it('does not come back if the user is made an admin again', async () => {
+    const first = await exchange();
+    state.admins = [];
+    await POST(refreshRequest(first.refresh_token));
+    state.admins = [{ user_id: 'user-1' }];
+    expect((await POST(refreshRequest(first.refresh_token))).status).toBe(400);
+  });
+
+  it('is not fooled by some other user being an admin', async () => {
+    const first = await exchange();
+    state.admins = [{ user_id: 'someone-else' }];
+    expect((await POST(refreshRequest(first.refresh_token))).status).toBe(400);
+  });
+
+  it('answers 503 and keeps the grant when the admin list cannot be read', async () => {
+    const first = await exchange();
+    state.failNext = { table: 'admin_users', mode: 'select' };
+
+    const res = await POST(refreshRequest(first.refresh_token));
+    expect(res.status).toBe(503);
+    expect(state.refresh.every((r) => !r.revoked_at)).toBe(true);
+    // The retry completes the rotation once the database answers.
+    expect((await POST(refreshRequest(first.refresh_token))).status).toBe(200);
+    expect(liveRefresh()).toHaveLength(1);
+  });
+
+  it('also applies to a retry inside the rotation window', async () => {
+    const first = await exchange();
+    await POST(refreshRequest(first.refresh_token));
+    state.admins = [];
+    expect((await POST(refreshRequest(first.refresh_token))).status).toBe(400);
+    expect(liveAccess()).toHaveLength(0);
   });
 });
 

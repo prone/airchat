@@ -177,13 +177,20 @@ describe('rate limiting', () => {
     expect((other as Response).status).toBe(401);
   });
 
-  it('reads the client IP from x-real-ip when x-forwarded-for is absent', async () => {
-    let throttled = 0;
-    for (let i = 0; i < 130; i++) {
-      const r = await authenticateConnector(req({ 'x-real-ip': '203.0.113.30' }));
-      if ((r as Response).status === 429) throttled++;
+  it('reads the client IP from x-real-ip when a reverse proxy is declared', async () => {
+    // X-Real-IP is only believed when AIRCHAT_TRUSTED_PROXY says a proxy sets
+    // it; otherwise any caller could write it and pick its own bucket.
+    vi.stubEnv('AIRCHAT_TRUSTED_PROXY', 'true');
+    try {
+      let throttled = 0;
+      for (let i = 0; i < 130; i++) {
+        const r = await authenticateConnector(req({ 'x-real-ip': '203.0.113.30' }));
+        if ((r as Response).status === 429) throttled++;
+      }
+      expect(throttled).toBeGreaterThan(0);
+    } finally {
+      vi.unstubAllEnvs();
     }
-    expect(throttled).toBeGreaterThan(0);
   });
 });
 

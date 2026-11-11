@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomBytes } from 'node:crypto';
 import { getStorageClient } from '@/lib/api-auth';
 import { authenticateAgent, isAuthError, getStorageAdapter, getSupabaseClient, checkAgentRateLimit, isDashboardAdmin } from '@/lib/api-v2-auth';
 import { createSupabaseServer } from '@/lib/supabase-server';
@@ -174,6 +175,20 @@ export async function GET(request: NextRequest) {
 
 const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB for API uploads
 
+// The file travels inside a JSON body, base64-encoded when binary, which
+// makes it a third larger. This is the largest request that could hold a
+// file of the maximum size, plus room for the other fields.
+const MAX_BASE64_CHARS = Math.ceil(MAX_UPLOAD_SIZE_BYTES / 3) * 4;
+const MAX_UPLOAD_BODY_BYTES = MAX_BASE64_CHARS + 64 * 1024;
+
+/**
+ * A plain media type, optionally with a charset: "image/png",
+ * "text/plain; charset=utf-8". The value is stored with the file and sent
+ * back as its Content-Type header, so it is limited to characters that
+ * cannot break out of a header or smuggle extra parameters.
+ */
+const CONTENT_TYPE_RE = /^[a-z0-9][a-z0-9.+-]{0,63}\/[a-z0-9][a-z0-9.+-]{0,99}(;\s?charset=[a-z0-9._-]{1,40})?$/i;
+
 /** Sanitize a file name: replace anything that isn't alphanumeric, dot, dash, or underscore. */
 function sanitizeFileName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -185,28 +200,47 @@ export async function PUT(request: NextRequest) {
   const access = await authorizeFileAccess(request, 'write');
   if (access instanceof NextResponse) return access;
 
-  let body: {
-    filename: string;
-    content: string;
-    channel: string;
-    content_type?: string;
-    encoding?: 'base64' | 'utf-8';
-    post_message?: boolean;
-  };
+  // Refuse an oversized upload before reading it. Parsing the body first
+  // meant holding the whole request, then the decoded file, in memory just
+  // to find out it was too big. A request with no declared length is still
+  // caught by the checks on the content below.
+  const declaredLength = Number(request.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_UPLOAD_BODY_BYTES) {
+    return NextResponse.json({ error: `File too large (max ${MAX_UPLOAD_SIZE_BYTES / 1024 / 1024}MB)` }, { status: 413 });
+  }
+
+  let body: Record<string, unknown>;
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
+  if (typeof body !== 'object' || body === null) {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
   const { filename, content, channel, content_type, encoding, post_message } = body;
 
-  if (!filename || !content || !channel) {
+  if (typeof filename !== 'string' || typeof content !== 'string' || typeof channel !== 'string'
+      || !filename || !content || !channel) {
     return NextResponse.json({ error: 'filename, content, and channel are required' }, { status: 400 });
   }
 
   if (!CHANNEL_NAME_RE.test(channel)) {
     return NextResponse.json({ error: 'Invalid channel name' }, { status: 400 });
+  }
+
+  if (content_type !== undefined && content_type !== null
+      && (typeof content_type !== 'string' || !CONTENT_TYPE_RE.test(content_type))) {
+    return NextResponse.json({ error: 'Invalid content_type (expected a media type such as "image/png")' }, { status: 400 });
+  }
+
+  // The text length bounds the decoded size (every character is at least one
+  // byte of UTF-8, and four base64 characters are three bytes), so an
+  // oversized file is refused here without being decoded.
+  const tooLarge = NextResponse.json({ error: `File too large (max ${MAX_UPLOAD_SIZE_BYTES / 1024 / 1024}MB)` }, { status: 400 });
+  if (content.length > (encoding === 'base64' ? MAX_BASE64_CHARS : MAX_UPLOAD_SIZE_BYTES)) {
+    return tooLarge;
   }
 
   // Convert content to buffer
@@ -215,11 +249,14 @@ export async function PUT(request: NextRequest) {
     : Buffer.from(content, 'utf-8');
 
   if (buffer.length > MAX_UPLOAD_SIZE_BYTES) {
-    return NextResponse.json({ error: `File too large (max ${MAX_UPLOAD_SIZE_BYTES / 1024 / 1024}MB)` }, { status: 400 });
+    return tooLarge;
   }
 
   const safeName = sanitizeFileName(filename);
-  const storagePath = `${channel}/${Date.now()}-${safeName}`;
+  // The random part makes the path unguessable. A timestamp and a file name
+  // can be worked out by anyone who knows roughly when something was shared,
+  // and the path is what a download is requested by.
+  const storagePath = `${channel}/${Date.now()}-${randomBytes(8).toString('hex')}-${safeName}`;
 
   if (!validateStoragePath(storagePath)) {
     return NextResponse.json({ error: 'Invalid file path' }, { status: 400 });
@@ -230,7 +267,7 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ error: 'Storage not configured (missing SUPABASE_SERVICE_ROLE_KEY)' }, { status: 500 });
   }
 
-  const rawMime = content_type || 'application/octet-stream';
+  const rawMime = typeof content_type === 'string' && content_type ? content_type : 'application/octet-stream';
   const mimeType = DANGEROUS_MIME_TYPES.has(baseMimeType(rawMime)) ? 'application/octet-stream' : rawMime;
   const { error: uploadErr } = await storageClient.storage
     .from(STORAGE_BUCKET)

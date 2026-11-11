@@ -148,6 +148,37 @@ export function oauthError(
 }
 
 /**
+ * Redirect hosts of clients we recognise. Anyone can register a client and
+ * call it "Claude", so the name proves nothing; the redirect host is where the
+ * authorization code is actually delivered, and only these hosts are treated
+ * as a known application.
+ */
+export const KNOWN_REDIRECT_HOSTS: readonly string[] = ['claude.ai', 'claude.com'];
+
+/**
+ * What the consent screen may say about who is asking.
+ *
+ * `host` is the host the code will be sent to, shown to the user because it is
+ * the one part of the request the client cannot invent: it must match a
+ * registered URI exactly. `verified` is true only for an https redirect whose
+ * host is exactly one of the known hosts (no subdomains, no look-alikes such
+ * as claude.ai.example.com). A loopback redirect is a program on the user's
+ * own computer, which is reported separately so the screen can say so.
+ */
+export function describeRedirectTarget(redirectUri: string): { host: string; verified: boolean; loopback: boolean } {
+  let parsed: URL;
+  try {
+    parsed = new URL(redirectUri);
+  } catch {
+    return { host: redirectUri, verified: false, loopback: false };
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  const loopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+  const verified = parsed.protocol === 'https:' && !parsed.port && KNOWN_REDIRECT_HOSTS.includes(hostname);
+  return { host: parsed.host.toLowerCase(), verified, loopback };
+}
+
+/**
  * Derive the connector agent name for a consenting user.
  *
  * Mirrors the CLI convention (`<label>-claude-ai`) so both issuance paths
@@ -155,14 +186,24 @@ export function oauthError(
  * credential, and migration 00023's trigger rejects binding a token to an agent
  * that has one — so a derived name can never collide onto a real Claude Code
  * agent in a way that grants access.
+ *
+ * Only the part of the address before the @ is used, so alice@one.example and
+ * alice@two.example derive the same name. `disambiguator` (a value unique to
+ * the user) is added when the plain name already belongs to someone else, so
+ * the second person gets an identity of their own instead of sharing the
+ * first person's.
  */
-export function connectorAgentNameFor(email: string): string {
+export function connectorAgentNameFor(email: string, disambiguator?: string): string {
   const local = email.split('@')[0] ?? 'user';
   const sanitized = local
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
-    .slice(0, 60);
-  return `${sanitized || 'user'}-claude-ai`;
+    .slice(0, disambiguator ? 51 : 60);
+  if (!disambiguator) return `${sanitized || 'user'}-claude-ai`;
+  // Eight hex characters of a hash: short enough to read, and it keeps the
+  // user's id out of a name every agent can see.
+  const tag = sha256(disambiguator).slice(0, 8);
+  return `${sanitized || 'user'}-${tag}-claude-ai`;
 }

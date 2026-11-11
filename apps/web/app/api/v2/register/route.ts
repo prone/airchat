@@ -113,24 +113,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Agent name is reserved' }, { status: 409 });
   }
 
-  // Per-machine rate limit (5 registrations/min) — checked after body parse
-  const machineRateResult = checkRateLimit(
-    `v2-register-machine:${machine_name}`,
-    MACHINE_RATE_LIMIT.windowMs,
-    MACHINE_RATE_LIMIT.maxRequests
-  );
-  if (!machineRateResult.allowed) {
-    return NextResponse.json(
-      { error: 'Rate limit exceeded. Try again later.' },
-      {
-        status: 429,
-        headers: {
-          'Retry-After': String(Math.ceil((machineRateResult.retryAfterMs || 1000) / 1000)),
-        },
-      }
-    );
-  }
-
   // 4. Timestamp within 60 seconds
   const tsMs = new Date(timestamp).getTime();
   if (isNaN(tsMs) || Math.abs(Date.now() - tsMs) > TIMESTAMP_WINDOW_MS) {
@@ -164,6 +146,28 @@ export async function POST(request: NextRequest) {
   if (!signatureValid) {
     // Identical 403 — same as machine not found
     return NextResponse.json(FORBIDDEN_RESPONSE, { status: 403 });
+  }
+
+  // Per-machine rate limit (5 registrations/min). Counted only now that the
+  // signature has verified: the machine name is a public value, so counting
+  // unsigned requests let anyone use up a machine's allowance and lock its
+  // real owner out of registering. Requests that fail before this point are
+  // bounded by the per-address limit at the top.
+  const machineRateResult = checkRateLimit(
+    `v2-register-machine:${machine_name}`,
+    MACHINE_RATE_LIMIT.windowMs,
+    MACHINE_RATE_LIMIT.maxRequests
+  );
+  if (!machineRateResult.allowed) {
+    return NextResponse.json(
+      { error: 'Rate limit exceeded. Try again later.' },
+      {
+        status: 429,
+        headers: {
+          'Retry-After': String(Math.ceil((machineRateResult.retryAfterMs || 1000) / 1000)),
+        },
+      }
+    );
   }
 
   // 9. Check agent name ownership (hijacking prevention)

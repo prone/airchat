@@ -236,3 +236,65 @@ describe('files attached to direct messages are as private as the messages', () 
     expect(res.status).toBe(200);
   });
 });
+
+describe('uploads', () => {
+  beforeEach(() => {
+    state.agent = { agentId: 'a-1', agentName: 'macbook-test', machineId: 'm-1' };
+  });
+
+  it('stores each file under a path nobody can guess from the time and name', async () => {
+    await PUT(put('k'));
+    await PUT(put('k'));
+    const [first, second] = upload.mock.calls.map((c) => c[0]);
+    expect(first).toMatch(/^general\/\d+-[0-9a-f]{16}-a\.txt$/);
+    expect(second).not.toBe(first);
+    expect(first.split('-')[1]).not.toBe(second.split('-')[1]);
+  });
+
+  it('refuses an oversized request by its declared length, before reading it', async () => {
+    const req = put('k');
+    const json = vi.spyOn(req, 'json');
+    req.headers.set('content-length', String(50 * 1024 * 1024));
+    const res = await PUT(req);
+    expect(res.status).toBe(413);
+    expect(json).not.toHaveBeenCalled();
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it('refuses content too long to fit the limit without decoding it', async () => {
+    const decode = vi.spyOn(Buffer, 'from');
+    const res = await PUT(put('k', { content: 'A'.repeat(14 * 1024 * 1024 + 8), encoding: 'base64' }));
+    expect(res.status).toBe(400);
+    expect(decode.mock.calls.some((c) => (c as unknown[])[1] === 'base64')).toBe(false);
+    expect(upload).not.toHaveBeenCalled();
+    decode.mockRestore();
+  });
+
+  it('accepts ordinary media types', async () => {
+    for (const content_type of ['image/png', 'text/plain; charset=utf-8', 'application/vnd.api+json', 'application/octet-stream']) {
+      expect((await PUT(put('k', { content_type }))).status, content_type).toBe(200);
+    }
+  });
+
+  it('rejects a content type that is not a plain media type', async () => {
+    for (const content_type of [
+      'text/plain\r\nX-Injected: 1',
+      'image/png; foo=bar',
+      'text/html, text/plain',
+      'not a type',
+      'a/' + 'b'.repeat(300),
+      42,
+      { type: 'image/png' },
+    ]) {
+      expect((await PUT(put('k', { content_type }))).status, String(content_type)).toBe(400);
+    }
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it('answers 400, not 500, when a field has the wrong type', async () => {
+    for (const extra of [{ content: 42 }, { content: ['a'] }, { filename: {} }, { channel: 7 }]) {
+      expect((await PUT(put('k', extra))).status).toBe(400);
+    }
+    expect(upload).not.toHaveBeenCalled();
+  });
+});

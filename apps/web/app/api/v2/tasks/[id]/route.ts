@@ -1,6 +1,8 @@
 import { NextRequest } from 'next/server';
 import {
   checkTransition,
+  checkClaimEligibility,
+  MAX_CONCURRENT_CLAIMS,
   TASK_ACTIONS,
   type TaskAction,
 } from '@airchat/shared';
@@ -73,6 +75,19 @@ export async function POST(
 
     switch (action as TaskAction) {
       case 'claim': {
+        // Who may claim: an agent whose card lists one of the task's tags
+        // (anyone, for an untagged task), and only while it holds fewer than
+        // the allowed number of claims. The count is read just before the
+        // claim, so two simultaneous claims by one agent can overshoot by
+        // one; the limit is there to stop hoarding, not to be exact.
+        const card = await scoped.getOwnCard();
+        const capabilities = Array.isArray(card?.capabilities)
+          ? (card.capabilities as unknown[]).filter((c): c is string => typeof c === 'string')
+          : [];
+        const held = await scoped.listTasks({ status: 'claimed', mine: 'claimed', limit: MAX_CONCURRENT_CLAIMS });
+        const eligible = checkClaimEligibility(task, capabilities, held.length);
+        if (!eligible.ok) return errorResponse(eligible.error!, eligible.code ?? 403);
+
         const claimed = await scoped.claimTask(id);
         if (!claimed) {
           // Guard failed after the precondition read: someone else won.

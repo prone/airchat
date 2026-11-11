@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fetchFleetInventories, getModelEndpoint, listModels, resolveModel, runModel } from '../fleet.js';
+import { fetchFleetInventories, getModelEndpoint, isHttpEndpoint, isTrustedInventoryNote, listModels, resolveModel, runModel } from '../fleet.js';
 import type { AirChatToolClient } from '../client.js';
 
 const INVENTORY_NOTES = {
   notes: [
     {
       slug: 'models-workstation',
+      channel_id: null,
+      created_by_name: 'workstation-models',
+      updated_by_name: 'workstation-models',
       updated_at: '2026-08-14T00:00:00Z',
       properties: {
         type: 'model-inventory',
@@ -18,6 +21,9 @@ const INVENTORY_NOTES = {
     },
     {
       slug: 'models-nas',
+      channel_id: null,
+      created_by_name: 'nas-models',
+      updated_by_name: 'nas-models',
       updated_at: '2026-08-13T00:00:00Z',
       properties: {
         type: 'model-inventory',
@@ -49,13 +55,102 @@ describe('fetchFleetInventories', () => {
     expect(inventories[0].models).toHaveLength(2);
   });
 
-  it('tolerates notes with missing properties', async () => {
+  it('tolerates an inventory with no models listed', async () => {
     const client = mockClient({
-      queryNotes: vi.fn().mockResolvedValue({ notes: [{ slug: 'models-bare', updated_at: 'x', properties: {} }] }),
+      queryNotes: vi.fn().mockResolvedValue({ notes: [{
+        slug: 'models-bare', channel_id: null, updated_at: 'x',
+        created_by_name: 'bare-models', updated_by_name: 'bare-models',
+        properties: { type: 'model-inventory' },
+      }] }),
     });
     const inventories = await fetchFleetInventories(client);
     expect(inventories[0].machine).toBe('bare');
     expect(inventories[0].models).toEqual([]);
+  });
+});
+
+/**
+ * Any agent can write a note with `type: model-inventory`. If that were
+ * enough, an agent could advertise "qwen2.5-coder:32b" at its own address and
+ * collect every prompt sent to that model.
+ */
+describe('which notes count as an inventory', () => {
+  const model = { name: 'evil', capability: 'llm-evil', kind: 'llm', backend: 'ollama', location: 'local', endpoint: 'http://198.51.100.9/v1' };
+  const genuine = {
+    slug: 'models-nas', channel_id: null, updated_at: 'x',
+    created_by_name: 'nas-models', updated_by_name: 'nas-models',
+    properties: { type: 'model-inventory', machine: 'nas', models: [model] },
+  };
+
+  it('accepts the note models-<machine> written by <machine>-models', () => {
+    expect(isTrustedInventoryNote(genuine)).toBe(true);
+    expect(isTrustedInventoryNote({ ...genuine, slug: 'models-mac-mini', created_by_name: 'mac-mini-models', updated_by_name: 'mac-mini-models' })).toBe(true);
+  });
+
+  it('rejects an inventory under any other slug', () => {
+    expect(isTrustedInventoryNote({ ...genuine, slug: 'my-models' })).toBe(false);
+    expect(isTrustedInventoryNote({ ...genuine, slug: 'models-workstation' })).toBe(false);
+  });
+
+  it('rejects an inventory created or last written by another agent', () => {
+    expect(isTrustedInventoryNote({ ...genuine, created_by_name: 'laptop-attacker' })).toBe(false);
+    expect(isTrustedInventoryNote({ ...genuine, updated_by_name: 'laptop-attacker' })).toBe(false);
+  });
+
+  it('rejects an inventory whose author the server did not report', () => {
+    const { created_by_name: _c, updated_by_name: _u, ...anonymous } = genuine;
+    expect(isTrustedInventoryNote(anonymous)).toBe(false);
+  });
+
+  it('rejects an inventory filed in a channel rather than the global scope', () => {
+    expect(isTrustedInventoryNote({ ...genuine, channel_id: 'chan-1' })).toBe(false);
+  });
+
+  it('does not let the machine property override the slug', async () => {
+    const client = mockClient({
+      queryNotes: vi.fn().mockResolvedValue({ notes: [{ ...genuine, properties: { ...genuine.properties, machine: 'workstation' } }] }),
+    });
+    expect((await fetchFleetInventories(client))[0].machine).toBe('nas');
+  });
+
+  it('leaves a forged inventory out of every tool and says one was ignored', async () => {
+    const forged = { ...genuine, slug: 'models-nas-2', created_by_name: 'laptop-attacker', updated_by_name: 'laptop-attacker' };
+    const client = mockClient({ queryNotes: vi.fn().mockResolvedValue({ notes: [forged] }) });
+    const listed = await listModels(client) as any;
+    expect(listed.models).toEqual([]);
+    expect(listed.ignored_inventories).toMatch(/1 note/);
+    expect((await getModelEndpoint(client, 'evil') as any).error).toMatch(/No machine/);
+    expect((await runModel(client, { model: 'evil', prompt: 'secret', wait_seconds: 0 }) as any).error).toMatch(/No machine/);
+    expect(client.postTask).not.toHaveBeenCalled();
+  });
+});
+
+describe('endpoint validation', () => {
+  it('accepts http and https URLs only', () => {
+    expect(isHttpEndpoint('http://100.64.0.12:11434/v1')).toBe(true);
+    expect(isHttpEndpoint('https://openrouter.ai/api/v1')).toBe(true);
+    for (const bad of ['file:///etc/passwd', 'javascript:alert(1)', 'ftp://x/y', '/v1', 'not a url', '', undefined, 42]) {
+      expect(isHttpEndpoint(bad), String(bad)).toBe(false);
+    }
+  });
+
+  it('drops a model whose endpoint is not http(s)', async () => {
+    const note = {
+      slug: 'models-nas', channel_id: null, updated_at: 'x',
+      created_by_name: 'nas-models', updated_by_name: 'nas-models',
+      properties: { type: 'model-inventory', models: [
+        { name: 'good', capability: 'llm-good', kind: 'llm', backend: 'ollama', location: 'local', endpoint: 'http://100.64.0.1/v1' },
+        { name: 'bad', capability: 'llm-bad', kind: 'llm', backend: 'ollama', location: 'local', endpoint: 'file:///etc/passwd' },
+      ] },
+    };
+    const client = mockClient({ queryNotes: vi.fn().mockResolvedValue({ notes: [note] }) });
+    const inventories = await fetchFleetInventories(client);
+    expect(inventories[0].models.map((m) => m.name)).toEqual(['good']);
+  });
+
+  it('labels endpoints as self-declared in tool output', async () => {
+    expect((await listModels(mockClient()) as any).endpoint_trust).toMatch(/self-declared/);
+    expect((await getModelEndpoint(mockClient(), 'gemma4:12b') as any).endpoint_trust).toMatch(/self-declared/);
   });
 });
 

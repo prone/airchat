@@ -8,7 +8,7 @@
  * one call answers "what can the fleet run?", one call runs it.
  */
 
-import { modelToCapability, normalizeModelName, inferModelKind, Backoff, describeFailure } from '@airchat/shared';
+import { modelToCapability, normalizeModelName, inferModelKind, Backoff, describeFailure, MODEL_INVENTORY_TYPE, modelInventoryOwner } from '@airchat/shared';
 import type { AirChatToolClient } from './client.js';
 
 export interface InventoryModel {
@@ -33,15 +33,68 @@ export interface MachineInventory {
   models: InventoryModel[];
 }
 
-export async function fetchFleetInventories(client: AirChatToolClient): Promise<MachineInventory[]> {
-  const raw = await client.queryNotes({ properties: { type: 'model-inventory' } }) as any;
-  const notes = (raw?.data ?? raw)?.notes ?? [];
-  return notes.map((n: any) => ({
-    machine: n.properties?.machine ?? String(n.slug ?? '').replace(/^models-/, ''),
-    updated_at: n.updated_at,
-    models: Array.isArray(n.properties?.models) ? n.properties.models : [],
-  }));
+/**
+ * True for an endpoint an agent could reasonably be told to call: an absolute
+ * http or https URL. Anything else (file:, javascript:, a bare path) is not a
+ * model endpoint and is dropped rather than handed to a caller.
+ */
+export function isHttpEndpoint(endpoint: unknown): endpoint is string {
+  if (typeof endpoint !== 'string') return false;
+  try {
+    const { protocol } = new URL(endpoint);
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
+
+/**
+ * Whether a note is a model inventory this client should believe.
+ *
+ * Any agent can write a note and give it `type: model-inventory`, and the
+ * models in it say where prompts get sent. So an inventory counts only when
+ * it is the global note `models-<machine>` and both its creator and its last
+ * writer are that machine's worker agent, `<machine>-models`. The server
+ * enforces the same rule on writes; checking again here means a note written
+ * before that rule existed, or served by an older server that does not report
+ * authorship, is ignored rather than trusted.
+ */
+export function isTrustedInventoryNote(note: any): boolean {
+  if (note?.properties?.type !== MODEL_INVENTORY_TYPE) return false;
+  if (note.channel_id !== null && note.channel_id !== undefined) return false;
+  const owner = modelInventoryOwner(String(note.slug ?? ''));
+  return owner !== null && note.created_by_name === owner && note.updated_by_name === owner;
+}
+
+/** Inventories that passed isTrustedInventoryNote, plus how many notes did not. */
+export async function fetchFleetInventoriesChecked(
+  client: AirChatToolClient,
+): Promise<{ inventories: MachineInventory[]; ignored: number }> {
+  const raw = await client.queryNotes({ properties: { type: MODEL_INVENTORY_TYPE } }) as any;
+  const notes: any[] = (raw?.data ?? raw)?.notes ?? [];
+  const trusted = notes.filter(isTrustedInventoryNote);
+  const inventories = trusted.map((n: any) => ({
+    // From the slug, which the authorship check covers; the note's own
+    // `machine` property is just text.
+    machine: String(n.slug).replace(/^models-/, ''),
+    updated_at: n.updated_at,
+    models: (Array.isArray(n.properties?.models) ? n.properties.models : [])
+      .filter((m: any) => m && typeof m.name === 'string' && isHttpEndpoint(m.endpoint)),
+  }));
+  return { inventories, ignored: notes.length - trusted.length };
+}
+
+export async function fetchFleetInventories(client: AirChatToolClient): Promise<MachineInventory[]> {
+  return (await fetchFleetInventoriesChecked(client)).inventories;
+}
+
+/**
+ * Attached to every tool result that carries an endpoint. The URL is whatever
+ * the machine's worker wrote down; the server never connects to it or checks
+ * who answers there.
+ */
+export const ENDPOINT_TRUST_NOTE =
+  'Endpoints are self-declared by each machine\'s model worker and are not verified by the server. Check the host is one you expect before sending it data.';
 
 /** Resolve a user-supplied model reference against the fleet inventory.
  *  Accepts a registry name ("qwen2.5-coder:32b"), a capability tag
@@ -66,13 +119,17 @@ export function resolveModel(
 }
 
 export async function listModels(client: AirChatToolClient) {
-  const inventories = await fetchFleetInventories(client);
+  const { inventories, ignored } = await fetchFleetInventoriesChecked(client);
   const models = inventories.flatMap((inv) =>
     inv.models.map((m) => ({ ...m, machine: inv.machine, inventory_updated_at: inv.updated_at }))
   );
   return {
     machines: inventories.map((i) => ({ machine: i.machine, models: i.models.length, updated_at: i.updated_at })),
     models,
+    endpoint_trust: ENDPOINT_TRUST_NOTE,
+    ...(ignored > 0
+      ? { ignored_inventories: `${ignored} note(s) claiming to be a model inventory were ignored: an inventory must be the global note models-<machine> written by the agent <machine>-models.` }
+      : {}),
     ...(models.length === 0
       ? { note: 'No model inventories found — no model worker has published one yet (see @airchat/model-worker).' }
       : {}),
@@ -94,6 +151,7 @@ export async function getModelEndpoint(client: AirChatToolClient, model: string)
     model: entry.name,
     machine,
     endpoint: entry.endpoint,
+    endpoint_trust: ENDPOINT_TRUST_NOTE,
     backend: entry.backend,
     location: entry.location,
     kind: entry.kind,
