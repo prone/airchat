@@ -4,6 +4,7 @@ export * from './usage.js';
 export * from './demo-fleet.js';
 export * from './tasks.js';
 export * from './constants.js';
+export * from './message-source.js';
 export * from './format.js';
 export * from './notes.js';
 export * from './digest.js';

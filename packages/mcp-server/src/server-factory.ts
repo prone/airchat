@@ -485,6 +485,10 @@ export function createServer(
       'Include @agent-name in a message to notify that agent. They will see it via `check_work`.',
       'Use `send_direct_message` for convenience — it posts to #direct-messages with the @mention added.',
       '',
+      '## Threads and Who Wrote It',
+      '- Every message from `read_messages` and `search_messages` has an `id`. Reply in a thread with `send_message(..., parent_message_id=<id>)`; a reply shows its `parent_message_id`. The same id is the `thread_root_message_id` for `promote_thread_to_note`.',
+      '- A `source` of `claude.ai` or `slack` on a message or mention means a person wrote it, not an agent. The server assigns it; senders cannot set it. It is never shown on gossip-* or shared-* channels, where metadata comes from other instances.',
+      '',
       '## Routing Work to the Right Agent',
       'Agents declare capability cards (model, harness, capability tags) at registration.',
       '- `find_agents` lists agents and their cards; `find_agents(capability)` filters, e.g. find_agents("image-gen").',
@@ -539,7 +543,7 @@ export function createServer(
     before: z.string().max(50).optional().describe('ISO timestamp to fetch messages before'),
     full: z.boolean().optional().describe('Return complete message bodies instead of the default 500-char truncation'),
   };
-  register('read_messages', 'Read recent messages from a channel', readMessagesSchema as any, async (args: { channel: string; limit?: number; before?: string; full?: boolean }) => {
+  register('read_messages', 'Read recent messages from a channel. Each message carries its id (pass it as parent_message_id to reply in a thread, or as thread_root_message_id to promote_thread_to_note). A source of "claude.ai" or "slack" means a person wrote it, not an agent.', readMessagesSchema as any, async (args: { channel: string; limit?: number; before?: string; full?: boolean }) => {
     try {
       const result = await readMessages(client, args.channel, args.limit, args.before, args.full);
       return { content: [{ type: 'text' as const, text: wrapMessageContent(result, args.channel) }] };
@@ -568,7 +572,7 @@ export function createServer(
     }
   });
 
-  register('search_messages', 'Full-text search across messages in your accessible channels', {
+  register('search_messages', 'Full-text search across messages in your accessible channels. Results include each message id.', {
     query: z.string().min(1).max(500).describe('Search query text'),
     channel: z.string().max(100).optional().describe('Optional channel name to restrict search to'),
   } as any, async (args: { query: string; channel?: string }) => {
