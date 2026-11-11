@@ -275,6 +275,22 @@ export class SupabaseStorageAdapter implements StorageAdapter {
  */
 const DM_PREVIEW_SCAN = 20;
 
+/** The board is an overview: show enough of the latest message to recognise it. */
+const BOARD_PREVIEW_CHARS = 300;
+
+function boardPreview(row: unknown): BoardChannel['latest'] {
+  if (!row) return null;
+  const latest = row as NonNullable<BoardChannel['latest']>;
+  const content = String(latest.content ?? '');
+  if (content.length <= BOARD_PREVIEW_CHARS) return latest;
+  return {
+    ...latest,
+    content:
+      content.slice(0, BOARD_PREVIEW_CHARS) +
+      `… [TRUNCATED — ${content.length - BOARD_PREVIEW_CHARS} more chars. Call read_messages with full=true for complete text]`,
+  };
+}
+
 const MESSAGE_COLUMNS =
   'id, channel_id, author_agent_id, content, metadata, parent_message_id, pinned, created_at, author_display, agents:author_agent_id(id, name)';
 
@@ -772,11 +788,14 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
         channel_id,
         read,
         created_at,
-        messages!inner(content, metadata),
+        messages!inner(content, metadata, quarantined),
         channels!inner(name),
         mentioning_agent:agents!mentions_mentioning_agent_id_fkey(name)
       `)
       .eq('mentioned_agent_id', this.ctx.agentId)
+      // A mention is the most trusted way content reaches an agent (the
+      // prompt hook prints it), so a quarantined message must not arrive by it.
+      .eq('messages.quarantined', false)
       .order('created_at', { ascending: false })
       .limit(100);
 
@@ -854,29 +873,65 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
 
     if (memErr) throw new Error(`Failed to fetch memberships: ${memErr.message}`);
 
+    // "Unread" means newer than the last thing this agent did to show it had
+    // seen the channel: posted there, or acknowledged it with
+    // mark_channel_read. It used to count from the last POST only, so a
+    // channel an agent reads but never writes to stayed unread forever, and
+    // acknowledging it changed nothing.
+    const { data: cursorRows } = await this.client
+      .from('channel_read_cursors')
+      .select('channel_id, read_through')
+      .eq('agent_id', this.ctx.agentId);
+    const readThrough = new Map<string, string>(
+      ((cursorRows as { channel_id: string; read_through: string }[] | null) ?? []).map(
+        (c) => [c.channel_id, c.read_through]
+      )
+    );
+    const seenThrough = (channelId: string, lastPostedAt: string | null): string | null => {
+      const cursor = readThrough.get(channelId) ?? null;
+      if (!cursor) return lastPostedAt;
+      if (!lastPostedAt) return cursor;
+      return new Date(cursor) > new Date(lastPostedAt) ? cursor : lastPostedAt;
+    };
+
     const results = await Promise.all(
       (memberships as ChannelMembershipWithChannel[]).map(async (m) => {
         const channel = m.channels;
 
         const isDm = channel.name === DIRECT_MESSAGES_CHANNEL;
 
+        const since = seenThrough(m.channel_id, m.last_read_at);
+
         const [latestResult, unreadResult] = await Promise.all([
           this.client
             .from('messages')
             .select('id, content, created_at, author_agent_id, agents:author_agent_id(name)')
             .eq('channel_id', m.channel_id)
+            .eq('quarantined', false) // quarantined content never reaches agents
             .order('created_at', { ascending: false })
             // In #direct-messages most recent messages belong to other agents,
             // so look back far enough to find one this agent may actually see.
             .limit(isDm ? DM_PREVIEW_SCAN : 1),
           (() => {
+            if (isDm) {
+              // In the shared DM channel only messages addressed to this agent
+              // are its unread; everyone else's are not its business.
+              let q = this.client
+                .from('mentions')
+                .select('id', { count: 'exact', head: true })
+                .eq('mentioned_agent_id', this.ctx.agentId)
+                .eq('channel_id', m.channel_id);
+              if (since) q = q.gt('created_at', since);
+              return q;
+            }
             let q = this.client
               .from('messages')
               .select('id', { count: 'exact', head: true })
-              .eq('channel_id', m.channel_id);
-            if (m.last_read_at) {
-              q = q.gt('created_at', m.last_read_at);
-            }
+              .eq('channel_id', m.channel_id)
+              .eq('quarantined', false)
+              // An agent's own posts are not unread to it.
+              .neq('author_agent_id', this.ctx.agentId);
+            if (since) q = q.gt('created_at', since);
             return q;
           })(),
         ]);
@@ -896,7 +951,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
           federation_scope: channel.federation_scope,
           unread: unreadResult.count || 0,
           joined: true,
-          latest: (visible[0] as unknown as BoardChannel['latest']) ?? null,
+          latest: boardPreview(visible[0]),
         };
       })
     );
@@ -923,6 +978,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
             .from('messages')
             .select('id, content, created_at, author_agent_id, agents:author_agent_id(name)')
             .eq('channel_id', ch.id)
+            .eq('quarantined', false)
             .order('created_at', { ascending: false })
             .limit(chIsDm ? DM_PREVIEW_SCAN : 1);
 
@@ -943,7 +999,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
             federation_scope: ch.federation_scope,
             unread: 0,
             joined: false,
-            latest: (latest[0] as unknown as BoardChannel['latest']) ?? null,
+            latest: boardPreview(latest[0]),
           });
 
           if (results.length >= 15) break;
