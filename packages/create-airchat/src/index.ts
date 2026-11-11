@@ -584,7 +584,14 @@ function writeWebEnv(config: SetupConfig): StepResult {
       path.join(config.airchatDir, 'apps', 'web', '.env.local'),
     ];
     for (const envPath of paths) {
-      const current = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
+      // Read without checking first: asking whether the file exists and then
+      // opening it leaves a gap in which it can change.
+      let current = '';
+      try {
+        current = fs.readFileSync(envPath, 'utf-8');
+      } catch (e: any) {
+        if (e?.code !== 'ENOENT') throw e;
+      }
       // 0600, like every other file here that holds a credential: the
       // service-role key bypasses every RLS policy.
       //
