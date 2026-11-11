@@ -282,18 +282,38 @@ const ROTATION_RETRY_WINDOW_MS = 60_000;
 async function handleConsumedToken(db: Db, token: RefreshRow, now: Date): Promise<Response> {
   const consumedAt = new Date(token.consumed_at as string).getTime();
   const withinWindow = now.getTime() - consumedAt <= ROTATION_RETRY_WINDOW_MS;
-  const successor = successorTokens(token);
+  let successor = successorTokens(token);
 
   if (!successor) {
     return reuseDetected(db, token, now);
   }
 
-  const { data: next, error } = await db
+  const findSuccessor = (pair: TokenPair) => db
     .from('oauth_refresh_tokens')
     .select('consumed_at, revoked_at')
-    .eq('token_hash', sha256(successor.refresh))
+    .eq('token_hash', sha256(pair.refresh))
     .maybeSingle();
-  if (error) return unavailable('successor lookup', error.message);
+
+  const first = await findSuccessor(successor);
+  if (first.error) return unavailable('successor lookup', first.error.message);
+  let next = first.data;
+
+  // A token rotated before the signing key changed (see rotationKey) has its
+  // successor stored under the old derivation. Without this second look that
+  // successor would not be found, the rotation would be taken for one that
+  // never finished, and replaying a long-superseded token would mint a fresh
+  // pair instead of revoking the grant.
+  if (!next) {
+    const legacy = legacySuccessorTokens(token);
+    if (legacy) {
+      const found = await findSuccessor(legacy);
+      if (found.error) return unavailable('successor lookup', found.error.message);
+      if (found.data) {
+        next = found.data;
+        successor = legacy;
+      }
+    }
+  }
 
   // The rotation never finished: this token was consumed, but its successor
   // was never stored (the database failed in between, as it did for hours at a
@@ -302,7 +322,7 @@ async function handleConsumedToken(db: Db, token: RefreshRow, now: Date): Promis
   // distance from the first attempt. Finish the job. Without this, an outage
   // longer than the retry window turned every in-flight refresh into a revoked
   // grant once the database came back.
-  if (!next) return rotate(db, token, now);
+  if (!next) return rotate(db, token, now, successor);
 
   // A successor exists. Outside the window that is the reuse signal. Inside
   // it, the successor must still be untouched: if it has itself been rotated
@@ -330,7 +350,7 @@ async function handleConsumedToken(db: Db, token: RefreshRow, now: Date): Promis
   // Logged because a retry on every rotation of one grant is what a second
   // holder of the token would look like.
   console.warn(`[oauth] refresh retry inside the rotation window (family ${token.family_id})`);
-  return rotate(db, token, now);
+  return rotate(db, token, now, successor);
 }
 
 /** A superseded refresh token was presented: end the grant. */
@@ -341,8 +361,54 @@ async function reuseDetected(db: Db, token: RefreshRow, now: Date): Promise<Resp
   return oauthError('invalid_grant', 'Refresh token reuse detected; the grant has been revoked');
 }
 
-/** Retire the access token a refresh token was issued with, and issue its successor pair. */
-async function rotate(db: Db, token: RefreshRow, now: Date): Promise<Response> {
+/**
+ * Is this user still a dashboard admin?
+ *
+ * Consent requires an admin account, and a grant is supposed to end when that
+ * stops being true. Answers null when the database could not say, which the
+ * caller must not treat as "no": that would revoke a good grant during an
+ * outage.
+ */
+async function isStillAdmin(db: Db, userId: string): Promise<boolean | null> {
+  const { data, error } = await db
+    .from('admin_users')
+    .select('user_id')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) {
+    console.error(`[oauth] admin check failed: ${error.message}`);
+    return null;
+  }
+  return !!data;
+}
+
+/**
+ * Retire the access token a refresh token was issued with, and issue its
+ * successor pair. `pair` is the pair to issue; it defaults to the one derived
+ * from the token with the current key.
+ */
+async function rotate(
+  db: Db,
+  token: RefreshRow,
+  now: Date,
+  pair: TokenPair | null = successorTokens(token),
+): Promise<Response> {
+  // Every refresh passes through here, so this is where the grant is tied to
+  // the person who gave it. Someone removed from the admin list keeps no
+  // access through a connector they approved while they were on it: the next
+  // refresh ends the whole grant, access token included.
+  const admin = await isStillAdmin(db, token.user_id);
+  if (admin === null) {
+    const res = oauthError('temporarily_unavailable', 'The authorization server is temporarily unavailable', 503);
+    res.headers.set('Retry-After', '5');
+    return res;
+  }
+  if (!admin) {
+    const failed = await revokeFamily(db, token.family_id, now);
+    if (failed) return unavailable('grant revocation', failed);
+    return oauthError('invalid_grant', 'The account that approved this connection is no longer an admin');
+  }
+
   // One live access token per grant: retire the one this refresh token was
   // issued with. The client is about to receive its replacement.
   if (token.access_token_id) {
@@ -366,7 +432,7 @@ async function rotate(db: Db, token: RefreshRow, now: Date): Promise<Response> {
       audience: token.audience,
       familyId: token.family_id,
     },
-    successorTokens(token) ?? undefined,
+    pair ?? undefined,
   );
   if (!issued.ok) return issued;
 
@@ -424,8 +490,41 @@ interface TokenPair {
  * case rotation falls back to random tokens and a retry cannot be answered.
  */
 function successorTokens(parent: Pick<RefreshRow, 'id' | 'token_hash'>): TokenPair | null {
-  const key = process.env.OAUTH_ROTATION_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!key) return null;
+  const key = rotationKey();
+  return key ? deriveSuccessor(key, parent) : null;
+}
+
+/**
+ * The key successor tokens are derived with.
+ *
+ * OAUTH_ROTATION_SECRET when set. Otherwise the instance still works without
+ * extra configuration: a key is derived from the service-role key by hashing
+ * a fixed label with it. The service-role key itself is deliberately not used
+ * as the signing key. It is the credential that opens the whole database, and
+ * using one secret for two unrelated jobs means a weakness in either job
+ * exposes both; the derived key cannot be turned back into the service key.
+ */
+function rotationKey(): string | null {
+  if (process.env.OAUTH_ROTATION_SECRET) return process.env.OAUTH_ROTATION_SECRET;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!serviceKey) return null;
+  return createHmac('sha256', serviceKey).update('airchat-oauth-rotation-key-v1').digest('hex');
+}
+
+/**
+ * The successor an earlier version of this server would have issued: it
+ * signed with the service-role key directly when OAUTH_ROTATION_SECRET was
+ * not set. Used only to recognise successors already stored that way; nothing
+ * new is issued with it. Can be removed once every refresh token from before
+ * the change has expired (REFRESH_TOKEN_TTL_DAYS after upgrading).
+ */
+function legacySuccessorTokens(parent: Pick<RefreshRow, 'id' | 'token_hash'>): TokenPair | null {
+  if (process.env.OAUTH_ROTATION_SECRET) return null;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  return serviceKey ? deriveSuccessor(serviceKey, parent) : null;
+}
+
+function deriveSuccessor(key: string, parent: Pick<RefreshRow, 'id' | 'token_hash'>): TokenPair {
   const derive = (label: string) =>
     createHmac('sha256', key).update(`${label}\0${parent.id}\0${parent.token_hash}`).digest('hex');
   return {

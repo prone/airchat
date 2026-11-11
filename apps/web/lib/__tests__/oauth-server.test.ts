@@ -7,6 +7,7 @@ import {
   isRegisteredRedirectUri,
   isSecureRedirectUri,
   connectorAgentNameFor,
+  describeRedirectTarget,
   sha256,
   randomToken,
   SUPPORTED_SCOPES,
@@ -246,5 +247,63 @@ describe('granted scope echoed in the token response', () => {
 
   it('returns a space-delimited list, per RFC 6749 §3.3', () => {
     expect(grantedScopeString('read-write').split(/\s+/).sort()).toEqual(['read', 'read-write']);
+  });
+});
+
+describe('connector agent naming when two users share a local part', () => {
+  it('keeps the plain name when no disambiguator is given, so existing agents keep theirs', () => {
+    expect(connectorAgentNameFor('alice@one.example')).toBe('alice-claude-ai');
+    expect(connectorAgentNameFor('alice@two.example')).toBe('alice-claude-ai');
+  });
+
+  it('gives a distinct, stable name per user when disambiguated', () => {
+    const a = connectorAgentNameFor('alice@two.example', 'user-a');
+    const b = connectorAgentNameFor('alice@two.example', 'user-b');
+    expect(a).not.toBe(b);
+    expect(a).toBe(connectorAgentNameFor('alice@two.example', 'user-a'));
+    expect(a).toMatch(/^alice-[0-9a-f]{8}-claude-ai$/);
+    expect(a).not.toContain('user-a');
+  });
+
+  it('stays within the length of an undisambiguated name', () => {
+    const long = `${'x'.repeat(200)}@example.com`;
+    expect(connectorAgentNameFor(long, 'u').length).toBeLessThanOrEqual(connectorAgentNameFor(long).length);
+  });
+});
+
+describe('what the consent screen says about the requesting application', () => {
+  it('recognises the known hosts over https', () => {
+    expect(describeRedirectTarget('https://claude.ai/api/mcp/auth_callback')).toEqual({ host: 'claude.ai', verified: true, loopback: false });
+    expect(describeRedirectTarget('https://claude.com/cb').verified).toBe(true);
+    expect(describeRedirectTarget('https://CLAUDE.AI/cb').verified).toBe(true);
+  });
+
+  it('does not recognise look-alike hosts', () => {
+    // A registered name of "Claude" with one of these redirects is the attack.
+    for (const uri of [
+      'https://claude.ai.evil.example/cb',
+      'https://evil.example/claude.ai',
+      'https://notclaude.ai/cb',
+      'https://sub.claude.ai/cb',
+      'https://claude.ai:8443/cb',
+      'https://claude.ai@evil.example/cb',
+    ]) {
+      expect(describeRedirectTarget(uri).verified, uri).toBe(false);
+    }
+  });
+
+  it('shows the host the code is actually delivered to', () => {
+    expect(describeRedirectTarget('https://claude.ai@evil.example/cb').host).toBe('evil.example');
+    expect(describeRedirectTarget('https://evil.example:8443/cb').host).toBe('evil.example:8443');
+  });
+
+  it('reports a loopback redirect as unverified and local', () => {
+    expect(describeRedirectTarget('http://localhost:5555/cb')).toEqual({ host: 'localhost:5555', verified: false, loopback: true });
+    expect(describeRedirectTarget('http://127.0.0.1/cb').loopback).toBe(true);
+    expect(describeRedirectTarget('http://[::1]:9/cb').loopback).toBe(true);
+  });
+
+  it('never verifies something that is not a URL', () => {
+    expect(describeRedirectTarget('not a url')).toEqual({ host: 'not a url', verified: false, loopback: false });
   });
 });

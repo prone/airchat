@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { safeNextPath } from '@/lib/safe-next';
 
 /**
  * The ?next= handling on the login page.
@@ -8,12 +9,10 @@ import { describe, it, expect } from 'vitest';
  * found"} and the connector never completed. The login page ignored the ?next=
  * that the authorize endpoint had carefully attached.
  *
- * The logic is extracted here because the page is a client component; this is
- * the same expression it uses.
+ * The page is a client component, so the decision lives in a small function
+ * of its own that the page calls and these tests drive.
  */
-function safeNext(next: string | null): string {
-  return next && next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard';
-}
+const safeNext = safeNextPath;
 
 describe('post-login redirect', () => {
   it('returns the user to the authorization request that sent them', () => {
@@ -43,5 +42,26 @@ describe('post-login redirect', () => {
   it('refuses a scheme-bearing value that is not a path', () => {
     expect(safeNext('javascript:alert(1)')).toBe('/dashboard');
     expect(safeNext('data:text/html,x')).toBe('/dashboard');
+  });
+
+  it('refuses a backslash, which browsers read as a forward slash', () => {
+    // /\evil.example resolves to //evil.example, a different site.
+    expect(safeNext('/\\evil.example')).toBe('/dashboard');
+    expect(safeNext('/\\/evil.example')).toBe('/dashboard');
+    expect(safeNext('/ok\\..\\evil')).toBe('/dashboard');
+  });
+
+  it('refuses control characters, which browsers strip before parsing', () => {
+    // "/<tab>/evil.example" becomes "//evil.example" once the tab is removed.
+    expect(safeNext('/\t/evil.example')).toBe('/dashboard');
+    expect(safeNext('/\n/evil.example')).toBe('/dashboard');
+    expect(safeNext('/\r/evil.example')).toBe('/dashboard');
+    expect(safeNext('/\u0000/evil.example')).toBe('/dashboard');
+  });
+
+  it('still follows ordinary paths with queries and encoded characters', () => {
+    const next = '/oauth/consent?client_id=acl_x&redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&state=a%5Cb';
+    expect(safeNext(next)).toBe(next);
+    expect(safeNext('/dashboard/notes#top')).toBe('/dashboard/notes#top');
   });
 });
