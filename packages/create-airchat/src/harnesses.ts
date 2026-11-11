@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { execSync, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 // Per-harness MCP registration and agent-instructions install.
 //
@@ -37,12 +37,74 @@ export interface Harness {
 }
 
 export function binaryExists(bin: string): boolean {
+  // The name is passed as an argument, never pasted into a command line, so
+  // it cannot be read as shell syntax. `command -v` is a shell builtin, hence
+  // the small script that receives the name as "$1".
   try {
-    execSync(process.platform === 'win32' ? `where ${bin}` : `command -v ${bin}`, { stdio: 'pipe' });
+    if (process.platform === 'win32') {
+      execFileSync('where', [bin], { stdio: 'pipe' });
+    } else {
+      execFileSync('/bin/sh', ['-c', 'command -v -- "$1"', 'sh', bin], { stdio: 'pipe' });
+    }
     return true;
   } catch {
     return false;
   }
+}
+
+/** Characters that mean nothing special to any shell; a word made only of these needs no quoting. */
+const SHELL_SAFE_WORD = /^[A-Za-z0-9_\/.:@+=,-]+$/;
+
+/**
+ * Quote one word for the shell that will run a hook command.
+ *
+ * The hook command is a single string that Claude Code hands to a shell on
+ * every prompt. The paths in it come from where Node and AirChat happen to be
+ * installed, and a directory name can contain a space, a semicolon or `$(...)`.
+ * Unquoted, a space splits the path into two words (the hook silently runs
+ * the wrong thing) and the others are executed as commands.
+ *
+ * POSIX shells: wrapped in single quotes, inside which nothing is special; a
+ * single quote in the word itself is written as '\'' (close, escaped quote,
+ * reopen).
+ *
+ * Windows: the hook may be run by cmd, PowerShell or Git Bash, which share no
+ * quoting rule except that double quotes keep spaces together. So the word is
+ * wrapped in double quotes, and a word containing a character that one of
+ * those shells still expands inside double quotes is refused rather than
+ * written out in a form that is only safe in some of them.
+ *
+ * A word made only of ordinary path characters is returned unchanged, so a
+ * typical install produces the same command as before.
+ */
+export function quoteForHook(word: string, platform: NodeJS.Platform = process.platform): string {
+  if (/[\u0000-\u001f\u007f]/.test(word)) {
+    throw new Error(`Path contains a control character and cannot be used in a hook command: ${JSON.stringify(word)}`);
+  }
+  if (SHELL_SAFE_WORD.test(word)) return word;
+  if (platform === 'win32') {
+    if (/["$`%!^]/.test(word)) {
+      throw new Error(
+        `Path contains a character (one of " $ \` % ! ^) that cannot be quoted safely for every Windows shell: ${word}. ` +
+        `Install Node.js and AirChat under a path without it.`,
+      );
+    }
+    return `"${word}"`;
+  }
+  return `'${word.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The command Claude Code runs for the work hook: Node, then the script.
+ * Forward slashes on all platforms (backslashes break bash and JSON alike),
+ * each path quoted as one word.
+ */
+export function buildHookCommand(
+  nodePath: string,
+  scriptPath: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return `${quoteForHook(fwd(nodePath), platform)} ${quoteForHook(fwd(scriptPath), platform)}`;
 }
 
 // Forward slashes on all platforms — backslashes break bash/PowerShell hook
