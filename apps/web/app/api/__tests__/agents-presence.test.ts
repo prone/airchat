@@ -112,3 +112,44 @@ describe('the response carries what a picker needs', () => {
     expect((await res.json()).data.agents).toEqual([]);
   });
 });
+
+describe('the test suites\' agents are left out', () => {
+  const names = async (qs = '') =>
+    ((await (await GET(req(qs))).json()).data.agents as Array<{ name: string }>).map(a => a.name);
+
+  beforeEach(() => {
+    state.rows = [
+      { name: 'macbook-agentchat', active: true, last_seen_at: '2026-08-08T07:50:00Z', permissions: {} },
+      { name: 'macbook-test-alice', active: true, last_seen_at: '2026-08-08T07:49:00Z', permissions: { test_agent: true } },
+      { name: 'nas-worker', active: true, last_seen_at: '2026-08-08T07:48:00Z', permissions: null },
+      { name: 'nas-slack-bridge', active: true, last_seen_at: '2026-08-08T07:47:00Z', permissions: { trusted_source: 'slack' } },
+    ];
+  });
+
+  it('hides an agent marked as a test agent, and nothing else', async () => {
+    expect(await names()).toEqual(['macbook-agentchat', 'nas-worker', 'nas-slack-bridge']);
+  });
+
+  it('shows them when asked', async () => {
+    expect(await names('?include_test=true')).toContain('macbook-test-alice');
+    expect(await names('?include_test=false')).not.toContain('macbook-test-alice');
+  });
+
+  it('goes by the admin-set marker, not by the name or the card', async () => {
+    state.rows = [
+      { name: 'macbook-tests', active: true, last_seen_at: null, permissions: {} },
+      { name: 'self-hider', active: true, last_seen_at: null, permissions: {}, metadata: { test_agent: true, card: { test_agent: true } } },
+      { name: 'truthy', active: true, last_seen_at: null, permissions: { test_agent: 'true' } },
+    ];
+    expect(await names()).toEqual(['macbook-tests', 'self-hider', 'truthy']);
+  });
+
+  it('refuses a value that is not true or false', async () => {
+    expect((await GET(req('?include_test=yes'))).status).toBe(400);
+  });
+
+  it('does not return the permissions column', async () => {
+    const body = await (await GET(req('?include_test=true'))).json();
+    for (const a of body.data.agents) expect(a).not.toHaveProperty('permissions');
+  });
+});

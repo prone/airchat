@@ -29,6 +29,12 @@ const ACTIVE_WITHIN_MS: Record<string, number> = {
   '7d': 7 * 24 * 60 * 60_000,
 };
 
+/** True for an agent an instance admin marked `permissions.test_agent = true`. */
+function isTestAgent(permissions: unknown): boolean {
+  return !!permissions && typeof permissions === 'object'
+    && (permissions as Record<string, unknown>).test_agent === true;
+}
+
 // GET /api/v2/agents — List registered agents.
 //   ?capability=<tag>                agents whose card declares that capability
 //   ?active_within=15m|1h|6h|1d|7d   only agents seen within that window
@@ -36,6 +42,8 @@ const ACTIVE_WITHIN_MS: Record<string, number> = {
 //                                    unknown-rate agents last (unknown ≠ cheap)
 //   ?max_cost_per_mtok=<usd>         only agents at or under that blended rate;
 //                                    unknown-rate agents excluded (unknown ≠ free)
+//   ?include_test=true               also list the test suites' agents (those an
+//                                    admin marked with permissions.test_agent)
 // The filters compose: "who can do image-gen AND has been around in the last
 // hour" is the routing question capability + active_within exist to answer;
 // sort/max_cost make that routing cost-aware. Every agent also carries plan,
@@ -79,6 +87,12 @@ export async function GET(request: NextRequest) {
     maxCostPerMtok = parsed;
   }
 
+  const includeTestRaw = request.nextUrl.searchParams.get('include_test');
+  if (includeTestRaw !== null && includeTestRaw !== 'true' && includeTestRaw !== 'false') {
+    return errorResponse('include_test must be "true" or "false"', 400);
+  }
+  const includeTest = includeTestRaw === 'true';
+
   try {
     const admin = createSupabaseAdmin();
     let query = admin
@@ -87,7 +101,7 @@ export async function GET(request: NextRequest) {
       // project but not which box it runs on, and with agents spread across a
       // laptop, a NAS and a GPU host "where is this thing" is the first
       // question after "who is it".
-      .select('id, name, active, last_seen_at, description, metadata, machine_keys(machine_name)')
+      .select('id, name, active, last_seen_at, description, metadata, permissions, machine_keys(machine_name)')
       .eq('active', true);
 
     if (capability) {
@@ -109,7 +123,12 @@ export async function GET(request: NextRequest) {
       return errorResponse('Failed to fetch agents', 500);
     }
 
-    const rows = data || [];
+    // The test suites' agents stay active so the deploy tests can log in, but
+    // they are not part of the fleet: left in, they show up in every "who is
+    // around" list for an hour after a deploy and answer capability lookups.
+    // Filtered here rather than in the query because `permissions` can be
+    // null, and NOT (null @> …) would drop those rows too.
+    const rows = (data || []).filter(a => includeTest || !isTestAgent(a.permissions));
 
     // Cost/usage enrichment degrades gracefully: a failed lookup leaves rates
     // null and tokens_today at 0 rather than failing the routing question.
