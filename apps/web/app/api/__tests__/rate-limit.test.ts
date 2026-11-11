@@ -5,7 +5,7 @@
  * correct request count for each operation type.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { checkRateLimit, RATE_LIMITS, checkIpRateLimit } from '../../../lib/rate-limit.js';
 
 // Each test uses a unique key prefix to avoid cross-test interference
@@ -117,8 +117,7 @@ describe('rate limit thresholds', () => {
 });
 
 describe('buckets with different windows', () => {
-  it('an hourly bucket keeps its count when a one-minute check triggers the sweep', async () => {
-    const { vi } = await import('vitest');
+  it('an hourly bucket keeps its count when a one-minute check triggers the sweep', () => {
     vi.useFakeTimers();
     try {
       const hourly = uniqueKey('hourly');
