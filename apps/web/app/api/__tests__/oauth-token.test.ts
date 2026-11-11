@@ -444,13 +444,51 @@ describe('refresh grant: a retry is not theft', () => {
     const first = await exchange();
     state.failNext = { table: 'oauth_refresh_tokens', mode: 'insert' };
     const died = await POST(refreshRequest(first.refresh_token));
-    expect(died.status).toBe(500);
+    // Retryable, not a server_error: the retry below is what finishes the job.
+    expect(died.status).toBe(503);
+    expect(died.headers.get('Retry-After')).toBeTruthy();
 
     const retry = await POST(refreshRequest(first.refresh_token));
     expect(retry.status).toBe(200);
     const pair = await retry.json();
     expect(liveRefresh()).toHaveLength(1);
     expect((await POST(refreshRequest(pair.refresh_token))).status).toBe(200);
+  });
+
+  it('finishes the job even after the window, when the successor was never stored', async () => {
+    // An outage longer than the retry window: the token was consumed, then the
+    // database failed before the new pair was written. Nobody holds a newer
+    // token, so the late retry is not reuse and must not revoke the grant.
+    const first = await exchange();
+    state.failNext = { table: 'oauth_refresh_tokens', mode: 'insert' };
+    await POST(refreshRequest(first.refresh_token));
+    state.refresh[0].consumed_at = new Date(Date.now() - 3_600_000).toISOString();
+
+    const late = await POST(refreshRequest(first.refresh_token));
+    expect(late.status).toBe(200);
+    const pair = await late.json();
+    expect(state.refresh[0].revoked_at).toBeFalsy();
+    expect(liveRefresh()).toHaveLength(1);
+    expect(liveAccess()).toHaveLength(1);
+    expect((await POST(refreshRequest(pair.refresh_token))).status).toBe(200);
+  });
+
+  it('does not revoke the grant when a concurrent refresh retired the access token first', async () => {
+    // Request B reads the token as unconsumed. Request A then consumes it and,
+    // as rotation always does, retires the old access token. B must not read
+    // that retired access token as "revoked from the dashboard".
+    const first = await exchange();
+    const winner = await (await POST(refreshRequest(first.refresh_token))).json();
+    const row = state.refresh[0];
+    const consumedAt = row.consumed_at;
+    row.consumed_at = null; // B's stale read...
+    state.afterRefreshLookup = () => { row.consumed_at = consumedAt; }; // ...then A lands
+
+    const loser = await POST(refreshRequest(first.refresh_token));
+    expect(loser.status).toBe(200);
+    expect((await loser.json()).refresh_token).toBe(winner.refresh_token);
+    expect(liveRefresh()).toHaveLength(1);
+    expect(liveAccess()).toHaveLength(1);
   });
 
   it('stops treating it as a retry once the window has passed', async () => {

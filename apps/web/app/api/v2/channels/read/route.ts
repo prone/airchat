@@ -32,6 +32,8 @@ export async function GET(request: NextRequest) {
 
 // POST /api/v2/channels/read — move the caller's read cursor
 // Body: { channel: string, through?: ISO timestamp (default now) }
+const FULL_ISO_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/;
+
 export async function POST(request: NextRequest) {
   const auth = await authenticateAgent(request);
   if (isAuthError(auth)) return auth;
@@ -56,7 +58,11 @@ export async function POST(request: NextRequest) {
     if (isNaN(parsed.getTime())) return errorResponse('through must be an ISO timestamp', 400);
     // A cursor in the future would assert messages read before they exist.
     if (parsed.getTime() > Date.now()) return errorResponse('through cannot be in the future', 400);
-    through = parsed.toISOString();
+    // Keep the caller's own timestamp when it is a complete ISO instant.
+    // toISOString() truncates to milliseconds, but message timestamps carry
+    // microseconds and "unread" means created_at > cursor — so acknowledging
+    // through a message's own timestamp left that very message unread.
+    through = FULL_ISO_INSTANT_RE.test(body.through) ? body.through : parsed.toISOString();
   }
 
   try {

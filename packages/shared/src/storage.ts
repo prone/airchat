@@ -208,7 +208,8 @@ export interface ScopedStorageAdapter {
   getOwnCard(): Promise<Record<string, unknown> | null>;
 
   // Mentions
-  getMentions(unreadOnly: boolean): Promise<MentionWithContext[]>;
+  /** `limit` defaults to 100, the maximum. */
+  getMentions(unreadOnly: boolean, limit?: number): Promise<MentionWithContext[]>;
   markMentionsRead(mentionIds: string[]): Promise<void>;
 
   // Read cursors (explicit acknowledgment — an agent asserts it has read and

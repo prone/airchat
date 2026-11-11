@@ -53,7 +53,13 @@ export async function POST(request: NextRequest) {
     return errorResponse('Invalid JSON body', 400);
   }
 
-  const { channel, content, parent_message_id, metadata } = body;
+  const { channel, content, parent_message_id, metadata: rawMetadata } = body;
+  // `source` and `user_email` mark a message as written by a person and are
+  // assigned only by the server (see /api/v2/messages). Migration 00031 also
+  // strips them in the database; this keeps the route honest on its own.
+  const metadata = rawMetadata && typeof rawMetadata === 'object'
+    ? Object.fromEntries(Object.entries(rawMetadata).filter(([k]) => k !== 'source' && k !== 'user_email'))
+    : rawMetadata;
 
   if (!channel || !AGENT_NAME_RE.test(channel)) {
     return errorResponse('Valid channel name required', 400);

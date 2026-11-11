@@ -45,6 +45,11 @@ vi.mock('@/lib/supabase-server', () => ({
   }),
 }));
 
+const ipLimit = { allowed: true };
+vi.mock('@/lib/rate-limit', () => ({
+  checkIpRateLimit: () => (ipLimit.allowed ? { allowed: true } : { allowed: false, retryAfterMs: 30_000 }),
+}));
+
 vi.mock('@/lib/gossip-sync', () => ({
   ensureSyncWorker: async () => {},
   startSyncWorker: () => {},
@@ -129,5 +134,42 @@ describe('an instance admin', () => {
     state.user = { id: 'u-1' };
     state.admin = true;
     expect((await root.GET(req('/api/v2/gossip', 'GET', {}))).status).toBe(200);
+  });
+});
+
+describe('guessing the admin secret', () => {
+  const guess = (secret: string) =>
+    new NextRequest('http://localhost:3002/api/v2/gossip', {
+      method: 'POST',
+      headers: { 'x-admin-secret': secret, 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'enable' }),
+    });
+
+  beforeEach(() => {
+    ipLimit.allowed = true;
+    process.env.ADMIN_REGISTRATION_SECRET = 'the-real-secret-value';
+  });
+
+  it('refuses a guess of a different length', async () => {
+    expect((await root.POST(guess('short'))).status).toBe(403);
+    expect((await root.POST(guess('the-real-secret-value-and-more'))).status).toBe(403);
+  });
+
+  it('refuses every guess when no secret is configured', async () => {
+    delete process.env.ADMIN_REGISTRATION_SECRET;
+    expect((await root.POST(guess('the-real-secret-value'))).status).toBe(403);
+    expect((await root.POST(guess(''))).status).not.toBe(200);
+  });
+
+  it('is throttled per address, even with the right secret', async () => {
+    ipLimit.allowed = false;
+    const res = await root.POST(guess('the-real-secret-value'));
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('30');
+    expect(gossip.updateInstanceConfig).not.toHaveBeenCalled();
+  });
+
+  it('accepts the right secret', async () => {
+    expect((await root.POST(guess('the-real-secret-value'))).status).toBe(200);
   });
 });
