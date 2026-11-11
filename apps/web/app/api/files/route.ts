@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isArchivedChannel, archivedChannelMessage } from '@/lib/archived-channel';
 import { randomBytes } from 'node:crypto';
 import { getStorageClient } from '@/lib/api-auth';
 import { authenticateAgent, isAuthError, getStorageAdapter, getSupabaseClient, checkAgentRateLimit, isDashboardAdmin } from '@/lib/api-v2-auth';
@@ -250,6 +251,12 @@ export async function PUT(request: NextRequest) {
 
   if (buffer.length > MAX_UPLOAD_SIZE_BYTES) {
     return tooLarge;
+  }
+
+  // Checked before the file is stored: the announcement would be refused
+  // anyway, leaving a file nobody was told about.
+  if (await isArchivedChannel(channel)) {
+    return NextResponse.json({ error: archivedChannelMessage(channel) }, { status: 409 });
   }
 
   const safeName = sanitizeFileName(filename);

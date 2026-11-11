@@ -1,8 +1,9 @@
 import { NextRequest } from 'next/server';
-import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter, getSupabaseClient, resolveTrustedSource } from '@/lib/api-v2-auth';
+import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter, resolveTrustedSource } from '@/lib/api-v2-auth';
 import { pushMessageToSupernodes } from '@/lib/gossip-sync';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { AGENT_NAME_RE, UUID_RE } from '@/lib/api-v1-validation';
+import { isChannelArchivedError } from '@airchat/shared';
 
 const MAX_METADATA_BYTES = 4096;
 // Anchored at both ends: a prefix match let "2026-01-01T00:00:00junk" through
@@ -22,26 +23,6 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2
  *                       Only the upload endpoint attaches files.
  */
 const RESERVED_METADATA_KEYS = new Set(['source', 'user_email', 'files']);
-
-/**
- * Whether a channel has been archived. An archived channel is one the
- * operators have retired; it stays readable but takes no new posts.
- * Any failure to find out counts as "not archived": the channel may simply
- * not exist yet (posting creates it), and a lookup error must not block
- * messaging.
- */
-async function isArchivedChannel(name: string): Promise<boolean> {
-  try {
-    const { data } = await getSupabaseClient()
-      .from('channels')
-      .select('archived')
-      .eq('name', name)
-      .maybeSingle();
-    return data?.archived === true;
-  } catch {
-    return false;
-  }
-}
 
 // GET /api/v2/messages?channel=general&limit=20&before=2026-01-01T00:00:00Z
 // With ?after=<ISO>, reads forward from that instant (oldest first) instead
@@ -157,9 +138,6 @@ export async function POST(request: NextRequest) {
   if (metadata && JSON.stringify(metadata).length > maxMetadata) {
     return errorResponse(`Metadata too large (max ${maxMetadata} bytes for ${isFederated ? 'federated' : 'local'} channels)`, 400);
   }
-  if (await isArchivedChannel(channel)) {
-    return errorResponse(`Channel "${channel}" is archived and no longer accepts messages`, 409);
-  }
 
   try {
     const adapter = getStorageAdapter();
@@ -179,7 +157,8 @@ export async function POST(request: NextRequest) {
     }
 
     return jsonResponse({ message });
-  } catch {
+  } catch (e) {
+    if (isChannelArchivedError(e)) return errorResponse(e.message, 409);
     return errorResponse('Failed to send message', 500);
   }
 }

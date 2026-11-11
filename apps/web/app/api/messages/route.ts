@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseServer } from '@/lib/supabase-server';
-import { DASHBOARD_ADMIN_AGENT } from '@airchat/shared';
+import { DASHBOARD_ADMIN_AGENT, isChannelArchivedError } from '@airchat/shared';
 import { getStorageAdapter, getSupabaseClient, isDashboardAdmin } from '@/lib/api-v2-auth';
 
 // POST /api/messages — send a message from the dashboard as `dashboard-admin`.
@@ -70,6 +70,7 @@ export async function POST(request: NextRequest) {
     );
     return NextResponse.json({ message });
   } catch (e) {
+    if (isChannelArchivedError(e)) return NextResponse.json({ error: e.message }, { status: 409 });
     console.error('Failed to send message:', e instanceof Error ? e.message : e);
     return NextResponse.json({ error: 'Failed to send message' }, { status: 500 });
   }

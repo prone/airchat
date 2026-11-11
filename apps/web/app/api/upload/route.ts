@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomBytes } from 'node:crypto';
+import { isArchivedChannel, archivedChannelMessage } from '@/lib/archived-channel';
 import { createSupabaseServer } from '@/lib/supabase-server';
 import { STORAGE_BUCKET, DIRECT_MESSAGES_CHANNEL, formatSize } from '@airchat/shared';
 import { getSupabaseClient, getStorageAdapter, isDashboardAdmin, resolveDashboardAdminAgent } from '@/lib/api-v2-auth';
@@ -44,9 +46,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Dashboard uploads are not provisioned' }, { status: 500 });
   }
 
-  const timestamp = Date.now();
+  const target = formData.get('target_agent') as string | null;
+  // Checked before the file is stored. A file sent to one agent is announced
+  // in #direct-messages, so the named channel only supplies the folder.
+  if (!target && await isArchivedChannel(channel)) {
+    return NextResponse.json({ error: archivedChannelMessage(channel) }, { status: 409 });
+  }
+
   const safeName = sanitizeFileName(file.name);
-  const path = `${channel}/${timestamp}-${safeName}`;
+  // The random part makes the path unguessable; a timestamp and a file name
+  // can be worked out by anyone who knows roughly when something was shared.
+  const path = `${channel}/${Date.now()}-${randomBytes(8).toString('hex')}-${safeName}`;
   const buffer = Buffer.from(await file.arrayBuffer());
 
   // Upload via the service role (the private bucket isn't writable by the anon
@@ -62,7 +72,6 @@ export async function POST(request: NextRequest) {
 
   // Post a message linking the file, as dashboard-admin via the service-role
   // storage adapter.
-  const target = formData.get('target_agent') as string | null;
   const messageContent = target
     ? `@${target} Shared a file: **${safeName}** (${formatSize(file.size)})`
     : `Shared a file: **${safeName}** (${formatSize(file.size)})`;

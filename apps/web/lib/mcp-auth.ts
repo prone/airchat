@@ -156,6 +156,15 @@ export async function authenticateConnector(
     return unauthorized(request, 'Invalid token');
   }
 
+  // A token issued through OAuth consent stands for the admin who approved it.
+  // Refreshing already stops once that person is no longer an admin; this
+  // stops the access token they still hold as well, without waiting for it to
+  // expire. Tokens issued from the CLI have no approving user and are revoked
+  // directly.
+  if (record.granted_by_user_id && !(await approverIsStillAdmin(record.granted_by_user_id))) {
+    return unauthorized(request, 'Invalid token');
+  }
+
   noteConnectorTokenUse(record.id);
 
   const card = (agent.metadata as Record<string, unknown> | null | undefined)?.card;
@@ -171,6 +180,37 @@ export async function authenticateConnector(
     // Anything unrecognised degrades to read-only rather than opening up.
     scope: record.scope === 'read-write' ? 'read-write' : 'read',
   };
+}
+
+// How long an "is still an admin" answer is reused. Removing an admin takes
+// effect on their connector within this long.
+const ADMIN_CHECK_TTL_MS = 60 * 1000;
+const adminChecks = new Map<string, { isAdmin: boolean; at: number }>();
+
+async function approverIsStillAdmin(userId: string): Promise<boolean> {
+  const known = adminChecks.get(userId);
+  if (known && Date.now() - known.at < ADMIN_CHECK_TTL_MS) return known.isAdmin;
+
+  const { data, error } = await getSupabaseClient()
+    .from('admin_users')
+    .select('user_id')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) {
+    // Could not find out. Keep the last answer if there is one; otherwise let
+    // the request through, since the token itself was just found valid and a
+    // database hiccup should not sign every connector out.
+    console.error(`[mcp] admin check failed: ${error.message}`);
+    return known ? known.isAdmin : true;
+  }
+  const isAdmin = !!data;
+  adminChecks.set(userId, { isAdmin, at: Date.now() });
+  return isAdmin;
+}
+
+/** Test hook: forget remembered admin checks. */
+export function clearAdminChecks(): void {
+  adminChecks.clear();
 }
 
 // last_used_at answers "is this token still in use?", which needs minutes of

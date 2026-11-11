@@ -705,9 +705,10 @@ export async function processInboundMessages(
  * Run the safety classifier over a message written on this instance before it
  * leaves for other instances.
  *
- * Local posts to gossip-* and shared-* channels are stored without being
- * classified, so this is the point at which they are checked. A message the
- * classifier would quarantine is not sent out.
+ * Local posts to gossip-* and shared-* channels are classified when they are
+ * written. This checks again on the way out, with the pattern set as it is
+ * now, so a message stored before a pattern was added still does not leave.
+ * A message the classifier would quarantine is not sent out.
  */
 export function classifyOutbound(
   content: string,

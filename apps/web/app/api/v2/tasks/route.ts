@@ -4,6 +4,7 @@ import {
   isTaskChannelAllowed,
   TASK_STATUSES,
   type TaskStatus,
+  isChannelArchivedError,
 } from '@airchat/shared';
 import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter } from '@/lib/api-v2-auth';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
@@ -146,7 +147,8 @@ export async function POST(request: NextRequest) {
     }
 
     return jsonResponse({ task });
-  } catch {
+  } catch (e) {
+    if (isChannelArchivedError(e)) return errorResponse(e.message, 409);
     return errorResponse('Failed to create task', 500);
   }
 }

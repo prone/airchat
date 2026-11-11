@@ -9,7 +9,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { SupabaseStorageAdapter, BOARD_UNREAD_CAP, resetAdapterCaches } from '../supabase-adapter.js';
+import { SupabaseStorageAdapter, BOARD_UNREAD_CAP, resetAdapterCaches, isChannelArchivedError } from '../supabase-adapter.js';
 import { DIRECT_MESSAGES_CHANNEL } from '../constants.js';
 import { STARTER_PATTERNS } from '../safety/patterns.js';
 
@@ -504,7 +504,16 @@ describe('sending a message', () => {
       table === 'channels' ? [{ id: 'c-general', federation_scope: 'local' }] : table === 'messages' ? [SENT] : []);
     await new SupabaseStorageAdapter(client).forAgent(agent).sendMessage('general', 'hi');
     const lookup = calls.find((c) => c.table === 'channels' && c.op === 'select');
-    expect(lookup?.args[0]).toBe('id, federation_scope');
+    expect(lookup?.args[0]).toBe('id, federation_scope, archived');
+  });
+
+  it('refuses an archived channel in that same lookup, before writing anything', async () => {
+    const { client, calls } = recordingClient((table) =>
+      table === 'channels' ? [{ id: 'c-old', federation_scope: 'local', archived: true }] : []);
+    const scoped = new SupabaseStorageAdapter(client).forAgent(agent);
+    await expect(scoped.sendMessage('old-project', 'hi')).rejects.toSatisfy(isChannelArchivedError);
+    await expect(scoped.resolveOrCreateChannel('old-project')).rejects.toSatisfy(isChannelArchivedError);
+    expect(calls.some((c) => ['insert', 'upsert', 'update'].includes(c.op))).toBe(false);
   });
 
   it('does not return the search vector, classification or safety labels', async () => {

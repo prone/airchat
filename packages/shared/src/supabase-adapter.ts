@@ -27,12 +27,31 @@ import type { ChannelMembershipWithChannel } from './types.js';
 import type { PatternSet, ClassificationResult } from './safety/types.js';
 import { classifyMessage } from './safety/classifier.js';
 
+/**
+ * Thrown by every write that lands in a channel (a message, a task, a note)
+ * when the channel has been archived. An archived channel is one the operators
+ * have retired: it stays readable and takes nothing new. Routes answer 409.
+ */
+export class ChannelArchivedError extends Error {
+  constructor(channelName: string) {
+    super(`Channel "${channelName}" is archived and no longer accepts new messages, tasks or notes`);
+    this.name = 'ChannelArchivedError';
+  }
+}
+
+/** True for a ChannelArchivedError, including one that crossed a module boundary. */
+export function isChannelArchivedError(e: unknown): e is ChannelArchivedError {
+  return e instanceof Error && e.name === 'ChannelArchivedError';
+}
+
 // ── SupabaseStorageAdapter ─────────────────────────────────────────────────
 
 export class SupabaseStorageAdapter implements StorageAdapter {
   private patternSet: PatternSet | null = null;
 
-  constructor(private readonly client: SupabaseClient) {}
+  constructor(private readonly client: SupabaseClient, options: { patternSet?: PatternSet } = {}) {
+    this.patternSet = options.patternSet ?? null;
+  }
 
   /** Set the pattern set used for safety classification on federated channels. */
   setPatternSet(patterns: PatternSet): void {
@@ -1991,6 +2010,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
   /**
    * Find or create a channel, returning its federation scope with its id so a
    * sender does not need a second request to decide whether to classify.
+   * Used only by writes. Throws ChannelArchivedError for an archived channel.
    */
   private async findOrCreateChannelWithScope(
     channelName: string
@@ -1998,11 +2018,16 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     // Try to find existing channel
     const { data: existing } = await this.client
       .from('channels')
-      .select('id, federation_scope')
+      .select('id, federation_scope, archived')
       .eq('name', channelName)
       .single();
 
-    if (existing) return existing;
+    if (existing) {
+      // Every write to a channel resolves it here, so this is the one place
+      // that keeps an archived channel closed to all of them.
+      if (existing.archived) throw new ChannelArchivedError(channelName);
+      return { id: existing.id, federation_scope: existing.federation_scope };
+    }
 
     // Channel does not exist — create it
     // Determine channel type and federation scope from name

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
+import { ChannelArchivedError } from '@airchat/shared';
 
 /**
  * POST /api/v2/messages takes JSON written by an agent, so every field can
@@ -121,21 +122,15 @@ describe('metadata keys only the server may set', () => {
 });
 
 describe('archived channels', () => {
-  it('refuses a post to an archived channel', async () => {
-    state.archived = true;
+  it('answers 409 when the adapter refuses an archived channel', async () => {
+    sendMessage.mockRejectedValueOnce(new ChannelArchivedError('old-project'));
     const res = await post({ channel: 'old-project', content: 'hi' });
     expect(res.status).toBe(409);
     expect((await res.json()).error).toMatch(/archived/);
-    expect(sendMessage).not.toHaveBeenCalled();
   });
 
-  it('allows a post to a channel that does not exist yet', async () => {
-    state.archived = null;
-    expect((await post({ channel: 'brand-new', content: 'hi' })).status).toBe(200);
-  });
-
-  it('does not block messaging when the archive lookup fails', async () => {
-    state.lookupFails = true;
-    expect((await post({ channel: 'general', content: 'hi' })).status).toBe(200);
+  it('still answers 500 for any other failure', async () => {
+    sendMessage.mockRejectedValueOnce(new Error('connection reset'));
+    expect((await post({ channel: 'general', content: 'hi' })).status).toBe(500);
   });
 });

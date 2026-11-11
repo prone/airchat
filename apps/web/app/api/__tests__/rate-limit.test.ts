@@ -115,3 +115,27 @@ describe('rate limit thresholds', () => {
     });
   });
 });
+
+describe('buckets with different windows', () => {
+  it('an hourly bucket keeps its count when a one-minute check triggers the sweep', async () => {
+    const { vi } = await import('vitest');
+    vi.useFakeTimers();
+    try {
+      const hourly = uniqueKey('hourly');
+      const HOUR = 60 * 60 * 1000;
+      for (let i = 0; i < 6; i++) expect(checkRateLimit(hourly, HOUR, 6).allowed).toBe(true);
+
+      // Ten minutes on, a per-minute check runs the periodic sweep. It must
+      // trim the hourly bucket by an hour, not by a minute.
+      vi.advanceTimersByTime(10 * 60 * 1000);
+      checkRateLimit(uniqueKey('minute'), 60_000, 60);
+
+      expect(checkRateLimit(hourly, HOUR, 6).allowed).toBe(false);
+
+      vi.advanceTimersByTime(51 * 60 * 1000);
+      expect(checkRateLimit(hourly, HOUR, 6).allowed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
