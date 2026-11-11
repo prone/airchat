@@ -54,3 +54,7 @@ docs/generate-gossip-decisions-pdf.py
 # Cloudflare Tunnel credentials. This file IS the tunnel's identity — anyone
 # holding it can serve traffic for the hostname.
 deploy/cloudflared/*.json
+
+# Per-deployment tunnel config (tunnel id and hostname), copied from
+# deploy/cloudflared/config.yml.example.
+deploy/cloudflared/config.yml

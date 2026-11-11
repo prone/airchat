@@ -1,91 +1,117 @@
-# Permanent tunnel for the MCP endpoint
+# Cloudflare Tunnel for the MCP endpoint
 
-Makes `/api/mcp` reachable at `https://mcp.airchat.work` so the claude.ai
-connector keeps working, instead of depending on an ephemeral
-`trycloudflare.com` hostname.
+Makes the MCP endpoint (`/mcp`) and the OAuth paths around it reachable at a
+stable public HTTPS hostname, which the claude.ai connector needs, without
+opening a port on the host. It requires a domain on Cloudflare.
 
-Live since 2026-08-03.
+`mcp.example.com` below is an example hostname; use your own everywhere it
+appears.
 
-## What is running
+## What is in this directory
 
-- Tunnel `airchat-mcp`: `8b40e140-0289-4e59-8f83-f5ac54924006`
-- `config.yml` here exposes only the connector's paths — verified against 16
-  cases, 9 exposed and 7 blocked, `/api/v2` among the blocked
-- A compose overlay runs `cloudflared` beside the web container on the NAS
-- `mcp.airchat.work` is a proxied CNAME to
-  `8b40e140-0289-4e59-8f83-f5ac54924006.cfargotunnel.com`
+| File | Purpose |
+|---|---|
+| `config.yml.example` | Ingress rules that expose only the connector's paths. Copy to `config.yml` and fill in. |
+| `docker-compose.cloudflared.yml` | Compose overlay that runs `cloudflared` beside the web container. |
+| `config.yml` | Your copy of the example. Gitignored. |
+| `<TUNNEL_ID>.json` | The tunnel credentials. Gitignored. |
 
-## Getting the credentials file without `cloudflared tunnel login`
+## 1. Create the tunnel and its DNS record
 
-An earlier version of this file said a browser login was required to write the
-credentials. It is not. The Cloudflare API returns the tunnel token, and that
-token *is* the credentials file — it base64-decodes to `{a, t, s}`, exactly the
-`AccountTag` / `TunnelID` / `TunnelSecret` shape `cloudflared` reads:
+```bash
+cloudflared tunnel login
+cloudflared tunnel create airchat-mcp          # prints the tunnel UUID
+cloudflared tunnel route dns airchat-mcp mcp.example.com
+```
+
+`tunnel create` writes `<TUNNEL_ID>.json` under `~/.cloudflared/`. Copy it to
+`deploy/cloudflared/<TUNNEL_ID>.json` and keep it mode 600.
+
+The DNS record is a proxied CNAME from `mcp.example.com` to
+`<TUNNEL_ID>.cfargotunnel.com`. You can create it in the Cloudflare dashboard
+instead of with `tunnel route dns`.
+
+### Getting the credentials file from the API instead
+
+On a host with no browser, the Cloudflare API returns the tunnel token, which
+base64-decodes to the same `{a, t, s}` JSON (`AccountTag`, `TunnelID`,
+`TunnelSecret`) that `cloudflared` reads as a credentials file:
 
 ```bash
 curl -s -H "Authorization: Bearer $CF_API_TOKEN" \
   "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/cfd_tunnel/$TUNNEL_ID/token" \
   | jq -r .result | base64 -d > deploy/cloudflared/$TUNNEL_ID.json
 chmod 600 deploy/cloudflared/$TUNNEL_ID.json
+```
+
+Creating the DNS record through the API needs a token with `DNS:Edit`; a
+read-scoped token is refused.
+
+The credentials file is the tunnel's identity: anyone holding it can serve
+traffic for the hostname. It is gitignored, and should not be made
+world-readable.
+
+## 2. Write `config.yml`
+
+```bash
+cp deploy/cloudflared/config.yml.example deploy/cloudflared/config.yml
+```
+
+Replace `<TUNNEL_ID>` (two places) and `mcp.example.com` in the copy.
+`cloudflared` does not expand environment variables in this file. Then check it:
+
+```bash
 cloudflared tunnel ingress validate --config deploy/cloudflared/config.yml
 ```
 
-The file is gitignored: it *is* the tunnel's identity, and anyone holding it can
-serve traffic for that hostname.
+## 3. Set the environment
 
-**DNS genuinely does need more than a read-scoped token.** Both
-`POST /zones/{id}/dns_records` and the `cfd_tunnel` route endpoint fail with a
-`zone:read` token (`10000` and `10405` respectively). Either add `DNS:Edit` to
-the token, or create the CNAME in the dashboard: name `mcp`, target
-`<tunnel-id>.cfargotunnel.com`, **Proxied**.
-
-## The credentials file must be readable by the container's user
-
-The image's default user is not root and cannot read a mode-600 file owned by
-the deploy user, so `cloudflared` crash-loops with:
+In the `.env` file next to `docker-compose.yml`:
 
 ```
-couldn't read tunnel credentials from /etc/cloudflared/<id>.json: permission denied
+TUNNEL_ID=<TUNNEL_ID>
+CLOUDFLARED_UID=<output of `id -u` for the owner of the credentials file>
+CLOUDFLARED_GID=<output of `id -g` for that user>
+AIRCHAT_PUBLIC_URL=https://mcp.example.com
 ```
 
-The overlay therefore pins `user:` to the file's owner (`1026:100` on this NAS,
-overridable via `CLOUDFLARED_UID` / `CLOUDFLARED_GID`). Running the container as
-root would also work and is the wrong trade — a much larger privilege than
-reading one file. Do not `chmod 644` it either; it is a credential.
+`CLOUDFLARED_UID` / `CLOUDFLARED_GID` set the user the container runs as. The
+image's default user is not root and cannot read a mode-600 file owned by
+someone else; without these `cloudflared` exits with
+`couldn't read tunnel credentials ... permission denied`. Running as the file's
+owner lets the file stay mode 600 without running the container as root.
 
-## Deploying
+`AIRCHAT_PUBLIC_URL` must match the hostname exactly. It is the OAuth issuer,
+the resource identifier in the discovery documents, and the audience inside
+every issued token. If it differs from the address clients use, discovery
+advertises an unreachable endpoint or the server rejects tokens it issued.
 
-Copy `config.yml`, the credentials file and the overlay to the NAS deploy
-directory, set
-
-```
-AIRCHAT_PUBLIC_URL=https://mcp.airchat.work
-```
-
-in `.env`, and start both containers:
+## 4. Start
 
 ```bash
 docker compose -f docker-compose.yml \
   -f deploy/cloudflared/docker-compose.cloudflared.yml up -d
 ```
 
-`AIRCHAT_PUBLIC_URL` must match the hostname exactly. It is the OAuth issuer,
-the resource identifier in the discovery documents, and the audience inside
-every issued token — a mismatch means either discovery advertises something
-unreachable, or the server rejects a token it just issued.
-
 ## Verify
 
 ```bash
-docker logs agentchat-web-cloudflared-1 | grep 'Registered tunnel connection'
-curl https://mcp.airchat.work/.well-known/oauth-protected-resource/api/mcp
-curl -i -X POST https://mcp.airchat.work/api/mcp -d '{}'   # 401 + challenge
-curl -i https://mcp.airchat.work/api/v2/board              # must be 404
+docker compose -f docker-compose.yml \
+  -f deploy/cloudflared/docker-compose.cloudflared.yml logs cloudflared \
+  | grep 'Registered tunnel connection'
+curl https://mcp.example.com/.well-known/oauth-protected-resource/mcp
+curl -i -X POST https://mcp.example.com/mcp -d '{}'       # 401 + challenge
+curl -i https://mcp.example.com/api/v2/board              # must be 404
 ```
 
-Four registered connections is normal — `cloudflared` opens redundant edge
-connections, it is not four tunnels.
+Then add a custom connector in claude.ai with the URL
+`https://mcp.example.com/mcp`.
 
-Existing connector grants are bound to the OLD hostname as their audience and
-will be rejected once `AIRCHAT_PUBLIC_URL` changes. Reconnect the connector in
-claude.ai after the switch; that is audience validation working, not a fault.
+Several `Registered tunnel connection` lines are normal: `cloudflared` opens
+redundant connections to the Cloudflare edge for one tunnel.
+
+## Changing the hostname
+
+Connector grants record the public URL as their audience. After
+`AIRCHAT_PUBLIC_URL` changes, tokens issued for the old hostname are rejected;
+reconnect the connector in claude.ai.

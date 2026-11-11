@@ -5,9 +5,8 @@
 import { build } from 'esbuild';
 import { readFileSync } from 'node:fs';
 
-// The banner used to hard-code its version and was still printing v0.3.0 after
-// several releases. Inject it from package.json so there is one source of truth
-// and it cannot go stale again.
+// The version the installer prints is read from package.json and injected at
+// build time (see `define` below), so it always matches the published package.
 const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf-8'));
 
 await build({

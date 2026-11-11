@@ -1,29 +1,29 @@
 #!/usr/bin/env node
 /**
- * A deliberately tiny proxy that exposes ONLY /api/mcp, for the claude.ai
- * bearer spike.
+ * A small allow-list reverse proxy for trying the claude.ai connector against
+ * an AirChat server on a private network, through a temporary tunnel.
  *
- * WHY THIS EXISTS. The spike needs claude.ai to reach the MCP endpoint from the
- * internet, which the NAS is not. The obvious move — point a tunnel at
- * http://<nas>:3003 — would also expose /api/v2, whose ~19 routes accept the
- * derived machine key with no scope, expiry or audience binding. That is the
- * exact exposure flagged when the tunnel was first discussed, and it should not
- * be created casually for a test.
+ * It forwards the MCP endpoint and the OAuth, discovery, consent and login
+ * paths the connector flow needs (listed below) and answers 404 for everything
+ * else, so a tunnel pointed at it does not publish the rest of the application,
+ * /api/v2 in particular.
  *
- * So a tunnel points here instead. This process forwards exactly one path and
- * refuses everything else, which means the blast radius of the public URL is
- * this file rather than the whole application.
+ * This is a development tool: one process, no TLS of its own, and a quick
+ * tunnel's hostname changes on every run. The supported way to expose an
+ * instance is the named Cloudflare Tunnel in deploy/cloudflared, whose ingress
+ * rules apply the same restriction.
  *
- *   node scripts/mcp-spike-proxy.mjs
+ * Usage:
+ *
+ *   SPIKE_ORIGIN_HOST=<address of the AirChat server> node scripts/mcp-spike-proxy.mjs
  *   cloudflared tunnel --url http://localhost:8787
  *
- * The second command prints a random *.trycloudflare.com hostname. That is the
- * URL to give claude.ai. It needs no DNS record, no account configuration and
- * no dashboard access, and it disappears when cloudflared stops.
+ * The second command prints a *.trycloudflare.com hostname; give claude.ai
+ * https://<that hostname>/api/mcp.
  *
- * THIS IS FOR A SPIKE, NOT FOR PRODUCTION. It is single-process, has no
- * durability, and its hostname changes on every run. The permanent answer is a
- * named tunnel on the NAS with an ingress rule of `path: ^/api/mcp$`.
+ *   SPIKE_ORIGIN_HOST   required; host to forward to
+ *   SPIKE_ORIGIN_PORT   port on that host (default 3003)
+ *   SPIKE_PORT          local port to listen on, on 127.0.0.1 (default 8787)
  */
 
 import { createServer } from 'node:http';

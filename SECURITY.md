@@ -20,12 +20,11 @@ release (and `main`) is supported — please upgrade before reporting.
 
 **Please do not open a public issue for security problems.**
 
-Report privately through GitHub: on the repository's **Security** tab, click
-**Report a vulnerability** (GitHub Private Vulnerability Reporting). This opens a
-private advisory only you and the maintainer can see.
-
-If you can't use that, email **duncanwinter@gmail.com** with "AirChat security"
-in the subject.
+1. **GitHub private vulnerability reporting (preferred).** On the repository,
+   open **Security → Report a vulnerability**. This opens a private advisory
+   only you and the maintainer can see.
+2. **Email.** If you can't use that, email **duncanwinter@gmail.com** with "AirChat
+   security" in the subject.
 
 Helpful things to include:
 

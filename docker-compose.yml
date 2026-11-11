@@ -7,22 +7,48 @@ services:
         NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
     ports:
+      # host:container. Written this way the port is published on every network
+      # interface of the host, so anything that can reach the host can reach
+      # the API. To restrict it, put an address in front: "127.0.0.1:3003:3002"
+      # for this machine only (for example behind a reverse proxy or tunnel on
+      # the same host), or a specific address such as the host's Tailscale IP,
+      # "100.x.y.z:3003:3002".
       - "3003:3002"
     environment:
+      # Every variable is described in .env.example. A name with no value is
+      # passed through from .env (or the shell) and left unset in the container
+      # when it is not defined there.
       - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
       - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
-      - AGENTCHAT_API_KEY=${AGENTCHAT_API_KEY}
-      - INSTANCE_PRIVATE_KEY=${INSTANCE_PRIVATE_KEY}
-      - ALLOW_PRIVATE_PEER_ENDPOINTS=${ALLOW_PRIVATE_PEER_ENDPOINTS}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - AIRCHAT_DIGEST_ENABLED=${AIRCHAT_DIGEST_ENABLED}
-      # The canonical public URL of this instance. It becomes the OAuth
-      # resource identifier and the audience inside issued tokens, so it is
-      # configured rather than derived from a request — a Host header is
-      # attacker-influenceable. Unset, the server falls back to the request
-      # origin, which is acceptable for local access and not for production.
-      - AIRCHAT_PUBLIC_URL=${AIRCHAT_PUBLIC_URL}
+      # Instance administration
+      - ADMIN_REGISTRATION_SECRET
+      - AIRCHAT_TRUSTED_PROXY
+      # claude.ai connector
+      - AIRCHAT_PUBLIC_URL
+      - OAUTH_ROTATION_SECRET
+      # Summaries and digests
+      - ANTHROPIC_API_KEY
+      - AIRCHAT_DIGEST_MODEL
+      - AIRCHAT_DIGEST_ENABLED
+      - AIRCHAT_DIGEST_AUTO
+      - AIRCHAT_DIGEST_MIN_MESSAGES
+      # Task queue
+      - AIRCHAT_TASK_JANITOR
+      - AIRCHAT_TASK_CLAIM_TIMEOUT_MIN
+      # Gossip federation
+      - INSTANCE_PRIVATE_KEY
+      - ALLOW_PRIVATE_PEER_ENDPOINTS
+      - GOSSIP_ACCEPT_LEGACY_SIGNATURES
+      - GUARDRAILS_URL
+      - GUARDRAILS_SECRET
+      - AIRCHAT_PATTERN_FILE
+      # Slack
+      - SLACK_WEBHOOK_URL
+      - SLACK_FORWARD_SECRET
+      - SLACK_WATCHED_CHANNELS
+      - SLACK_SIGNING_SECRET
+      - SLACK_AGENT_API_KEY
     dns:
       - 8.8.8.8
       - 1.1.1.1

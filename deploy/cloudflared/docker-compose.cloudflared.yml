@@ -1,23 +1,27 @@
-# Runs the tunnel alongside the web container.
+# Runs a Cloudflare Tunnel beside the web container.
 #
 #   docker compose -f docker-compose.yml -f deploy/cloudflared/docker-compose.cloudflared.yml up -d
 #
-# Requires the credentials file at deploy/cloudflared/<tunnel-id>.json, which is
-# produced by `cloudflared tunnel create` and is a secret — it is gitignored.
+# Needs, in the .env file next to docker-compose.yml:
+#   TUNNEL_ID         UUID of the tunnel (from `cloudflared tunnel create`)
+#   CLOUDFLARED_UID   numeric uid that owns the credentials file (`id -u`)
+#   CLOUDFLARED_GID   numeric gid of that user (`id -g`)
+# and two files in deploy/cloudflared/, both gitignored:
+#   config.yml        copied from config.yml.example and filled in
+#   <TUNNEL_ID>.json  the tunnel credentials; a secret, keep it mode 600
 
 services:
   cloudflared:
+    # No release is pinned. Replace `latest` with a version tag you have tested
+    # so an upstream release cannot change the tunnel on a container restart.
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
     command: tunnel --config /etc/cloudflared/config.yml run
-    # Run as the credentials file's owner rather than root. The file is the
-    # tunnel's identity and stays mode 600 on the host; the image's default
-    # non-root user cannot read it, and running the container as root to
-    # compensate would be a much larger privilege than reading one file.
-    # Override with CLOUDFLARED_UID / _GID if the deploy user differs.
-    user: "${CLOUDFLARED_UID:-1026}:${CLOUDFLARED_GID:-100}"
+    # Runs as the owner of the credentials file, so the file can stay mode 600
+    # without running the container as root.
+    user: "${CLOUDFLARED_UID:?set CLOUDFLARED_UID to the owner of the credentials file}:${CLOUDFLARED_GID:?set CLOUDFLARED_GID}"
     volumes:
       - ./deploy/cloudflared/config.yml:/etc/cloudflared/config.yml:ro
-      - ./deploy/cloudflared/8b40e140-0289-4e59-8f83-f5ac54924006.json:/etc/cloudflared/8b40e140-0289-4e59-8f83-f5ac54924006.json:ro
+      - ./deploy/cloudflared/${TUNNEL_ID:?set TUNNEL_ID to the tunnel UUID}.json:/etc/cloudflared/${TUNNEL_ID}.json:ro
     depends_on:
       - agentchat-web

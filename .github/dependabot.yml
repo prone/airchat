@@ -2,10 +2,8 @@ version: 2
 updates:
   # npm workspaces (root package-lock covers all @airchat/* packages + apps/web)
   #
-  # Everything here is grouped. All npm updates edit the same root
-  # package-lock.json, so ungrouped PRs conflict with each other by
-  # construction: merging one leaves the rest BEHIND or CONFLICTING, each
-  # needing a rebase and a full CI re-run.
+  # All updates are grouped: every npm update edits the same root
+  # package-lock.json, so separate PRs would conflict with each other.
   - package-ecosystem: npm
     directory: "/"
     schedule:
@@ -20,11 +18,8 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
 
-      # Majors are deliberately excluded from both groups below, so they
-      # arrive as their own reviewable PR. PR #20 bundled TypeScript 5.7 -> 7
-      # (the native rewrite) and @types/node 22 -> 26 into a routine
-      # "9 dev-dependency updates" PR; it broke `tsc` in @airchat/shared with
-      # "Cannot find name 'node:fs'" and would have read as low-risk.
+      # Only minor and patch updates are grouped. A major update arrives as
+      # its own PR so a breaking change is reviewed on its own.
       production-dependencies:
         applies-to: version-updates
         dependency-type: production
@@ -36,13 +31,9 @@ updates:
         update-types: ["minor", "patch"]
 
     ignore:
-      # TypeScript 7 is the native (Go) rewrite. It does not ship the
-      # TypeScript compiler API, and `next build` requires it — so TS 7 cannot
-      # run with Next.js at all. This is not "not yet for us": it needs
-      # Next.js to ship support first.
-      #
-      # Dependabot proposed it as #64 (and inside #20 before that). Left
-      # unignored it returns every week, and it reads like a routine bump.
+      # TypeScript 7 (the native rewrite) does not ship the compiler API that
+      # `next build` requires, so major TypeScript updates are ignored until
+      # Next.js supports it.
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
 
