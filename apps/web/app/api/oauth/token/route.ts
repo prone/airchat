@@ -1,14 +1,25 @@
 /**
- * OAuth 2.1 token endpoint — exchanges an authorization code for an access
- * token.
+ * OAuth 2.1 token endpoint.
  *
- * The issued token is a row in connector_tokens, the same store the CLI writes
- * to. That is deliberate: it already hashes the secret, carries scope, expiry,
- * revocation and last_used_at, and binds to a credential-less agent. A second
- * token store would duplicate all of it and the two would drift.
+ * Two grants:
+ *
+ *   authorization_code — exchanges a consent code for an access token AND a
+ *   refresh token.
+ *   refresh_token      — rotates a refresh token into a new access token and a
+ *   new refresh token (OAuth 7).
+ *
+ * The issued access token is a row in connector_tokens, the same store the CLI
+ * writes to. That is deliberate: it already hashes the secret, carries scope,
+ * expiry, revocation and last_used_at, and binds to a credential-less agent. A
+ * second access-token store would duplicate all of it and the two would drift.
+ *
+ * Refresh tokens live in their own table (oauth_refresh_tokens). They are a
+ * different credential with a different lifetime, and keeping them apart makes
+ * it structural that one is never accepted where the other is expected.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { createHmac, randomUUID } from 'node:crypto';
 import { getSupabaseClient } from '@/lib/api-v2-auth';
 import { checkIpRateLimit } from '@/lib/rate-limit';
 import { CONNECTOR_TOKEN_PREFIX } from '@/lib/mcp-auth';
@@ -20,6 +31,9 @@ import {
   oauthError,
   grantedScopeString,
   ACCESS_TOKEN_TTL_DAYS,
+  REFRESH_TOKEN_TTL_DAYS,
+  REFRESH_TOKEN_PREFIX,
+  type OAuthScope,
 } from '@/lib/oauth-server';
 import { clientIp } from '@/lib/client-ip';
 import { withOAuthCors, oauthPreflight } from '@/lib/mcp-cors';
@@ -40,6 +54,19 @@ export async function POST(request: NextRequest) {
   return withOAuthCors(await handleToken(request));
 }
 
+/** Everything a grant needs to mint a token pair, whichever grant produced it. */
+interface GrantContext {
+  agentId: string;
+  userId: string;
+  clientId: string;
+  scope: OAuthScope;
+  audience: string;
+  /** Shared by every rotation descending from one consent. */
+  familyId: string;
+}
+
+type Db = ReturnType<typeof getSupabaseClient>;
+
 async function handleToken(request: NextRequest): Promise<Response> {
   const limited = checkIpRateLimit(clientIp(request));
   if (!limited.allowed) {
@@ -53,10 +80,14 @@ async function handleToken(request: NextRequest): Promise<Response> {
   if (!form) return oauthError('invalid_request', 'Expected application/x-www-form-urlencoded');
 
   const grantType = String(form.get('grant_type') ?? '');
-  if (grantType !== 'authorization_code') {
-    return oauthError('unsupported_grant_type', 'Only authorization_code is supported');
-  }
+  if (grantType === 'authorization_code') return handleAuthorizationCode(request, form);
+  if (grantType === 'refresh_token') return handleRefreshToken(request, form);
+  return oauthError('unsupported_grant_type', 'Only authorization_code and refresh_token are supported');
+}
 
+// ── authorization_code ──────────────────────────────────────────────────────
+
+async function handleAuthorizationCode(request: NextRequest, form: FormData): Promise<Response> {
   const code = String(form.get('code') ?? '');
   const codeVerifier = String(form.get('code_verifier') ?? '');
   const redirectUri = String(form.get('redirect_uri') ?? '');
@@ -108,15 +139,11 @@ async function handleToken(request: NextRequest): Promise<Response> {
     return oauthError('invalid_grant', 'PKCE verification failed');
   }
 
-  const accessToken = CONNECTOR_TOKEN_PREFIX + randomToken(32);
-  const expiresAt = new Date(Date.now() + ACCESS_TOKEN_TTL_DAYS * 86_400_000);
-
-  const { error } = await db.from('connector_tokens').insert({
-    agent_id: stored.agent_id,
-    token_hash: sha256(accessToken),
-    name: `claude.ai connector (${stored.client_id})`,
-    scope: stored.scope,
-    client_id: stored.client_id,
+  return issueTokenPair(db, {
+    agentId: stored.agent_id,
+    userId: stored.user_id,
+    clientId: stored.client_id,
+    scope: stored.scope === 'read-write' ? 'read-write' : 'read',
     // RFC 8707 audience. /api/mcp validates it on every request, which is what
     // stops a token minted for another resource being replayed here.
     //
@@ -127,13 +154,327 @@ async function handleToken(request: NextRequest): Promise<Response> {
     // binding, so it must always name an audience — default it to this server
     // rather than letting a client opt out by omitting one parameter.
     audience: stored.resource ?? canonicalResourceUri(request),
-    granted_by_user_id: stored.user_id,
-    expires_at: expiresAt.toISOString(),
+    // A fresh consent starts a fresh family.
+    familyId: randomUUID(),
+  });
+}
+
+// ── refresh_token ───────────────────────────────────────────────────────────
+
+async function handleRefreshToken(request: NextRequest, form: FormData): Promise<Response> {
+  const presented = String(form.get('refresh_token') ?? '');
+  const clientId = String(form.get('client_id') ?? '');
+  if (!presented || !clientId) {
+    // OAuth 2.1 §4.3.1: a public client identifies itself with client_id, and
+    // the token must have been issued to that client.
+    return oauthError('invalid_request', 'refresh_token and client_id are required');
+  }
+
+  const db = getSupabaseClient();
+  const now = new Date();
+
+  // Looked up regardless of state: a consumed or revoked token must still be
+  // found, because presenting one is the reuse signal.
+  const { data: token, error: lookupError } = await db
+    .from('oauth_refresh_tokens')
+    .select('*')
+    .eq('token_hash', sha256(presented))
+    .maybeSingle();
+
+  // "The database did not answer" is not "this token is invalid". invalid_grant
+  // tells the client to throw the grant away and send the user back through
+  // consent; answering it for an outage would destroy a good grant.
+  if (lookupError) return unavailable('refresh token lookup', lookupError.message);
+
+  // Unknown, revoked and expired are one answer (invalid_grant), which is what
+  // tells the client to send the user back through consent rather than retry.
+  if (!token) return oauthError('invalid_grant', 'Invalid refresh token');
+
+  if (token.client_id !== clientId) {
+    return oauthError('invalid_grant', 'Refresh token was not issued to this client');
+  }
+  if (token.revoked_at) return oauthError('invalid_grant', 'Refresh token revoked');
+  if (token.consumed_at) return handleConsumedToken(db, token, now);
+  if (new Date(token.expires_at) < now) return oauthError('invalid_grant', 'Refresh token expired');
+
+  // Revoking the access token from the dashboard or CLI ends the grant too.
+  // Otherwise "revoke" would be undone by the very next refresh.
+  if (token.access_token_id) {
+    const { data: access, error: accessError } = await db
+      .from('connector_tokens')
+      .select('revoked_at')
+      .eq('id', token.access_token_id)
+      .maybeSingle();
+    // Fail closed: if we cannot tell whether the grant was revoked, do not
+    // extend it. The client retries.
+    if (accessError) return unavailable('access token revocation check', accessError.message);
+    if (access?.revoked_at) {
+      await revokeFamily(db, token.family_id, now);
+      return oauthError('invalid_grant', 'Grant revoked');
+    }
+  }
+
+  // Consume atomically. Two refreshes racing on the same token (claude.ai
+  // refreshes proactively before expiry and reactively on a 401, and the two
+  // can coincide) both pass the checks above; only one wins this update.
+  const { data: consumed, error: consumeError } = await db
+    .from('oauth_refresh_tokens')
+    .update({ consumed_at: now.toISOString() })
+    .eq('id', token.id)
+    .is('consumed_at', null)
+    .select('id')
+    .maybeSingle();
+  if (consumeError) return unavailable('refresh token consume', consumeError.message);
+
+  // Lost the race: the other request consumed it a moment ago. That is the
+  // same situation as a retry, so it gets the same answer — the successor pair.
+  if (!consumed) return handleConsumedToken(db, { ...token, consumed_at: now.toISOString() }, now);
+
+  return rotate(db, token, now);
+}
+
+/**
+ * How long after rotation the SAME refresh token may be presented again and
+ * still be treated as a retry rather than as theft.
+ */
+const ROTATION_RETRY_WINDOW_MS = 60_000;
+
+/**
+ * A refresh token that was already rotated has been presented again.
+ *
+ * Long after rotation, that is the reuse signal: whoever holds it either kept
+ * a copy or intercepted it, so the whole family is revoked.
+ *
+ * Within a minute of rotation it is almost always the legitimate client: the
+ * response to its first attempt was lost, or its proactive and reactive
+ * refreshes overlapped. Rotation had already consumed its only refresh token,
+ * so treating the retry as theft revoked the grant and sent the user back to
+ * consent — the silent expiry refresh tokens exist to prevent, now triggered
+ * by a dropped packet.
+ *
+ * A retry inside the window gets the SAME successor pair the first attempt
+ * produced (see successorTokens). Nothing new is minted, so the window does not
+ * weaken reuse detection: a thief replaying inside it ends up holding the same
+ * pair as the client, and whichever of them refreshes second, later, is
+ * presenting a consumed token outside any window and revokes the family.
+ */
+async function handleConsumedToken(db: Db, token: RefreshRow, now: Date): Promise<Response> {
+  const consumedAt = new Date(token.consumed_at as string).getTime();
+  const withinWindow = now.getTime() - consumedAt <= ROTATION_RETRY_WINDOW_MS;
+  const successor = withinWindow ? successorTokens(token) : null;
+
+  if (!successor) {
+    await revokeFamily(db, token.family_id, now);
+    return oauthError('invalid_grant', 'Refresh token reuse detected; the grant has been revoked');
+  }
+
+  const { data: next, error } = await db
+    .from('oauth_refresh_tokens')
+    .select('consumed_at, revoked_at')
+    .eq('token_hash', sha256(successor.refresh))
+    .maybeSingle();
+  if (error) return unavailable('successor lookup', error.message);
+
+  // The successor has itself moved on (rotated or revoked). Then this is not a
+  // retry of the last rotation; it is an old token being replayed.
+  if (next && (next.consumed_at || next.revoked_at)) {
+    await revokeFamily(db, token.family_id, now);
+    return oauthError('invalid_grant', 'Refresh token reuse detected; the grant has been revoked');
+  }
+
+  // Either the successor exists and is live (hand the same pair back), or the
+  // first attempt died before storing it (finish the job). rotate() does both.
+  return rotate(db, token, now);
+}
+
+/** Retire the access token a refresh token was issued with, and issue its successor pair. */
+async function rotate(db: Db, token: RefreshRow, now: Date): Promise<Response> {
+  // One live access token per grant: retire the one this refresh token was
+  // issued with. The client is about to receive its replacement.
+  if (token.access_token_id) {
+    const { error } = await db
+      .from('connector_tokens')
+      .update({ revoked_at: now.toISOString() })
+      .eq('id', token.access_token_id)
+      .is('revoked_at', null);
+    if (error) return unavailable('previous access token retirement', error.message);
+  }
+
+  return issueTokenPair(
+    db,
+    {
+      agentId: token.agent_id,
+      userId: token.user_id,
+      clientId: token.client_id,
+      scope: token.scope === 'read-write' ? 'read-write' : 'read',
+      // The audience travels with the grant. Re-deriving it from this request
+      // would let a refresh move a grant to whatever host the request named.
+      audience: token.audience,
+      familyId: token.family_id,
+    },
+    successorTokens(token) ?? undefined,
+  );
+}
+
+/** The columns of an oauth_refresh_tokens row this file relies on. */
+interface RefreshRow {
+  id: string;
+  token_hash: string;
+  family_id: string;
+  client_id: string;
+  agent_id: string;
+  user_id: string;
+  scope: string;
+  audience: string;
+  access_token_id: string | null;
+  expires_at: string;
+  consumed_at: string | null;
+  revoked_at: string | null;
+}
+
+interface TokenPair {
+  access: string;
+  refresh: string;
+}
+
+/**
+ * The token pair that rotating `parent` produces — always the same pair.
+ *
+ * Only hashes are stored, so a retried rotation could not otherwise return
+ * what the first attempt issued. Deriving the successor from the parent with a
+ * server-held key makes rotation repeatable: the retry recomputes the same two
+ * values.
+ *
+ * The key never leaves the server, so holding the parent token (or the whole
+ * database) is not enough to compute its successor; the values are as
+ * unguessable as random ones. Returns null when no key is configured, in which
+ * case rotation falls back to random tokens and a retry cannot be answered.
+ */
+function successorTokens(parent: Pick<RefreshRow, 'id' | 'token_hash'>): TokenPair | null {
+  const key = process.env.OAUTH_ROTATION_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!key) return null;
+  const derive = (label: string) =>
+    createHmac('sha256', key).update(`${label}\0${parent.id}\0${parent.token_hash}`).digest('hex');
+  return {
+    access: CONNECTOR_TOKEN_PREFIX + derive('airchat-oauth-access-v1'),
+    refresh: REFRESH_TOKEN_PREFIX + derive('airchat-oauth-refresh-v1'),
+  };
+}
+
+/** A dependency failed. The client should retry; its grant is untouched. */
+function unavailable(what: string, detail: string): Response {
+  console.error(`[oauth] ${what} failed: ${detail}`);
+  const res = oauthError('temporarily_unavailable', 'The authorization server is temporarily unavailable', 503);
+  res.headers.set('Retry-After', '5');
+  return res;
+}
+
+/** Revoke every refresh token in a family and every access token they issued. */
+async function revokeFamily(db: Db, familyId: string, now: Date): Promise<void> {
+  const stamp = now.toISOString();
+  const { data: members } = await db
+    .from('oauth_refresh_tokens')
+    .select('access_token_id')
+    .eq('family_id', familyId);
+
+  await db
+    .from('oauth_refresh_tokens')
+    .update({ revoked_at: stamp })
+    .eq('family_id', familyId)
+    .is('revoked_at', null);
+
+  const accessIds = (members ?? [])
+    .map((m: { access_token_id: string | null }) => m.access_token_id)
+    .filter((id): id is string => typeof id === 'string');
+  if (accessIds.length > 0) {
+    await db
+      .from('connector_tokens')
+      .update({ revoked_at: stamp })
+      .in('id', accessIds)
+      .is('revoked_at', null);
+  }
+}
+
+// ── issuance ────────────────────────────────────────────────────────────────
+
+/**
+ * Mint an access token and the refresh token that goes with it, and build the
+ * RFC 6749 §5.1 token response. Shared by both grants so the two can never
+ * drift in what they store or return.
+ */
+async function issueTokenPair(db: Db, grant: GrantContext, fixed?: TokenPair): Promise<Response> {
+  // A rotation passes the pair derived from its parent, and may be the second
+  // attempt at storing it: an insert that collides on the token hash then
+  // means "already issued", which is success, not failure.
+  const accessToken = fixed?.access ?? CONNECTOR_TOKEN_PREFIX + randomToken(32);
+  const accessExpiresAt = new Date(Date.now() + ACCESS_TOKEN_TTL_DAYS * 86_400_000);
+
+  let accessId: string | null = null;
+  const { data: accessRow, error: accessError } = await db
+    .from('connector_tokens')
+    .insert({
+      agent_id: grant.agentId,
+      token_hash: sha256(accessToken),
+      name: `claude.ai connector (${grant.clientId})`,
+      scope: grant.scope,
+      client_id: grant.clientId,
+      audience: grant.audience,
+      granted_by_user_id: grant.userId,
+      expires_at: accessExpiresAt.toISOString(),
+    })
+    .select('id')
+    .single();
+  accessId = accessRow?.id ?? null;
+
+  if (!accessId && fixed) {
+    const { data: existing } = await db
+      .from('connector_tokens')
+      .select('id, revoked_at')
+      .eq('token_hash', sha256(accessToken))
+      .maybeSingle();
+    if (existing && !existing.revoked_at) accessId = existing.id;
+  }
+
+  if (!accessId) {
+    console.error('[oauth] could not issue access token:', accessError?.message ?? 'no row returned');
+    return oauthError('server_error', 'Could not issue access token', 500);
+  }
+
+  const refreshToken = fixed?.refresh ?? REFRESH_TOKEN_PREFIX + randomToken(32);
+  const refreshExpiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_DAYS * 86_400_000);
+
+  const { error: refreshError } = await db.from('oauth_refresh_tokens').insert({
+    token_hash: sha256(refreshToken),
+    family_id: grant.familyId,
+    client_id: grant.clientId,
+    agent_id: grant.agentId,
+    user_id: grant.userId,
+    scope: grant.scope,
+    audience: grant.audience,
+    access_token_id: accessId,
+    expires_at: refreshExpiresAt.toISOString(),
   });
 
-  if (error) {
-    console.error('[oauth] could not issue access token:', error.message);
-    return oauthError('server_error', 'Could not issue access token', 500);
+  let refreshStored = !refreshError;
+  if (refreshError && fixed) {
+    const { data: existing } = await db
+      .from('oauth_refresh_tokens')
+      .select('consumed_at, revoked_at')
+      .eq('token_hash', sha256(refreshToken))
+      .maybeSingle();
+    refreshStored = !!existing && !existing.consumed_at && !existing.revoked_at;
+  }
+
+  if (!refreshStored) {
+    // Do not hand out an access token whose refresh half failed to store: the
+    // client would believe it holds a renewable grant and discover otherwise
+    // in 30 days, which is the silent failure this endpoint exists to end.
+    // (A rotation leaves its access token alone: a retry will reuse it.)
+    if (!fixed) {
+      await db.from('connector_tokens').update({ revoked_at: new Date().toISOString() }).eq('id', accessId);
+    }
+    console.error('[oauth] could not issue refresh token:', refreshError?.message ?? 'successor not live');
+    return oauthError('server_error', 'Could not issue refresh token', 500);
   }
 
   return NextResponse.json(
@@ -141,10 +482,11 @@ async function handleToken(request: NextRequest): Promise<Response> {
       access_token: accessToken,
       token_type: 'Bearer',
       expires_in: ACCESS_TOKEN_TTL_DAYS * 86_400,
+      refresh_token: refreshToken,
       // The granted set as a list, not the single stored value. See
       // grantedScopeString: echoing "read-write" to a client that asked for
       // "read read-write" reads as a partial grant.
-      scope: grantedScopeString(stored.scope),
+      scope: grantedScopeString(grant.scope),
     },
     // A token response must never be cached — by the client, or anything between.
     { headers: { 'cache-control': 'no-store', pragma: 'no-cache' } },

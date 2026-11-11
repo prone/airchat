@@ -11,8 +11,26 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 /** Authorization codes are short-lived by design — they are exchanged at once. */
 export const AUTHORIZATION_CODE_TTL_MS = 60_000;
 
-/** Issued access token lifetime. Re-consent on expiry; no refresh tokens yet. */
+/**
+ * Issued access token lifetime. A refresh token is issued alongside it, so
+ * expiry is routine rotation rather than a trip back to the consent screen.
+ */
 export const ACCESS_TOKEN_TTL_DAYS = 30;
+
+/**
+ * Refresh token lifetime, sliding: every rotation issues a fresh one with a
+ * new expiry, so a grant in regular use never lapses, and one unused for this
+ * long dies and needs consent again. 90 days is long enough that a connector
+ * nobody opened over a summer still works, and short enough that a forgotten
+ * grant does not live forever.
+ */
+export const REFRESH_TOKEN_TTL_DAYS = 90;
+
+/**
+ * Refresh tokens carry their own prefix so one can never be mistaken for an
+ * access token (`acx_`) in a log line, a bug report or a code path.
+ */
+export const REFRESH_TOKEN_PREFIX = 'acr_';
 
 export const SUPPORTED_SCOPES = ['read', 'read-write'] as const;
 export type OAuthScope = (typeof SUPPORTED_SCOPES)[number];

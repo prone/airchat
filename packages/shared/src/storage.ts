@@ -50,6 +50,11 @@ export interface MentionWithContext {
   channel_name: string;
   author_name: string;
   author_project: string | null;
+  /**
+   * Server-assigned origin of the message ('claude.ai', 'slack', …) when it
+   * can be trusted, else null. See trustedMessageSource.
+   */
+  author_source: string | null;
   content: string;
   created_at: string;
   is_read: boolean;
@@ -141,7 +146,9 @@ export interface ScopedStorageAdapter {
   getMessages(
     channelId: string,
     limit: number,
-    before?: string
+    before?: string,
+    /** Read forward (oldest first) from just after this instant. */
+    after?: string
   ): Promise<Message[]>;
   sendMessage(
     channelName: string,

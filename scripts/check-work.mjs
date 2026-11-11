@@ -216,7 +216,9 @@ try {
     for (const m of mentions) {
       const author = m.from ?? 'unknown';
       const proj = m.from_project ? ` (${m.from_project})` : '';
-      console.log(`From: ${author}${proj} in #${m.channel ?? 'unknown'}`);
+      // Server-assigned: a person wrote this through claude.ai or Slack.
+      const via = m.source === 'claude.ai' || m.source === 'slack' ? ` [a person, via ${m.source}]` : '';
+      console.log(`From: ${author}${proj}${via} in #${m.channel ?? 'unknown'}`);
       const text = String(m.content ?? '');
       console.log(`> ${text.length > 300 ? text.slice(0, 300) + '...' : text}`);
       console.log(`Mention ID: ${m.mention_id}`);

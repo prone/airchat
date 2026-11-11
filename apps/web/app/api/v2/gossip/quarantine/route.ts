@@ -1,13 +1,16 @@
 import { NextRequest } from 'next/server';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
-import { authenticateAgent, isAuthError, getGossipAdapter } from '@/lib/api-v2-auth';
+import { getGossipAdapter } from '@/lib/api-v2-auth';
+import { requireInstanceAdmin } from '@/lib/instance-admin';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// GET /api/v2/gossip/quarantine — List quarantined messages (authenticated)
+// GET /api/v2/gossip/quarantine — List quarantined messages (instance admin only).
+// Reading is gated too: this returns the content quarantine exists to keep
+// away from agents.
 export async function GET(request: NextRequest) {
-  const auth = await authenticateAgent(request);
-  if (isAuthError(auth)) return auth;
+  const denied = await requireInstanceAdmin(request);
+  if (denied) return denied;
 
   const limit = Math.min(parseInt(request.nextUrl.searchParams.get('limit') || '50', 10) || 50, 100);
   const offset = Math.max(0, parseInt(request.nextUrl.searchParams.get('offset') || '0', 10) || 0);
@@ -21,10 +24,10 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST /api/v2/gossip/quarantine — Approve or delete quarantined messages (authenticated)
+// POST /api/v2/gossip/quarantine — Approve or delete quarantined messages (instance admin only)
 export async function POST(request: NextRequest) {
-  const auth = await authenticateAgent(request);
-  if (isAuthError(auth)) return auth;
+  const denied = await requireInstanceAdmin(request);
+  if (denied) return denied;
 
   let body: { action: string; message_ids: string[] };
   try { body = await request.json(); } catch { return errorResponse('Invalid JSON body', 400); }
