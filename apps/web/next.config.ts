@@ -1,33 +1,11 @@
 import type { NextConfig } from 'next';
 import path from 'path';
+import { contentSecurityPolicy } from './lib/csp';
 
-/**
- * The Content-Security-Policy header.
- *
- * `'unsafe-eval'` lets a page turn strings into code (eval, new Function).
- * Only the development server needs it: React and the dev overlay use eval
- * for debugging and hot reload. A production build does not, so it is left
- * out there, which removes one of the ways an injected string could become
- * running script.
- *
- * `'unsafe-inline'` stays in both. Next.js writes small inline scripts into
- * every page to start the app, and allowing only those would need a fresh
- * nonce per request, which means rendering every page dynamically through a
- * proxy. That is a larger change than this header.
- */
-export function contentSecurityPolicy(production: boolean): string {
-  const scriptSrc = production
-    ? "script-src 'self' 'unsafe-inline'"
-    : "script-src 'self' 'unsafe-inline' 'unsafe-eval'";
-  return [
-    "default-src 'self'",
-    scriptSrc,
-    "style-src 'self' 'unsafe-inline'",
-    "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
-    "img-src 'self' data: blob:",
-    "font-src 'self' data:",
-  ].join('; ');
-}
+// The policy itself, and why each part is there, is in lib/csp.ts. This is
+// the fallback for responses the middleware does not handle; pages get a
+// per-response policy with a nonce from the middleware.
+export { contentSecurityPolicy };
 
 const nextConfig: NextConfig = {
   output: 'standalone',
