@@ -46,7 +46,8 @@ const LISTEN_PORT = Number(process.env.SPIKE_PORT ?? 8787);
  * exists to avoid. Widening it costs one line and is easy to do carelessly, so
  * each entry is here on purpose:
  *
- *   /api/mcp             the endpoint under test
+ *   /mcp, /api/mcp       the endpoint under test (/mcp is the public name,
+ *                        rewritten to /api/mcp by the app)
  *   /.well-known/*       RFC 9728 and RFC 8414 discovery documents
  *   /api/oauth/*         registration, authorize, token
  *   /oauth/consent       the consent screen, opened in the user's browser
@@ -55,7 +56,7 @@ const LISTEN_PORT = Number(process.env.SPIKE_PORT ?? 8787);
  *
  * Nothing else. /api/v2 in particular stays unreachable.
  */
-const ALLOWED_EXACT = new Set(['/api/mcp', '/oauth/consent', '/login']);
+const ALLOWED_EXACT = new Set(['/mcp', '/api/mcp', '/oauth/consent', '/login']);
 const ALLOWED_PREFIXES = ['/.well-known/', '/api/oauth/', '/_next/'];
 
 function isAllowed(path) {

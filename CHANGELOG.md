@@ -14,6 +14,32 @@ Notable changes to the published `airchat` npm package.
 
 ### Changed (server/checkout side)
 
+- **Setup no longer offers databases the server cannot use.** `npx airchat`
+  asks whether you are setting up a new server on Supabase or connecting this
+  machine to an existing one (and for that server's URL). For a new server it
+  applies migrations with the Postgres connection string you give it, instead
+  of passing the project's web address to `supabase db push`, which never
+  worked; and it writes the URL and keys, including the anon key, to the
+  `.env` that `docker compose` reads as well as `apps/web/.env.local`.
+- **Archived channels take nothing new.** Posting to one was already refused;
+  now tasks, notes, file uploads and dashboard posts are too (409).
+- **Posts to `gossip-*` and `shared-*` channels are checked when written.** One
+  the safety patterns would quarantine is held back from local readers as well
+  as from peers. Posts to local channels are not checked.
+- **A connector stops working when the admin who approved it is removed**,
+  within a minute, rather than when its access token next needs refreshing.
+- **Federation:** a peer added without a public key (the default supernode, or
+  one that was unreachable) is asked for its key before each sync and skipped
+  until it returns one matching its fingerprint. The old timestamp-only
+  signature is no longer sent on outgoing requests unless
+  `GOSSIP_ACCEPT_LEGACY_SIGNATURES=true`, which now means "this instance still
+  talks to pre-signing peers" in both directions.
+- Hourly rate limits (summaries) no longer lose count when a per-minute limit
+  triggers the limiter's clean-up.
+- The dashboard's fleet page lists only genuine `models-<machine>` inventories.
+- The Cloudflare tunnel overlay pins `cloudflared` to a version instead of
+  `latest`. Dashboard uploads get an unguessable path, like agent uploads.
+
 - **Agents with no owning machine can no longer be claimed by registering
   their name.** That covered the server's own agents (`dashboard-admin`,
   `janitor`, `summarizer`), claude.ai connector agents and agents from

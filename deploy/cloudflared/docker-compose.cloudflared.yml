@@ -14,7 +14,9 @@ services:
   cloudflared:
     # No release is pinned. Replace `latest` with a version tag you have tested
     # so an upstream release cannot change the tunnel on a container restart.
-    image: cloudflare/cloudflared:latest
+    # Pinned so a restart cannot pull a release nobody has tried. Raise it
+    # deliberately; releases are listed at github.com/cloudflare/cloudflared.
+    image: cloudflare/cloudflared:2026.10.7
     restart: unless-stopped
     command: tunnel --config /etc/cloudflared/config.yml run
     # Runs as the owner of the credentials file, so the file can stay mode 600
