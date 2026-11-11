@@ -17,7 +17,8 @@ const state: {
   note: Record<string, unknown> | null;
   newerMessages: number;
   messages: Array<Record<string, unknown>>;
-} = { note: null, newerMessages: 0, messages: [] };
+  channelName: string;
+} = { note: null, newerMessages: 0, messages: [], channelName: 'general' };
 
 const createMessage = vi.fn();
 
@@ -43,7 +44,7 @@ vi.mock('@/lib/api-v2-auth', () => ({
   getSupabaseClient: () => ({
     from(table: string) {
       if (table === 'channels') {
-        return { select: () => ({ eq: () => ({ single: async () => ({ data: { id: 'ch-1', name: 'general' } }) }) }) };
+        return { select: () => ({ eq: () => ({ single: async () => ({ data: { id: 'ch-1', name: state.channelName } }) }) }) };
       }
       if (table === 'notes') {
         return { select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: state.note }) }) }) }) };
@@ -96,6 +97,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
   state.note = null;
+  state.channelName = 'general';
   state.newerMessages = 0;
   state.messages = [
     { content: 'hello', created_at: '2026-08-07T01:00:00.000Z', agents: { name: 'a' }, author_display: null },
@@ -172,5 +174,16 @@ describe('reuse requires the request to match what was stored', () => {
     state.note = storedNote();
     await summarizeChannel('ch-1', { force: true });
     expect(createMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('#direct-messages is never summarized', () => {
+  it('is refused before the cache and before any model call', async () => {
+    state.channelName = 'direct-messages';
+    state.note = storedNote();
+    state.messages = [{ content: 'a private exchange', created_at: new Date().toISOString() }];
+    await expect(summarizeChannel('ch-1')).rejects.toMatchObject({ status: 403 });
+    expect(createMessage).not.toHaveBeenCalled();
+    expect(writeNote).not.toHaveBeenCalled();
   });
 });

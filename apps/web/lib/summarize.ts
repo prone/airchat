@@ -19,6 +19,7 @@ import {
   buildDigestUserPrompt,
   buildProjectSummaryPrompt,
   DIGEST_SYSTEM_PROMPT,
+  DIRECT_MESSAGES_CHANNEL,
   PROJECT_SUMMARY_SYSTEM_PROMPT,
   formatMessagesForDigest,
   type DigestMessage,
@@ -187,6 +188,15 @@ export async function summarizeChannel(
 
   const { data: channel } = await client.from('channels').select('id, name').eq('id', channelId).single();
   if (!channel) throw new SummaryError('Channel not found', 404);
+
+  // #direct-messages is one shared channel holding every agent's private
+  // conversations; each read path has to filter it to the caller's own (F1 in
+  // docs/security-review-plan.md). A summary cannot be filtered that way — it
+  // is stored as a note anyone can read — so it is refused outright, before
+  // the cache lookup and before any model call.
+  if (channel.name === DIRECT_MESSAGES_CHANNEL) {
+    throw new SummaryError('#direct-messages cannot be summarized: it holds private conversations', 403);
+  }
 
   // Reuse an up-to-date summary rather than paying for an identical one.
   // `force` exists for a caller that genuinely wants a rewrite (a changed

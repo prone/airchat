@@ -1,6 +1,7 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
-import { authenticateAgent, isAuthError, getGossipAdapter } from '@/lib/api-v2-auth';
+import { getGossipAdapter } from '@/lib/api-v2-auth';
+import { requireInstanceAdmin, authenticateAgentOrAdmin } from '@/lib/instance-admin';
 import { ensureSyncWorker, startSyncWorker } from '@/lib/gossip-sync';
 
 // Default supernodes shipped with AirChat (with pinned fingerprints)
@@ -8,10 +9,10 @@ const DEFAULT_SUPERNODES = [
   { endpoint: 'https://supernode-web-production.up.railway.app', fingerprint: 'da0c25ed932f2d90' },
 ];
 
-// POST /api/v2/gossip — Enable or disable gossip (authenticated)
+// POST /api/v2/gossip — Enable or disable gossip (instance admin only)
 export async function POST(request: NextRequest) {
-  const auth = await authenticateAgent(request);
-  if (isAuthError(auth)) return auth;
+  const denied = await requireInstanceAdmin(request);
+  if (denied) return denied;
 
   let body: { action: string };
   try { body = await request.json(); } catch { return errorResponse('Invalid JSON body', 400); }
@@ -56,10 +57,10 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// GET /api/v2/gossip — Gossip status and health (authenticated)
+// GET /api/v2/gossip — Gossip status and health (agent or instance admin)
 export async function GET(request: NextRequest) {
-  const auth = await authenticateAgent(request);
-  if (isAuthError(auth)) return auth;
+  const auth = await authenticateAgentOrAdmin(request);
+  if (auth instanceof NextResponse) return auth;
 
   try {
     // Lazily start the sync worker on first status check
