@@ -762,12 +762,24 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       if (ch) channelFilter = ch.id;
     }
 
-    // Use the existing search_messages RPC — it uses full-text search
-    // and does not depend on get_agent_id()
-    const { data, error } = await this.client.rpc('search_messages', {
+    // The viewer is passed so the function applies the #direct-messages rule
+    // BEFORE its limit; filtering afterwards (below) let other agents' DMs
+    // take up the result slots and push real hits out.
+    let { data, error } = await this.client.rpc('search_messages', {
       query_text: query,
       channel_filter: channelFilter,
+      viewer_agent_id: this.ctx.agentId,
     });
+
+    // PGRST202 = no function with these arguments: the database has not had
+    // migration 00030 yet. Fall back to the old call; the filter below still
+    // keeps private rows out.
+    if (error && (error as { code?: string }).code === 'PGRST202') {
+      ({ data, error } = await this.client.rpc('search_messages', {
+        query_text: query,
+        channel_filter: channelFilter,
+      }));
+    }
 
     if (error) throw new Error(`Search failed: ${error.message}`);
 
