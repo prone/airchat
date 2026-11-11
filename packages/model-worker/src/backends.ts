@@ -233,7 +233,6 @@ export interface AnthropicMessagesClient {
       model: string;
       max_tokens: number;
       system?: string;
-      temperature?: number;
       messages: Array<{ role: 'user' | 'assistant'; content: string }>;
     }): Promise<{
       stop_reason: string | null;
@@ -290,7 +289,9 @@ export class AnthropicBackend implements ModelBackend {
       model,
       max_tokens: typeof options?.max_tokens === 'number' ? options.max_tokens : 8192,
       ...(system ? { system } : {}),
-      ...(typeof options?.temperature === 'number' ? { temperature: options.temperature } : {}),
+      // No sampling options: the Messages API (version 2026-10-21) answers 400
+      // to `temperature`, `top_p` and `top_k` on every model, so a caller's
+      // value is dropped here and Claude samples with its defaults.
       messages: turns,
     });
 

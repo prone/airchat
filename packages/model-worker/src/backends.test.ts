@@ -71,9 +71,23 @@ describe('AnthropicBackend', () => {
     expect(client.create).toHaveBeenCalledWith(expect.objectContaining({
       model: 'claude-haiku-4-5',
       system: 'be terse',
-      temperature: 0.2,
       messages: [{ role: 'user', content: 'hi' }],
     }));
+  });
+
+  it('does not send sampling options, which the Messages API rejects', async () => {
+    const client = fakeClient({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'ok' }] });
+    const backend = new AnthropicBackend('key', ['claude-haiku-4-5'], 1000, client);
+
+    await backend.chat('claude-haiku-4-5', [{ role: 'user', content: 'hi' }], {
+      temperature: 0.2, top_p: 0.9, top_k: 40, max_tokens: 500,
+    });
+
+    const sent = client.create.mock.calls[0][0];
+    expect(sent.max_tokens).toBe(500);
+    expect(sent).not.toHaveProperty('temperature');
+    expect(sent).not.toHaveProperty('top_p');
+    expect(sent).not.toHaveProperty('top_k');
   });
 
   it('throws on a refusal instead of returning content', async () => {
