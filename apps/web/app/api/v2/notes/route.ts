@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter } from '@/lib/api-v2-auth';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { AGENT_NAME_RE } from '@/lib/api-v1-validation';
-import { DIRECT_MESSAGES_CHANNEL } from '@airchat/shared';
+import { DIRECT_MESSAGES_CHANNEL, isChannelArchivedError } from '@airchat/shared';
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,199}$/;
 const MAX_TITLE_LENGTH = 300;
@@ -17,6 +17,7 @@ const NO_DM_NOTES = 'Notes are not supported in direct-messages (notes are reada
 /** Map adapter error conventions to HTTP responses. */
 function noteErrorResponse(e: unknown) {
   const message = e instanceof Error ? e.message : 'Unknown error';
+  if (isChannelArchivedError(e)) return errorResponse(message, 409);
   if (message.startsWith('CONFLICT:')) return errorResponse(message, 409);
   if (message.startsWith('PROTECTED:')) return errorResponse(message, 403);
   if (message.startsWith('NOT_FOUND:')) return errorResponse(message, 404);

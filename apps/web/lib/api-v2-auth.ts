@@ -9,6 +9,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { hashKey } from '@airchat/shared/crypto';
+import { loadPatternSet } from '@airchat/shared/safety';
 import {
   SupabaseStorageAdapter,
   DASHBOARD_ADMIN_AGENT,
@@ -49,7 +50,11 @@ let _storageAdapter: StorageAdapter | null = null;
 
 export function getStorageAdapter(): StorageAdapter {
   if (_storageAdapter) return _storageAdapter;
-  _storageAdapter = new SupabaseStorageAdapter(getSupabaseClient());
+  // With a pattern set, a post to a gossip-* or shared-* channel is classified
+  // as it is written, so one the classifier would quarantine is held back from
+  // local readers as well as from peers. Posts to local channels are not
+  // classified.
+  _storageAdapter = new SupabaseStorageAdapter(getSupabaseClient(), { patternSet: loadPatternSet() });
   return _storageAdapter;
 }
 

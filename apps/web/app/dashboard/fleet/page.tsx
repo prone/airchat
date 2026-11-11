@@ -273,7 +273,10 @@ export default function FleetPage() {
       const [m, a, n, u, p] = await Promise.all([
         supabase.from('machine_keys').select('id, machine_name, active, created_at').order('machine_name'),
         supabase.from('agents').select('id, name, active, description, created_at, last_seen_at, machine_id, metadata').order('last_seen_at', { ascending: false, nullsFirst: false }),
-        supabase.from('notes').select('slug, updated_at, properties').contains('properties', { type: 'model-inventory' }),
+        // Only the global models-<machine> notes: that is the one place the API
+        // accepts an inventory, and only from the machine's own -models agent.
+        // A note elsewhere that merely carries the type is not one.
+        supabase.from('notes').select('slug, updated_at, properties').is('channel_id', null).like('slug', 'models-%').contains('properties', { type: 'model-inventory' }),
         // Both admin-gated server-side; on error the usage chips just don't render.
         supabase.rpc('agent_usage_rollup', { p_days: 7 }),
         supabase.from('model_prices').select('*'),
@@ -343,7 +346,7 @@ export default function FleetPage() {
   }, [agents]);
 
   const inventoryFor = (machineName: string): InventoryNote | undefined =>
-    inventories.find((n) => n.properties?.machine === machineName || n.slug === `models-${machineName}`);
+    inventories.find((n) => n.slug === `models-${machineName}`);
 
   const tierShown = (tier: AgentTier): boolean =>
     tier === 'recent' || (tier === 'inactive' && showInactive) || (tier === 'never' && showNever);

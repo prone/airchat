@@ -7,7 +7,11 @@
 
 import crypto from 'crypto';
 
-type WindowEntry = { timestamps: number[]; lastCleanup: number };
+// windowMs is the longest window the bucket has been checked against. The
+// periodic sweep trims each bucket by its own window: buckets differ (a minute
+// for requests, an hour for summaries), and trimming an hourly bucket by
+// whichever window happened to trigger the sweep would forget most of its hour.
+type WindowEntry = { timestamps: number[]; lastCleanup: number; windowMs: number };
 
 const windows = new Map<string, WindowEntry>();
 
@@ -16,12 +20,12 @@ const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_WINDOW_ENTRIES = 10_000; // Prevent unbounded memory growth
 let lastGlobalCleanup = Date.now();
 
-function cleanupStaleEntries(windowMs: number) {
+function cleanupStaleEntries() {
   const now = Date.now();
   if (now - lastGlobalCleanup < CLEANUP_INTERVAL_MS) return;
   lastGlobalCleanup = now;
-  const cutoff = now - windowMs;
   for (const [key, entry] of windows) {
+    const cutoff = now - entry.windowMs;
     entry.timestamps = entry.timestamps.filter(t => t > cutoff);
     if (entry.timestamps.length === 0) {
       windows.delete(key);
@@ -50,12 +54,14 @@ function _checkWindow(
   maxRequests: number
 ): RateLimitResult {
   const now = Date.now();
-  cleanupStaleEntries(windowMs);
+  cleanupStaleEntries();
 
   let entry = windows.get(bucketKey);
   if (!entry) {
-    entry = { timestamps: [], lastCleanup: now };
+    entry = { timestamps: [], lastCleanup: now, windowMs };
     windows.set(bucketKey, entry);
+  } else if (windowMs > entry.windowMs) {
+    entry.windowMs = windowMs;
   }
 
   const cutoff = now - windowMs;

@@ -180,7 +180,16 @@ describe('a signature cannot be reused', () => {
 });
 
 describe('timestamp-only signatures from older instances', () => {
-  const legacyOnly = () => without(signed('GET', SYNC_URL), 'x-gossip-signature-v2');
+  // What an instance from before request signing sends: its fingerprint, a
+  // timestamp, and a signature over the timestamp alone.
+  const legacyOnly = () => {
+    const timestamp = new Date().toISOString();
+    return {
+      'x-gossip-fingerprint': senderFp,
+      'x-gossip-timestamp': timestamp,
+      'x-gossip-signature': signData(sender.privateKey, timestamp),
+    };
+  };
 
   it('are refused by default', async () => {
     const res = await getSync(legacyOnly());
@@ -216,10 +225,21 @@ describe('timestamp-only signatures from older instances', () => {
     expect((await getSync(headers)).status).toBe(403);
   });
 
-  it('are still sent alongside the new one, so older peers keep accepting us', () => {
-    const headers = signed('GET', SYNC_URL);
-    expect(headers['x-gossip-signature']).toBeTruthy();
+  it('are not sent by default: a peer handed one could replay it elsewhere', () => {
+    delete process.env.GOSSIP_ACCEPT_LEGACY_SIGNATURES;
+    const headers = signPeerRequest(me.privateKey, {
+      method: 'GET', url: SYNC_URL, senderFingerprint: myFp, recipientFingerprint: otherFp,
+    });
     expect(headers['x-gossip-signature-v2']).toBeTruthy();
+    expect(headers['x-gossip-signature']).toBeUndefined();
+  });
+
+  it('are sent alongside the new one in legacy mode, so older peers keep accepting us', () => {
+    process.env.GOSSIP_ACCEPT_LEGACY_SIGNATURES = 'true';
+    const headers = signPeerRequest(me.privateKey, {
+      method: 'GET', url: SYNC_URL, senderFingerprint: myFp, recipientFingerprint: otherFp,
+    });
+    expect(headers['x-gossip-signature']).toBeTruthy();
     expect(headers['x-gossip-signature']).not.toBe(headers['x-gossip-signature-v2']);
   });
 });

@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { getGossipAdapter } from '@/lib/api-v2-auth';
 import { requireInstanceAdmin, authenticateAgentOrAdmin } from '@/lib/instance-admin';
-import { validatePeerEndpoint, fetchPeerUrl } from '@/lib/url-validation';
-import { deriveFingerprint } from '@airchat/shared/gossip';
-import { FINGERPRINT_RE, PUBLIC_KEY_RE } from '@/lib/gossip-auth';
+import { validatePeerEndpoint } from '@/lib/url-validation';
+import { FINGERPRINT_RE } from '@/lib/gossip-auth';
+import { fetchPeerKey, peerDisplayName } from '@/lib/peer-identity';
 
 // GET /api/v2/gossip/peers — List all peers (agent or instance admin)
 export async function GET(request: NextRequest) {
@@ -70,43 +70,26 @@ export async function POST(request: NextRequest) {
   try {
     const gossip = getGossipAdapter();
 
-    // Verify remote identity by fetching their public key
-    let remoteIdentity: { public_key: string; fingerprint: string; display_name?: string } | null = null;
-    try {
-      const res = await fetchPeerUrl(
-        `${endpoint.replace(/\/$/, '')}/api/v2/gossip/identity`,
-        { timeoutMs: 10000 },
-      );
-      if (res.ok) {
-        const json = await res.json();
-        // Identity endpoint uses AirChat response wrapper — data is in .data
-        remoteIdentity = json.data ?? json;
-      }
-    } catch { /* Remote not reachable — verify on first sync */ }
-
-    // The fingerprint the remote reports about itself is just a string it
-    // chose. What identifies it is its public key, so the fingerprint is
-    // recomputed from the key it returned and compared with the one the
-    // operator supplied. A key that does not hash to that fingerprint is not
-    // stored.
-    if (remoteIdentity) {
-      const remoteKey: unknown = remoteIdentity.public_key;
-      if (typeof remoteKey !== 'string' || !PUBLIC_KEY_RE.test(remoteKey)) {
-        return errorResponse('Remote instance returned an invalid public key', 409);
-      }
-      if (deriveFingerprint(remoteKey) !== fingerprint) {
-        return errorResponse(
-          `Fingerprint mismatch: expected ${fingerprint}, but the remote public key has fingerprint ${deriveFingerprint(remoteKey)}`,
-          409
-        );
-      }
+    // Fetch the remote's public key and check it against the fingerprint.
+    // A peer that cannot be reached is still added, without a key; the sync
+    // worker asks again before it first syncs with it.
+    const key = await fetchPeerKey(endpoint, fingerprint);
+    if (key.status === 'invalid') {
+      return errorResponse('Remote instance returned an invalid public key', 409);
     }
+    if (key.status === 'mismatch') {
+      return errorResponse(
+        `Fingerprint mismatch: expected ${fingerprint}, but the remote public key has fingerprint ${key.actualFingerprint}`,
+        409
+      );
+    }
+    const remote = key.status === 'verified' ? key : null;
 
     const peer = await gossip.addPeer({
       endpoint: endpoint.replace(/\/$/, ''),
       fingerprint,
-      public_key: remoteIdentity?.public_key ?? null,
-      display_name: peerDisplayName(display_name) ?? peerDisplayName(remoteIdentity?.display_name),
+      public_key: remote?.publicKey ?? null,
+      display_name: peerDisplayName(display_name) ?? remote?.displayName ?? null,
       peer_type: peerType,
       federation_scope: scope,
     });
@@ -117,11 +100,6 @@ export async function POST(request: NextRequest) {
     if (msg.includes('DUPLICATE')) return errorResponse('Peer already exists', 409);
     return errorResponse('Failed to add peer', 500);
   }
-}
-
-/** A display name as text of bounded length, or null. The remote one is whatever the peer chose to send. */
-function peerDisplayName(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 100) : null;
 }
 
 // DELETE /api/v2/gossip/peers — Remove a peer (instance admin only)

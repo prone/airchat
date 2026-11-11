@@ -12,6 +12,7 @@ import { run as runCli } from '@airchat/cli';
 // 'dev' when running from source via tsx, where no define is applied.
 declare const __AIRCHAT_VERSION__: string | undefined;
 const AIRCHAT_VERSION = typeof __AIRCHAT_VERSION__ === 'string' ? __AIRCHAT_VERSION__ : 'dev';
+import { isPostgresUrl, supabaseProjectRef, mergeEnv } from './setup-helpers.js';
 import { HARNESSES, addWorkHooks, buildHookCommand, detectHarnesses, genericSnippet, installInstructions, type McpLaunch } from './harnesses.js';
 
 // Also defined in packages/shared/src/rest-client.ts — keep in sync
@@ -25,9 +26,17 @@ interface Keypair {
 }
 
 interface SetupConfig {
-  dbProvider: 'supabase' | 'self-hosted' | 'docker';
+  /**
+   * 'supabase': set up a new server on a Supabase project. 'none': this
+   * machine only joins a server that already exists. Supabase is the one
+   * database the server supports.
+   */
+  dbProvider: 'supabase' | 'none';
   supabaseUrl?: string;
   supabaseServiceRoleKey?: string;
+  /** The public (anon / publishable) key the dashboard's browser code uses. */
+  supabaseAnonKey?: string;
+  /** Postgres connection string, used once to apply migrations. Never stored. */
   databaseUrl?: string;
   machineName: string;
   harnesses: string[];
@@ -166,28 +175,32 @@ async function collectConfig(rl: readline.Interface, reconfigure: boolean): Prom
   console.log(`  ${dim('This will configure your machine to connect to AirChat.')}`);
   console.log('');
 
-  // Database provider
-  const dbProvider = await askChoice(rl, 'Database provider:', [
-    { key: 'supabase', label: 'Supabase (hosted, free tier available)' },
-    { key: 'self-hosted', label: 'Self-hosted PostgreSQL' },
-    { key: 'docker', label: 'Docker (spins up Postgres for you)' },
+  // What is being set up. Supabase is the only database the server supports,
+  // so the choice is between creating a server on a Supabase project and
+  // joining a server someone has already set up.
+  const dbProvider = await askChoice(rl, 'What are you setting up?', [
+    { key: 'supabase', label: 'A new AirChat server on Supabase (and this machine)' },
+    { key: 'none', label: 'This machine only: connect it to an existing AirChat server' },
   ]) as SetupConfig['dbProvider'];
   console.log('');
 
   let supabaseUrl: string | undefined;
   let supabaseServiceRoleKey: string | undefined;
+  let supabaseAnonKey: string | undefined;
   let databaseUrl: string | undefined;
+  let existingServerUrl: string | undefined;
 
   if (dbProvider === 'supabase') {
     supabaseUrl = await ask(rl, 'Supabase Project URL');
-    supabaseServiceRoleKey = await askSecret(rl, 'Supabase Service Role Key (used during setup only, not stored)');
+    supabaseServiceRoleKey = await askSecret(rl, 'Supabase Service Role Key');
+    supabaseAnonKey = await ask(rl, 'Supabase anon / publishable key (the dashboard needs it)') || undefined;
+    console.log(`  ${dim('To apply the database migrations, setup needs the Postgres connection string')}`);
+    console.log(`  ${dim('(Supabase dashboard → Connect → Session pooler). It is used once and not stored.')}`);
+    console.log(`  ${dim('Leave blank to apply them yourself with the Supabase CLI.')}`);
+    databaseUrl = await askSecret(rl, 'Postgres connection string (optional)') || undefined;
     console.log('');
-  } else if (dbProvider === 'self-hosted') {
-    databaseUrl = await ask(rl, 'PostgreSQL connection string (postgres://user:pass@host:5432/dbname)');
-    console.log(`  ${dim('Note: Self-hosted Postgres requires the web dashboard to serve the REST API.')}`);
-    console.log('');
-  } else if (dbProvider === 'docker') {
-    console.log(`  ${dim('A PostgreSQL container will be started alongside the dashboard.')}`);
+  } else {
+    existingServerUrl = await ask(rl, 'AirChat server URL', existing.AIRCHAT_WEB_URL || DEFAULT_AIRCHAT_URL);
     console.log('');
   }
 
@@ -225,7 +238,10 @@ async function collectConfig(rl: readline.Interface, reconfigure: boolean): Prom
   console.log('');
 
   // Dashboard
-  const deployDashboard = await askYesNo(rl, 'Deploy web dashboard?', true);
+  // The dashboard is the server. A machine that only joins one does not run it.
+  const deployDashboard = dbProvider === 'supabase'
+    ? await askYesNo(rl, 'Run the web app (API and dashboard) on this machine?', true)
+    : false;
   let dashboardPort = 3003;
   if (deployDashboard) {
     const portStr = await ask(rl, 'Dashboard port', '3003');
@@ -275,7 +291,9 @@ async function collectConfig(rl: readline.Interface, reconfigure: boolean): Prom
   console.log('');
 
   const nodePath = detectNodePath();
-  const webUrl = deployDashboard ? `http://localhost:${dashboardPort}` : (existing.AIRCHAT_WEB_URL || DEFAULT_AIRCHAT_URL);
+  const webUrl = deployDashboard
+    ? `http://localhost:${dashboardPort}`
+    : (existingServerUrl || existing.AIRCHAT_WEB_URL || DEFAULT_AIRCHAT_URL);
 
   if (webUrl === DEFAULT_AIRCHAT_URL && !deployDashboard) {
     console.log(`  ${YELLOW}Note: No custom server URL. Data will be sent to the public supernode.${RESET}`);
@@ -296,6 +314,7 @@ async function collectConfig(rl: readline.Interface, reconfigure: boolean): Prom
     dbProvider,
     supabaseUrl,
     supabaseServiceRoleKey,
+    supabaseAnonKey,
     databaseUrl,
     machineName,
     harnesses,
@@ -348,74 +367,54 @@ async function runMigrations(config: SetupConfig): Promise<StepResult> {
       return { name, ok: true, message: 'Tables already exist — skipping migrations' };
     }
 
-    // Try supabase CLI
-    try {
-      execSync('which supabase', { stdio: 'pipe' });
-      // execFileSync, not execSync: the URL is pasted in by whoever runs setup,
-      // and inside a shell string a value containing a double quote closes the
-      // quoting and runs the rest. Passing arguments as an array never invokes
-      // a shell, so quoting stops being something anyone has to get right.
-      execFileSync('supabase', ['db', 'push', '--db-url', config.supabaseUrl], {
-        cwd: config.airchatDir,
-        stdio: 'pipe',
-      });
-      return { name, ok: true, message: 'Migrations applied via Supabase CLI' };
-    } catch {}
-
-    // Read and execute migration files sequentially
     const migrationsDir = path.join(config.airchatDir, 'supabase', 'migrations');
     if (!fs.existsSync(migrationsDir)) {
       return { name, ok: false, message: `Migrations directory not found at ${migrationsDir}` };
     }
+    const count = fs.readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).length;
 
-    const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
-    let applied = 0;
-    for (const file of files) {
-      const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
-      const { error } = await supabase.rpc('', {} as any).then(
-        () => ({ error: null }),
-        () => ({ error: null })
-      );
-      // Supabase JS client can't run raw DDL — instruct user
-      console.log(`  ${dim(`Migration ${file} needs to be applied via Supabase SQL Editor`)}`);
-      applied++;
+    // The service-role key cannot run schema changes: that takes a database
+    // connection. Without one, or without the CLI, say exactly what to run.
+    const byHand = `Apply the ${count} migrations yourself: cd ${config.airchatDir} && `
+      + `supabase link --project-ref ${supabaseProjectRef(config.supabaseUrl) ?? '<project ref>'} && supabase db push`;
+
+    if (!config.databaseUrl) {
+      return { name, ok: false, message: `No Postgres connection string given. ${byHand}` };
     }
-
-    if (applied > 0) {
-      return {
-        name,
-        ok: false,
-        message: `${files.length} migration files need to be applied manually in the Supabase SQL Editor (Settings → SQL Editor). Files are in: ${migrationsDir}`,
-      };
+    if (!isPostgresUrl(config.databaseUrl)) {
+      return { name, ok: false, message: `That is not a Postgres connection string (expected postgresql://…). ${byHand}` };
     }
-
-    return { name, ok: true, message: 'Migrations applied' };
-  }
-
-  // Self-hosted or Docker: migrations run via psql or dashboard
-  if (config.dbProvider === 'self-hosted' && config.databaseUrl) {
-    const migrationsDir = path.join(config.airchatDir, 'supabase', 'migrations');
-    const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
     try {
-      for (const file of files) {
-        execFileSync('psql', [config.databaseUrl, '-f', path.join(migrationsDir, file)], {
-          stdio: 'pipe',
-        });
-      }
-      return { name, ok: true, message: `Applied ${files.length} migrations` };
+      execSync('which supabase', { stdio: 'pipe' });
+    } catch {
+      return { name, ok: false, message: `The Supabase CLI is not installed (https://supabase.com/docs/guides/cli). ${byHand}` };
+    }
+    try {
+      // execFileSync, not execSync: the value is pasted in by whoever runs
+      // setup, and inside a shell string a value containing a double quote
+      // closes the quoting and runs the rest. Passing arguments as an array
+      // never invokes a shell, so quoting stops being something anyone has to
+      // get right.
+      execFileSync('supabase', ['db', 'push', '--db-url', config.databaseUrl], {
+        cwd: config.airchatDir,
+        stdio: 'pipe',
+      });
+      return { name, ok: true, message: `Applied ${count} migrations with the Supabase CLI` };
     } catch (e: any) {
-      return { name, ok: false, message: `Migration failed: ${e.message}. Run manually with psql.` };
+      // The CLI's message can repeat the connection string, password included.
+      const detail = String(e?.stderr ?? e?.message ?? '').split(config.databaseUrl).join('<connection string>').trim().split('\n').pop();
+      return { name, ok: false, message: `supabase db push failed${detail ? `: ${detail}` : ''}. ${byHand}` };
     }
   }
 
-  return { name, ok: true, message: 'Migrations will run with Docker startup' };
+  return { name, ok: true, message: 'Skipped (joining an existing server)' };
 }
 
 async function seedChannels(config: SetupConfig): Promise<StepResult> {
   const name = 'Seed channels';
 
   if (config.dbProvider !== 'supabase' || !config.supabaseUrl || !config.supabaseServiceRoleKey) {
-    return { name, ok: true, message: 'Skipped (non-Supabase provider)' };
+    return { name, ok: true, message: 'Skipped (joining an existing server)' };
   }
 
   const supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey, {
@@ -572,30 +571,38 @@ function writeWebEnv(config: SetupConfig): StepResult {
   }
 
   try {
-    const envPath = path.join(config.airchatDir, 'apps', 'web', '.env.local');
-    const lines: string[] = [];
+    const entries: Record<string, string> = {};
+    if (config.supabaseUrl) entries.NEXT_PUBLIC_SUPABASE_URL = config.supabaseUrl;
+    if (config.supabaseAnonKey) entries.NEXT_PUBLIC_SUPABASE_ANON_KEY = config.supabaseAnonKey;
+    if (config.supabaseServiceRoleKey) entries.SUPABASE_SERVICE_ROLE_KEY = config.supabaseServiceRoleKey;
 
-    if (config.supabaseUrl) {
-      lines.push(`NEXT_PUBLIC_SUPABASE_URL=${config.supabaseUrl}`);
+    // Two files, because the web app is started two ways: `docker compose`
+    // reads .env at the repository root, and `npm run dev` reads
+    // apps/web/.env.local. Values already in either file are kept.
+    const paths = [
+      path.join(config.airchatDir, '.env'),
+      path.join(config.airchatDir, 'apps', 'web', '.env.local'),
+    ];
+    for (const envPath of paths) {
+      // Read without checking first: asking whether the file exists and then
+      // opening it leaves a gap in which it can change.
+      let current = '';
+      try {
+        current = fs.readFileSync(envPath, 'utf-8');
+      } catch (e: any) {
+        if (e?.code !== 'ENOENT') throw e;
+      }
+      // 0600, like every other file here that holds a credential: the
+      // service-role key bypasses every RLS policy.
+      //
+      // The chmod is not redundant: writeFileSync's `mode` applies only when
+      // it creates the file, so writing over an existing one would otherwise
+      // keep whatever permissions it already had.
+      fs.writeFileSync(envPath, mergeEnv(current, entries), { mode: 0o600 });
+      fs.chmodSync(envPath, 0o600);
     }
-    if (config.supabaseServiceRoleKey) {
-      lines.push(`SUPABASE_SERVICE_ROLE_KEY=${config.supabaseServiceRoleKey}`);
-    }
-    if (config.databaseUrl) {
-      lines.push(`DATABASE_URL=${config.databaseUrl}`);
-    }
-
-    // 0600, like every other file here that holds a credential. This one
-    // carries the service-role key, which bypasses every RLS policy, and the
-    // database password inside DATABASE_URL — and it was landing at the umask
-    // default, normally 0644.
-    //
-    // The chmod is not redundant: writeFileSync's `mode` applies only when it
-    // creates the file, so re-running setup over an existing .env.local would
-    // otherwise keep whatever permissions it already had.
-    fs.writeFileSync(envPath, lines.join('\n') + '\n', { mode: 0o600 });
-    fs.chmodSync(envPath, 0o600);
-    return { name, ok: true, message: envPath };
+    const missing = config.supabaseAnonKey ? '' : ' (add NEXT_PUBLIC_SUPABASE_ANON_KEY before starting the dashboard)';
+    return { name, ok: true, message: paths.join(' and ') + missing };
   } catch (e: any) {
     return { name, ok: false, message: e.message };
   }
@@ -713,7 +720,7 @@ async function main() {
 
   // Show summary before proceeding
   console.log(`  ${bold('Summary:')}`);
-  console.log(`    Database:    ${config.dbProvider}`);
+  console.log(`    Setting up:  ${config.dbProvider === 'supabase' ? 'a new server on Supabase' : `this machine, on ${config.webUrl}`}`);
   console.log(`    Machine:     ${config.machineName}`);
   console.log(`    Harnesses:   ${config.harnesses.join(', ')}`);
   console.log(`    Repo:        ${config.airchatDir}`);

@@ -557,7 +557,7 @@ describe('pushing a local post to supernodes', () => {
       // The same signature is no good at the other supernode.
       const elsewhere = recipient === alice ? mallory : alice;
       expect(verifySignature(me.publicKey, payload(elsewhere.fingerprint), init.headers['x-gossip-signature-v2'])).toBe(false);
-      expect(verifySignature(me.publicKey, init.headers['x-gossip-timestamp'], init.headers['x-gossip-signature'])).toBe(true);
+      expect(init.headers['x-gossip-signature']).toBeUndefined();
       signatures.add(init.headers['x-gossip-signature-v2']);
     }
     expect(signatures.size).toBe(2);
