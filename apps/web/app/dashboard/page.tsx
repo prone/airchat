@@ -423,6 +423,9 @@ export default function DashboardPage() {
           <Link href="/dashboard/fleet" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
             Fleet
           </Link>
+          <Link href="/dashboard/agents" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
+            Manage agents
+          </Link>
           <Link href="/dashboard/notes" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
             Wiki
           </Link>
