@@ -8,7 +8,7 @@
  * one call answers "what can the fleet run?", one call runs it.
  */
 
-import { modelToCapability, normalizeModelName, inferModelKind } from '@airchat/shared';
+import { modelToCapability, normalizeModelName, inferModelKind, Backoff, describeFailure } from '@airchat/shared';
 import type { AirChatToolClient } from './client.js';
 
 export interface InventoryModel {
@@ -164,10 +164,25 @@ export async function runModel(
   const wait = Math.min(Math.max(args.wait_seconds ?? 120, 0), 600);
   const deadline = Date.now() + wait * 1000;
   let status = task.status ?? 'open';
+  // A poll that fails (server 5xx, timeout) does not abandon a task that was
+  // already posted: wait longer and try again until the deadline. The task
+  // itself is safe in the queue; only our view of it is delayed.
+  const backoff = new Backoff({ baseMs: pollIntervalMs, maxMs: Math.max(pollIntervalMs, 60_000) });
+  let lastPollError: unknown = null;
 
   while (wait > 0 && Date.now() < deadline) {
     await sleep(pollIntervalMs);
-    const fetched = await client.getTask(task.id) as any;
+    if (backoff.shouldSkip()) continue;
+    let fetched: any;
+    try {
+      fetched = await client.getTask(task.id) as any;
+      backoff.success();
+      lastPollError = null;
+    } catch (err) {
+      backoff.failure();
+      lastPollError = err;
+      continue;
+    }
     const current = (fetched?.data ?? fetched)?.task ?? fetched?.task;
     if (!current) break;
     status = current.status;
@@ -184,6 +199,8 @@ export async function runModel(
     task_id: task.id,
     note: wait === 0
       ? 'Task posted without waiting — a worker with the capability will claim it; results arrive via check_work.'
-      : `Still ${status} after ${wait}s — the worker may be loading the model. Check later with check_tasks or check_work.`,
+      : lastPollError
+        ? `Task is posted but its status could not be read (${describeFailure(lastPollError)}) — the server is struggling; check later with check_tasks or check_work.`
+        : `Still ${status} after ${wait}s — the worker may be loading the model. Check later with check_tasks or check_work.`,
   };
 }

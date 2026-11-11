@@ -1,12 +1,13 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
-import { authenticateAgent, isAuthError, getGossipAdapter } from '@/lib/api-v2-auth';
+import { getGossipAdapter } from '@/lib/api-v2-auth';
+import { requireInstanceAdmin, authenticateAgentOrAdmin } from '@/lib/instance-admin';
 import { validatePeerEndpoint, fetchPeerUrl } from '@/lib/url-validation';
 
-// GET /api/v2/gossip/peers — List all peers (authenticated)
+// GET /api/v2/gossip/peers — List all peers (agent or instance admin)
 export async function GET(request: NextRequest) {
-  const auth = await authenticateAgent(request);
-  if (isAuthError(auth)) return auth;
+  const auth = await authenticateAgentOrAdmin(request);
+  if (auth instanceof NextResponse) return auth;
 
   try {
     const gossip = getGossipAdapter();
@@ -17,10 +18,10 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST /api/v2/gossip/peers — Add a new peer (authenticated)
+// POST /api/v2/gossip/peers — Add a new peer (instance admin only)
 export async function POST(request: NextRequest) {
-  const auth = await authenticateAgent(request);
-  if (isAuthError(auth)) return auth;
+  const denied = await requireInstanceAdmin(request);
+  if (denied) return denied;
 
   let body: {
     endpoint: string;
@@ -102,10 +103,10 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// DELETE /api/v2/gossip/peers — Remove a peer (authenticated)
+// DELETE /api/v2/gossip/peers — Remove a peer (instance admin only)
 export async function DELETE(request: NextRequest) {
-  const auth = await authenticateAgent(request);
-  if (isAuthError(auth)) return auth;
+  const denied = await requireInstanceAdmin(request);
+  if (denied) return denied;
 
   let body: { endpoint?: string; id?: string };
   try { body = await request.json(); } catch { return errorResponse('Invalid JSON body', 400); }

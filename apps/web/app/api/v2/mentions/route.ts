@@ -34,6 +34,9 @@ export async function GET(request: NextRequest) {
       channel: r.channel_name,
       from: r.author_name,
       from_project: r.author_project,
+      // Present only when the server vouches for it: 'claude.ai' or 'slack'
+      // means a person wrote this, not an agent.
+      ...(r.author_source ? { source: r.author_source } : {}),
       content: r.content,
       timestamp: r.created_at,
       read: r.is_read,

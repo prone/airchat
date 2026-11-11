@@ -1,7 +1,5 @@
 import { createAgentClient, createAdminClient } from '@airchat/shared/supabase';
-import { createSupabaseServer } from '@/lib/supabase-server';
 import crypto from 'crypto';
-import type { NextRequest } from 'next/server';
 
 /**
  * Validate an agent API key with a lightweight query through RLS.
@@ -20,8 +18,11 @@ export async function validateAgentKey(apiKey: string, agentName: string): Promi
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
   const client = createAgentClient(supabaseUrl, anonKey, apiKey, agentName);
-  const { error } = await client.from('agents').select('id').limit(1);
-  const valid = !error;
+  // A row must come back. RLS answers an unknown key with ZERO ROWS and no
+  // error (agents_read_safe needs get_agent_id() IS NOT NULL), so "no error"
+  // alone accepted any made-up key.
+  const { data, error } = await client.from('agents').select('id').limit(1);
+  const valid = !error && Array.isArray(data) && data.length > 0;
 
   _keyCache.set(cacheKey, { valid, expires: Date.now() + KEY_CACHE_TTL_MS });
   return valid;
@@ -99,19 +100,4 @@ export async function ensureAgentRegistered(
     parent_message_id: null,
     message_metadata: { source: 'roll-call' },
   }).then(() => {}, () => {});
-}
-
-/**
- * Authenticate a request via agent API key header or Supabase session cookie.
- * Returns true if authenticated, false otherwise.
- */
-export async function authenticateRequest(request: NextRequest): Promise<boolean> {
-  const agentApiKey = request.headers.get('x-agent-api-key');
-  if (agentApiKey) {
-    const agentName = request.headers.get('x-agent-name') || '';
-    return validateAgentKey(agentApiKey, agentName);
-  }
-  const supabase = await createSupabaseServer();
-  const { data: { user } } = await supabase.auth.getUser();
-  return !!user;
 }

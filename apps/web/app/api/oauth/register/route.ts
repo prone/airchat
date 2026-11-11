@@ -106,7 +106,7 @@ async function handleRegister(request: NextRequest): Promise<Response> {
       client_name: clientName,
       redirect_uris: redirectUris,
       token_endpoint_auth_method: 'none',
-      grant_types: ['authorization_code'],
+      grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
     },
     { status: 201 },
