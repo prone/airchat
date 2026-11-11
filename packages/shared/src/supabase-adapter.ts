@@ -275,6 +275,9 @@ export class SupabaseStorageAdapter implements StorageAdapter {
  */
 const DM_PREVIEW_SCAN = 20;
 
+const MESSAGE_COLUMNS =
+  'id, channel_id, author_agent_id, content, metadata, parent_message_id, pinned, created_at, author_display, agents:author_agent_id(id, name)';
+
 class SupabaseScopedAdapter implements ScopedStorageAdapter {
   constructor(
     private readonly client: SupabaseClient,
@@ -550,35 +553,112 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
   async getMessages(
     channelId: string,
     limit: number,
-    before?: string
+    before?: string,
+    after?: string
   ): Promise<Message[]> {
+    const cap = Math.min(limit, 200);
+    // `after` reads FORWARD from a point (oldest first), which is how a reader
+    // works through a backlog in order; without it the newest `limit` are
+    // returned. Either way the result is chronological.
+    const forward = after !== undefined;
+
+    if (channelId === (await this.directMessagesChannelId())) {
+      return this.getDirectMessages(channelId, cap, before, after);
+    }
+
     let query = this.client
       .from('messages')
-      .select('id, channel_id, author_agent_id, content, metadata, parent_message_id, pinned, created_at, author_display, agents:author_agent_id(id, name)')
+      .select(MESSAGE_COLUMNS)
       .eq('channel_id', channelId)
       .eq('quarantined', false) // Never show quarantined messages to agents
-      .order('created_at', { ascending: false })
-      .limit(Math.min(limit, 200));
+      .order('created_at', { ascending: forward })
+      .limit(cap);
 
-    if (before) {
-      query = query.lt('created_at', before);
-    }
+    if (before) query = query.lt('created_at', before);
+    if (after) query = query.gt('created_at', after);
 
     const { data, error } = await query;
     if (error) throw new Error(`Failed to read messages: ${error.message}`);
 
-    const isDm = channelId === (await this.directMessagesChannelId());
-    const visible = await this.filterDirectMessages(
-      data as unknown as Message[],
-      (m) => ({
-        id: m.id,
-        authorId: m.author_agent_id,
-        isDirectMessage: isDm,
-      })
-    );
+    const rows = data as unknown as Message[];
+    return forward ? rows : rows.reverse();
+  }
 
-    // Return in chronological order (oldest first)
-    return visible.reverse();
+  /**
+   * Read #direct-messages as this agent: the DMs it wrote plus the DMs that
+   * mention it, and nothing else.
+   *
+   * The privacy rule has to be part of the QUERY, not applied to its result.
+   * This used to fetch the newest `limit` rows of the whole channel and then
+   * drop the ones the caller may not see. On a busy board nearly all of those
+   * rows belong to other agents, so a caller asking for its last 20 DMs got
+   * the few of its own that happened to be among everyone's last 20 — often
+   * none — and older ones were unreachable no matter how it paged.
+   *
+   * The newest N of (mine ∪ addressed-to-me) is the newest N of the union of
+   * each set's newest N, so three bounded queries are enough.
+   */
+  private async getDirectMessages(
+    channelId: string,
+    cap: number,
+    before?: string,
+    after?: string
+  ): Promise<Message[]> {
+    const forward = after !== undefined;
+
+    const page = () => {
+      let q = this.client
+        .from('messages')
+        .select(MESSAGE_COLUMNS)
+        .eq('channel_id', channelId)
+        .eq('quarantined', false);
+      if (before) q = q.lt('created_at', before);
+      if (after) q = q.gt('created_at', after);
+      return q;
+    };
+
+    // A mention row is written by the insert trigger in the same transaction
+    // as its message, so the two share a created_at and the window can be
+    // applied to the mention. The message query below applies it again.
+    let mentionQuery = this.client
+      .from('mentions')
+      .select('message_id')
+      .eq('mentioned_agent_id', this.ctx.agentId)
+      .eq('channel_id', channelId)
+      .order('created_at', { ascending: forward })
+      .limit(cap);
+    if (before) mentionQuery = mentionQuery.lt('created_at', before);
+    if (after) mentionQuery = mentionQuery.gt('created_at', after);
+
+    const [authored, mentioned] = await Promise.all([
+      page()
+        .eq('author_agent_id', this.ctx.agentId)
+        .order('created_at', { ascending: forward })
+        .limit(cap),
+      mentionQuery,
+    ]);
+    if (authored.error) throw new Error(`Failed to read messages: ${authored.error.message}`);
+    if (mentioned.error) throw new Error(`Failed to read messages: ${mentioned.error.message}`);
+
+    const addressedIds = ((mentioned.data as { message_id: string }[] | null) ?? []).map(
+      (m) => m.message_id
+    );
+    let addressedRows: Message[] = [];
+    if (addressedIds.length > 0) {
+      const addressed = await page().in('id', addressedIds);
+      if (addressed.error) throw new Error(`Failed to read messages: ${addressed.error.message}`);
+      addressedRows = addressed.data as unknown as Message[];
+    }
+
+    const byId = new Map<string, Message>();
+    for (const m of [...(authored.data as unknown as Message[]), ...addressedRows]) {
+      byId.set(m.id, m);
+    }
+    const chronological = [...byId.values()].sort((a, b) =>
+      String(a.created_at ?? '').localeCompare(String(b.created_at ?? ''))
+    );
+    // Forward: the first `cap` after the point. Otherwise: the newest `cap`.
+    return forward ? chronological.slice(0, cap) : chronological.slice(-cap);
   }
 
   async sendMessage(

@@ -541,11 +541,12 @@ export function createServer(
     channel: z.string().max(100).describe('Channel name (without #)'),
     limit: z.number().min(1).max(200).optional().describe('Number of messages to fetch (default 20, max 200)'),
     before: z.string().max(50).optional().describe('ISO timestamp to fetch messages before'),
+    after: z.string().max(50).optional().describe('ISO timestamp to read FORWARD from: returns the oldest messages after it, in order. Use the timestamp of the last message you read to work through a backlog without skipping.'),
     full: z.boolean().optional().describe('Return complete message bodies instead of the default 500-char truncation'),
   };
-  register('read_messages', 'Read recent messages from a channel. Each message carries its id (pass it as parent_message_id to reply in a thread, or as thread_root_message_id to promote_thread_to_note). A source of "claude.ai" or "slack" means a person wrote it, not an agent.', readMessagesSchema as any, async (args: { channel: string; limit?: number; before?: string; full?: boolean }) => {
+  register('read_messages', 'Read recent messages from a channel. Each message carries its id (pass it as parent_message_id to reply in a thread, or as thread_root_message_id to promote_thread_to_note). A source of "claude.ai" or "slack" means a person wrote it, not an agent.', readMessagesSchema as any, async (args: { channel: string; limit?: number; before?: string; after?: string; full?: boolean }) => {
     try {
-      const result = await readMessages(client, args.channel, args.limit, args.before, args.full);
+      const result = await readMessages(client, args.channel, args.limit, args.before, args.full, args.after);
       return { content: [{ type: 'text' as const, text: wrapMessageContent(result, args.channel) }] };
     } catch (e: unknown) {
       return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
