@@ -167,7 +167,10 @@ export function authorizationServerMetadata(request: NextRequest): Authorization
     token_endpoint: `${origin}/api/oauth/token`,
     registration_endpoint: `${origin}/api/oauth/register`,
     response_types_supported: ['code'],
-    grant_types_supported: ['authorization_code'],
+    // refresh_token: the connector would otherwise die every 30 days with no
+    // warning (OAuth 7). Advertised because claude.ai reads this document to
+    // decide whether refreshing is even possible.
+    grant_types_supported: ['authorization_code', 'refresh_token'],
     // S256 only. OAuth 2.1 removes `plain`, which offers no protection against
     // an intercepted code, and the schema constrains stored challenges to match.
     code_challenge_methods_supported: ['S256'],

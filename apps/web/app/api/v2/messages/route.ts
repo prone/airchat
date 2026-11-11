@@ -8,6 +8,8 @@ const MAX_METADATA_BYTES = 4096;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
 
 // GET /api/v2/messages?channel=general&limit=20&before=2026-01-01T00:00:00Z
+// With ?after=<ISO>, reads forward from that instant (oldest first) instead
+// of returning the newest messages.
 export async function GET(request: NextRequest) {
   const auth = await authenticateAgent(request);
   if (isAuthError(auth)) return auth;
@@ -28,6 +30,10 @@ export async function GET(request: NextRequest) {
   if (before && !ISO_DATE_RE.test(before)) {
     return errorResponse('Invalid before timestamp (expected ISO 8601)', 400);
   }
+  const after = request.nextUrl.searchParams.get('after') || undefined;
+  if (after && !ISO_DATE_RE.test(after)) {
+    return errorResponse('Invalid after timestamp (expected ISO 8601)', 400);
+  }
 
   try {
     const adapter = getStorageAdapter();
@@ -39,7 +45,7 @@ export async function GET(request: NextRequest) {
       return errorResponse('Channel not found', 404);
     }
 
-    const messages = await scoped.getMessages(ch.id, limit, before);
+    const messages = await scoped.getMessages(ch.id, limit, before, after);
 
     return jsonResponse({ channelId: ch.id, messages });
   } catch {

@@ -20,15 +20,19 @@ import {
   buildDigestUserPrompt,
   dayBounds,
   DIGEST_SYSTEM_PROMPT,
+  DIRECT_MESSAGES_CHANNEL,
   digestSlug,
   formatMessagesForDigest,
   previousUtcDay,
   type DigestMessage,
 } from '@airchat/shared';
 import type { AgentContext } from '@airchat/shared';
+import { Backoff, describeFailure, formatDelay } from '@airchat/shared';
 import { getStorageAdapter, getSupabaseClient } from '@/lib/api-v2-auth';
 
 const PASS_INTERVAL_MS = 30 * 60 * 1000; // check every 30 minutes
+/** After a failed pass: 30m doubling to 2h; passes inside the window are skipped. */
+const PASS_BACKOFF_MAX_MS = 2 * 60 * 60 * 1000;
 const MAX_MESSAGES_PER_DIGEST = 300;
 
 /** Minimum messages in a channel-day before it earns a digest (AIRCHAT_DIGEST_MIN_MESSAGES). */
@@ -40,6 +44,7 @@ const SUMMARIZER_AGENT_NAME = 'summarizer';
 
 let workerInterval: ReturnType<typeof setInterval> | null = null;
 let passRunning = false;
+const passBackoff = new Backoff({ baseMs: PASS_INTERVAL_MS, maxMs: PASS_BACKOFF_MAX_MS });
 let lastPruneDay: string | null = null;
 
 // Auto-generation is OFF by default: summaries are on-demand (see lib/summarize.ts).
@@ -155,6 +160,12 @@ export async function runDigestPass(now: Date = new Date()): Promise<DigestPassR
     .eq('archived', false);
 
   for (const ch of channels ?? []) {
+    // Private conversations must not be distilled into a note everyone can
+    // read — same rule as summarizeChannel.
+    if (ch.name === DIRECT_MESSAGES_CHANNEL) {
+      result.skipped.push({ channel: ch.name, reason: 'private-channel' });
+      continue;
+    }
     try {
       // Already digested?
       const { data: existingNote } = await client
@@ -234,9 +245,12 @@ export async function runDigestPass(now: Date = new Date()): Promise<DigestPassR
 
 async function digestLoop(): Promise<void> {
   if (passRunning || !digestEnabled()) return;
+  if (passBackoff.shouldSkip()) return;
   passRunning = true;
   try {
     const result = await runDigestPass();
+    const recovered = passBackoff.success();
+    if (recovered) console.log(`[digest] pass recovered after ${recovered} failure(s)`);
     if (result.written.length || result.errors.length) {
       console.log(
         `[digest] ${result.date}: wrote ${result.written.length} digest(s)` +
@@ -244,7 +258,8 @@ async function digestLoop(): Promise<void> {
       );
     }
   } catch (e) {
-    console.error('[digest] pass failed:', e instanceof Error ? e.message : e);
+    const { delayMs, attempts, changed } = passBackoff.failure();
+    if (changed) console.error(`[digest] pass failed (${describeFailure(e)}); backing off ${formatDelay(delayMs)} after ${attempts} failure(s)`);
   } finally {
     passRunning = false;
   }
