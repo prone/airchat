@@ -58,6 +58,9 @@ class Channel:
     type: str
     description: str | None = None
     archived: bool = False
+    # Set only by list_channels(scope="all"); None otherwise.
+    joined: bool | None = None
+    last_message_at: str | None = None
 
 
 @dataclass

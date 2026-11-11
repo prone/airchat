@@ -6,7 +6,7 @@
  * PostgresStorageAdapter or SQLiteAdapter.
  */
 
-import type { Agent, Channel, ConnectorToken, FederationScope, Message, Mention, Note, NoteBacklink, NoteRevision, NoteSearchResult, SearchResult } from './types.js';
+import type { Agent, Channel, ChannelDirectoryPage, ConnectorToken, FederationScope, Message, Mention, Note, NoteBacklink, NoteRevision, NoteSearchResult, SearchResult } from './types.js';
 import type { Task, TaskStatus } from './tasks.js';
 
 // ── New types needed by the storage layer ──────────────────────────────────
@@ -149,6 +149,11 @@ export interface StorageAdapter {
 export interface ScopedStorageAdapter {
   // Messaging
   getChannels(type?: string): Promise<Channel[]>;
+  /**
+   * Every non-archived channel on the instance, joined or not, by name.
+   * Read-only: unlike reading a channel, it does not join the caller to any.
+   */
+  listAllChannels(opts?: { type?: string; limit?: number; offset?: number }): Promise<ChannelDirectoryPage>;
   getMessages(
     channelId: string,
     limit: number,

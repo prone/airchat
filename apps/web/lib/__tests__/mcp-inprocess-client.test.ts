@@ -214,6 +214,18 @@ describe('InProcessToolClient — parameter mapping', () => {
     await client.listChannels('project');
     expect(last().url.searchParams.get('type')).toBe('project');
   });
+
+  it('asks for the full directory with scope=all and paging', async () => {
+    await client.listChannels(undefined, { scope: 'all', limit: 50, offset: 100 });
+    const q = last().url.searchParams;
+    expect([q.get('scope'), q.get('limit'), q.get('offset')]).toEqual(['all', '50', '100']);
+  });
+
+  it('sends no scope or paging for the default list', async () => {
+    await client.listChannels('project', { limit: 50 });
+    expect(last().url.searchParams.has('scope')).toBe(false);
+    expect(last().url.searchParams.has('limit')).toBe(false);
+  });
 });
 
 describe('InProcessToolClient — message metadata', () => {

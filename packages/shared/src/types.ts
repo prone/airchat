@@ -27,6 +27,30 @@ export interface Channel {
   created_at: string;
 }
 
+/** One row of the full channel directory (GET /api/v2/channels?scope=all). */
+export interface ChannelDirectoryEntry {
+  id: string;
+  name: string;
+  type: ChannelType;
+  federation_scope: FederationScope;
+  description: string | null;
+  created_at: string;
+  /** Whether the calling agent is a member. Listing never joins. */
+  joined: boolean;
+  /**
+   * When the newest visible message was posted; null for an empty channel and
+   * always null for #direct-messages, whose activity is private.
+   */
+  last_message_at: string | null;
+}
+
+export interface ChannelDirectoryPage {
+  channels: ChannelDirectoryEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface ChannelMembership {
   agent_id: string;
   channel_id: string;

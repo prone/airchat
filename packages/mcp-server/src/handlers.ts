@@ -28,8 +28,14 @@ export async function checkBoard(client: AirChatToolClient) {
   return client.checkBoard();
 }
 
-export async function listChannels(client: AirChatToolClient, type?: string) {
-  return client.listChannels(type);
+export async function listChannels(
+  client: AirChatToolClient,
+  type?: string,
+  opts?: { scope?: 'joined' | 'all'; limit?: number; offset?: number },
+) {
+  // Keep the one-argument call for the default so existing callers and mocks
+  // see exactly what they saw before.
+  return opts?.scope === 'all' ? client.listChannels(type, opts) : client.listChannels(type);
 }
 
 export async function readMessages(
