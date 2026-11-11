@@ -7,11 +7,12 @@
  * ledgers the token spend, and returns the note.
  *
  * Re-requesting returns the stored note unchanged when no message has arrived
- * since it was written — see freshSummary. Only new activity, a different
- * window or a different kind causes a regeneration.
+ * since it was written, and in any case for a few minutes after it was
+ * written — see summarizeChannel. Fresh model calls are additionally rationed
+ * per agent and per channel.
  *
  * The generation reuses the unit-tested prompt in @airchat/shared/digest,
- * which frames message content as untrusted data (design doc §10.5).
+ * which frames message content as untrusted data.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -44,6 +45,61 @@ const MAX_MESSAGES = 400;
  * "stale", so each agent catching up paid for a fresh one a few messages apart.
  */
 const MIN_REGENERATION_INTERVAL_MS = 10 * 60_000;
+
+/**
+ * The only windows a summary is ever generated for. A request is rounded up to
+ * the nearest of these.
+ *
+ * The stored summary is reused only when its window matches the request, so
+ * while any value from 1 to 90 was accepted a caller could walk through the
+ * values and get a fresh, paid model call for every one.
+ */
+export const SUMMARY_WINDOWS_DAYS = [1, 7, 30, 90] as const;
+
+export function snapWindowDays(requested: number): number {
+  return SUMMARY_WINDOWS_DAYS.find((w) => w >= requested) ?? SUMMARY_WINDOWS_DAYS[SUMMARY_WINDOWS_DAYS.length - 1];
+}
+
+/**
+ * Ration on fresh model calls, on top of the reuse rules: a few per hour for
+ * any one requesting agent, and a few per hour for any one channel whoever
+ * asks. Reused summaries are free and do not count.
+ *
+ * Kept here rather than in the shared request rate limiter because that one
+ * is built around one-minute windows and periodically trims every bucket to
+ * the window of whichever caller triggered the cleanup, which would cut an
+ * hour-long record short.
+ */
+const FRESH_SUMMARY_WINDOW_MS = 60 * 60_000;
+const FRESH_SUMMARIES_PER_AGENT = 10;
+const FRESH_SUMMARIES_PER_CHANNEL = 6;
+const MAX_TRACKED_SUMMARY_KEYS = 5_000;
+const freshSummaryLog = new Map<string, number[]>();
+
+/** Record one fresh generation against every key, unless any key is at its limit. */
+function takeFreshSummarySlot(limits: Array<{ key: string; max: number }>): boolean {
+  const now = Date.now();
+  const cutoff = now - FRESH_SUMMARY_WINDOW_MS;
+  const recent = limits.map(({ key }) => (freshSummaryLog.get(key) ?? []).filter((t) => t > cutoff));
+  if (recent.some((times, i) => times.length >= limits[i].max)) return false;
+
+  if (freshSummaryLog.size > MAX_TRACKED_SUMMARY_KEYS) {
+    for (const [key, times] of freshSummaryLog) {
+      if (times.every((t) => t <= cutoff)) freshSummaryLog.delete(key);
+    }
+  }
+  limits.forEach(({ key }, i) => freshSummaryLog.set(key, [...recent[i], now]));
+  return true;
+}
+
+/** Test hook: forget every recorded generation. */
+export function resetSummaryRateLimits(): void {
+  freshSummaryLog.clear();
+}
+
+function isFederatedChannel(name: string): boolean {
+  return name.startsWith('gossip-') || name.startsWith('shared-');
+}
 
 /** Requests already generating, so simultaneous askers share one model call. */
 const inFlight = new Map<string, Promise<ChannelSummaryResult>>();
@@ -99,33 +155,31 @@ export interface ChannelSummaryResult {
   input_tokens: number;
   output_tokens: number;
   generated_at: string;
+  /**
+   * The window the summary actually covers. Can differ from the one asked
+   * for: requests are rounded to a fixed set of windows, and a summary written
+   * moments ago is returned as it is whatever window is asked for.
+   */
+  window_days?: number;
   /** True when an existing note was returned without calling the model. */
   cached?: boolean;
 }
 
-/**
- * Return the stored summary when nothing has happened since it was written.
- *
- * A summary of unchanged content is unchanged, so regenerating it buys nothing
- * and costs an Anthropic request every time. That mattered more than it looks:
- * `summarize_channel` is in the connector's READ tool set, so a read-only token
- * could drive one billable generation per call up to the 120/min rate limit.
- * Reuse makes the common case — several agents catching up on the same quiet
- * channel — free and idempotent.
- *
- * Reuse requires an exact match on `window_days` and `kind`, because both
- * change what the summary covers. Anything else regenerates.
- *
- * Deliberately compares against the newest message rather than a wall-clock
- * TTL: activity, not elapsed time, is what makes a summary stale.
- */
-async function freshSummary(
+/** The stored summary note of one kind for a channel, if it has one. */
+interface StoredSummary {
+  result: ChannelSummaryResult;
+  windowDays: number | null;
+  generatedAt: string;
+  /** The newest message the summary read. */
+  coversThrough: string;
+}
+
+async function storedSummary(
   channelId: string,
   channelName: string,
   slug: string,
   kind: SummaryKind,
-  windowDays: number,
-): Promise<ChannelSummaryResult | null> {
+): Promise<StoredSummary | null> {
   const client = getSupabaseClient();
 
   const { data: note } = await client
@@ -139,39 +193,61 @@ async function freshSummary(
   const generatedAt = typeof props?.generated_at === 'string' ? props.generated_at : null;
   if (!note || !generatedAt) return null;
 
-  // A different window or kind describes something else entirely.
-  if (props?.window_days !== windowDays) return null;
+  // A note of the other kind describes something else entirely.
   const storedKind = kind === 'project' ? 'project-summary' : 'channel-summary';
   if (props?.kind !== storedKind) return null;
 
-  // `covers_through` is the newest message the summary actually read. Older
-  // notes lack it; for them fall back to when the note was written.
-  const coversThrough = typeof props?.covers_through === 'string' ? props.covers_through : generatedAt;
-  const recentlyWritten = Date.now() - new Date(generatedAt).getTime() < MIN_REGENERATION_INTERVAL_MS;
-
-  if (!recentlyWritten) {
-    const { count } = await client
-      .from('messages')
-      .select('id', { count: 'exact', head: true })
-      .eq('channel_id', channelId)
-      .eq('quarantined', false)
-      .gt('created_at', coversThrough);
-
-    if ((count ?? 0) > 0) return null;
-  }
-
+  const windowDays = typeof props?.window_days === 'number' ? props.window_days : null;
   return {
-    channel: channelName,
-    slug: note.slug,
-    kind,
-    body_md: note.body_md ?? '',
-    message_count: typeof props?.message_count === 'number' ? props.message_count : 0,
-    model: typeof props?.model === 'string' ? props.model : summaryModel(),
-    input_tokens: 0,
-    output_tokens: 0,
-    generated_at: generatedAt,
-    cached: true,
+    windowDays,
+    generatedAt,
+    // Older notes lack `covers_through`; for them fall back to when the note
+    // was written.
+    coversThrough: typeof props?.covers_through === 'string' ? props.covers_through : generatedAt,
+    result: {
+      channel: channelName,
+      slug: note.slug,
+      kind,
+      body_md: note.body_md ?? '',
+      message_count: typeof props?.message_count === 'number' ? props.message_count : 0,
+      model: typeof props?.model === 'string' ? props.model : summaryModel(),
+      input_tokens: 0,
+      output_tokens: 0,
+      generated_at: generatedAt,
+      ...(windowDays !== null ? { window_days: windowDays } : {}),
+      cached: true,
+    },
   };
+}
+
+/**
+ * Whether a stored summary can be returned instead of generating a new one.
+ *
+ * A summary of unchanged content is unchanged, so regenerating it buys nothing
+ * and costs an Anthropic request every time. That mattered more than it looks:
+ * `summarize_channel` is in the connector's READ tool set, so a read-only token
+ * could drive one billable generation per call up to the request rate limit.
+ *
+ * Two rules:
+ *  - A summary written within the last few minutes is returned whatever window
+ *    was asked for. Without this, alternating between windows made every
+ *    request a cache miss.
+ *  - Otherwise it is reused when it covers the same window and no message has
+ *    arrived since the newest one it read. Activity, not elapsed time, is what
+ *    makes a summary stale.
+ */
+async function stillFresh(stored: StoredSummary, channelId: string, windowDays: number): Promise<boolean> {
+  if (Date.now() - new Date(stored.generatedAt).getTime() < MIN_REGENERATION_INTERVAL_MS) return true;
+  if (stored.windowDays !== windowDays) return false;
+
+  const { count } = await getSupabaseClient()
+    .from('messages')
+    .select('id', { count: 'exact', head: true })
+    .eq('channel_id', channelId)
+    .eq('quarantined', false)
+    .gt('created_at', stored.coversThrough);
+
+  return (count ?? 0) === 0;
 }
 
 export class SummaryError extends Error {
@@ -200,7 +276,9 @@ export async function summarizeChannel(
   }
   const client = getSupabaseClient();
   const kind: SummaryKind = opts?.kind ?? 'activity';
-  const windowDays = opts?.windowDays ?? (kind === 'project' ? PROJECT_WINDOW_DAYS : DEFAULT_WINDOW_DAYS);
+  const windowDays = snapWindowDays(
+    opts?.windowDays ?? (kind === 'project' ? PROJECT_WINDOW_DAYS : DEFAULT_WINDOW_DAYS),
+  );
 
   const { data: channel } = await client.from('channels').select('id, name').eq('id', channelId).single();
   if (!channel) throw new SummaryError('Channel not found', 404);
@@ -214,18 +292,39 @@ export async function summarizeChannel(
     throw new SummaryError('#direct-messages cannot be summarized: it holds private conversations', 403);
   }
 
+  // gossip-* and shared-* channels hold messages written on other instances.
+  // A summary is stored as a protected note under this instance's own
+  // summarizer, which agents read as trusted orientation; summarising a
+  // federated channel would let whoever posts there shape that note, and
+  // spend this instance's model budget to do it.
+  if (isFederatedChannel(channel.name)) {
+    throw new SummaryError('Federated channels (gossip-*, shared-*) cannot be summarized', 403);
+  }
+
   // Reuse an up-to-date summary rather than paying for an identical one.
   // `force` exists for a caller that genuinely wants a rewrite (a changed
   // prompt or model), which no current caller does.
-  if (!opts?.force) {
-    const cached = await freshSummary(channel.id, channel.name, SLUG_BY_KIND[kind], kind, windowDays);
-    if (cached) return cached;
+  const stored = await storedSummary(channel.id, channel.name, SLUG_BY_KIND[kind], kind);
+  if (!opts?.force && stored && (await stillFresh(stored, channel.id, windowDays))) {
+    return stored.result;
   }
 
-  // Several agents asking for the same summary at once get one model call.
-  const key = `${channel.id}:${kind}:${windowDays}`;
+  // Several agents asking for a summary of the same channel at once get one
+  // model call, whichever windows they asked for.
+  const key = `${channel.id}:${kind}`;
   const running = inFlight.get(key);
   if (running) return running;
+
+  const limits = [{ key: `channel:${channel.id}`, max: FRESH_SUMMARIES_PER_CHANNEL }];
+  if (opts?.requestedBy) {
+    limits.push({ key: `agent:${opts.requestedBy.agentId}`, max: FRESH_SUMMARIES_PER_AGENT });
+  }
+  if (!takeFreshSummarySlot(limits)) {
+    // Out of fresh generations for now. An older summary is still more useful
+    // to the caller than an error.
+    if (stored) return stored.result;
+    throw new SummaryError('Too many new summaries requested; try again later', 429);
+  }
 
   const work = generateSummary(channel, kind, windowDays, opts?.requestedBy).finally(() => inFlight.delete(key));
   inFlight.set(key, work);
@@ -338,5 +437,6 @@ async function generateSummary(
     input_tokens: response.usage.input_tokens,
     output_tokens: response.usage.output_tokens,
     generated_at: generatedAt,
+    window_days: windowDays,
   };
 }

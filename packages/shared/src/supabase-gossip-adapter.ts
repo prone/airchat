@@ -32,6 +32,63 @@ export function escapeLikePattern(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
 }
 
+/** Longest author name accepted from another instance. */
+export const MAX_REMOTE_AUTHOR_LENGTH = 60;
+const REMOTE_AUTHOR_RE = /^[A-Za-z0-9][A-Za-z0-9@._-]*$/;
+const INSTANCE_FINGERPRINT_RE = /^[0-9a-f]{16}$/;
+/** Characters of the author kept in the local agent name, before the origin suffix. */
+const REMOTE_AUTHOR_SLUG_LENGTH = 40;
+
+/**
+ * The local agent name used for an author on another instance, or null when
+ * the author or origin is not acceptable.
+ *
+ * The name is `<author>-at-<origin fingerprint>`. The author part is cut to a
+ * fixed length BEFORE the origin is appended, so the origin always survives:
+ * a long author name cannot push it off the end and end up with a name that
+ * belongs to a different instance, or to an agent on this one. The same value
+ * is used as the key for agent quarantine, so two spellings that map to one
+ * agent also share one quarantine.
+ */
+export function remoteAgentName(author: unknown, originFingerprint: unknown): string | null {
+  if (typeof author !== 'string' || author.length > MAX_REMOTE_AUTHOR_LENGTH || !REMOTE_AUTHOR_RE.test(author)) {
+    return null;
+  }
+  if (typeof originFingerprint !== 'string' || !INSTANCE_FINGERPRINT_RE.test(originFingerprint)) {
+    return null;
+  }
+  // Agent names allow only lowercase letters, digits and hyphens.
+  const slug = author
+    .toLowerCase()
+    .replace(/@/g, '-at-')
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, REMOTE_AUTHOR_SLUG_LENGTH)
+    .replace(/-$/, '');
+  return `${slug}-at-${originFingerprint}`;
+}
+
+/**
+ * Metadata keys that only this server may set on a message, because readers
+ * act on them: `source` and `user_email` mark a message as written by a
+ * person (the dashboard shows a "human" badge), and `files` points at objects
+ * in this instance's storage bucket.
+ */
+export const RESERVED_FEDERATED_METADATA_KEYS = ['source', 'user_email', 'files'] as const;
+
+/**
+ * Remove server-assigned keys from metadata that arrived from another
+ * instance. A peer's claim that its message came from "the dashboard" or
+ * carries one of our files is not something this instance can vouch for.
+ */
+export function stripReservedFederatedMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const reserved = new Set<string>(RESERVED_FEDERATED_METADATA_KEYS);
+  return Object.fromEntries(Object.entries(metadata).filter(([key]) => !reserved.has(key)));
+}
+
 export class SupabaseGossipAdapter implements GossipStorageAdapter {
   constructor(private readonly client: SupabaseClient) {}
 
@@ -229,31 +286,36 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
     return created?.id ?? null;
   }
 
-  async findOrCreateRemoteAgent(name: string, peerFingerprint: string, originInstance: string | null): Promise<string | null> {
-    // Sanitize agent name to match the check constraint: ^[a-z0-9][a-z0-9-]{1,99}$
-    const sanitizedName = name
-      .toLowerCase()
-      .replace(/@/g, '-at-')
-      .replace(/[^a-z0-9-]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 100) || `remote-${peerFingerprint.slice(0, 8)}`;
+  async findOrCreateRemoteAgent(author: string, peerFingerprint: string, originInstance: string | null): Promise<string | null> {
+    const origin = originInstance ?? peerFingerprint;
+    const name = remoteAgentName(author, origin);
+    if (!name) return null;
+
+    // An existing row is only reused when it is the placeholder for this same
+    // remote author. Agents registered on this instance can legitimately have
+    // any name, including one shaped like a remote name; resolving to such a
+    // row would let another instance post as a local agent, so the message is
+    // refused instead.
+    const usable = (row: { id: string; metadata: unknown } | null): string | null => {
+      const meta = (row?.metadata ?? null) as Record<string, unknown> | null;
+      return row && meta?.remote === true && meta.origin_instance === origin ? row.id : null;
+    };
 
     const { data: existing } = await this.client
       .from('agents')
-      .select('id')
-      .eq('name', sanitizedName)
-      .single();
-    if (existing) return existing.id;
+      .select('id, metadata')
+      .eq('name', name)
+      .maybeSingle();
+    if (existing) return usable(existing);
 
     // Insert with conflict handling for race conditions
     const { data: created, error } = await this.client
       .from('agents')
       .insert({
-        name: sanitizedName,
+        name,
         api_key_hash: `remote:${peerFingerprint}:${Date.now()}`,
         active: true,
-        metadata: { remote: true, origin_instance: originInstance, original_name: name },
+        metadata: { remote: true, origin_instance: origin, original_name: author },
       })
       .select('id')
       .single();
@@ -262,10 +324,10 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
       // Race: another request created it — retry the find
       const { data: raced } = await this.client
         .from('agents')
-        .select('id')
-        .eq('name', sanitizedName)
-        .single();
-      return raced?.id ?? null;
+        .select('id, metadata')
+        .eq('name', name)
+        .maybeSingle();
+      return usable(raced ?? null);
     }
     return created?.id ?? null;
   }
@@ -284,7 +346,9 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
     hop_count: number;
     created_at: string;
   }): Promise<boolean> {
-    const { error } = await this.client.from('messages').insert(msg);
+    const { error } = await this.client
+      .from('messages')
+      .insert({ ...msg, metadata: stripReservedFederatedMetadata(msg.metadata) });
     return !error;
   }
 
@@ -314,7 +378,7 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
   }
 
   async updateMessageLabels(messageId: string, labels: string[], quarantine: boolean, classification: Record<string, unknown>): Promise<void> {
-    // Fix #49: Only escalate quarantine — never set quarantined from true to false.
+    // Only escalate quarantine — never set quarantined from true to false.
     // If quarantine=true, set it. If quarantine=false, leave the existing value unchanged.
     if (quarantine) {
       await this.client
@@ -331,7 +395,7 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
   }
 
   async quarantineMessage(messageId: string): Promise<void> {
-    // Fix #55: Append 'quarantined' to existing labels instead of overwriting
+    // Append 'quarantined' to existing labels instead of overwriting
     // First get existing labels, then merge
     const { data: existing } = await this.client
       .from('messages')
@@ -346,6 +410,41 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
       .from('messages')
       .update({ quarantined: true, safety_labels: mergedLabels })
       .eq('id', messageId);
+  }
+
+  async getMessageOrigins(messageIds: string[]): Promise<Array<{ message_id: string; origin_instance_fingerprint: string; peer_id: string | null }>> {
+    if (messageIds.length === 0) return [];
+    const { data, error } = await this.client
+      .from('gossip_message_origins')
+      .select('message_id, origin_instance_fingerprint, peer_id')
+      .in('message_id', messageIds);
+    if (error) throw new Error(`Failed to read message origins: ${error.message}`);
+    return (data ?? []) as Array<{ message_id: string; origin_instance_fingerprint: string; peer_id: string | null }>;
+  }
+
+  async quarantineFederatedMessage(messageId: string): Promise<boolean> {
+    const { data: existing } = await this.client
+      .from('messages')
+      .select('safety_labels, origin_instance')
+      .eq('id', messageId)
+      .maybeSingle();
+    // A message written on this instance has no origin_instance. Those are
+    // never quarantined on another instance's say-so.
+    if (!existing || existing.origin_instance == null) return false;
+
+    const currentLabels = (existing.safety_labels as string[]) ?? [];
+    const mergedLabels = [...new Set([...currentLabels, 'quarantined'])];
+
+    const { data: updated, error } = await this.client
+      .from('messages')
+      .update({ quarantined: true, safety_labels: mergedLabels })
+      .eq('id', messageId)
+      // Repeated in the write itself so the guarantee does not depend on the
+      // read above.
+      .not('origin_instance', 'is', null)
+      .select('id');
+    if (error) throw new Error(`Failed to quarantine message: ${error.message}`);
+    return (updated?.length ?? 0) > 0;
   }
 
   async quarantineMessagesBySuffix(idSuffix: string): Promise<void> {
@@ -397,7 +496,7 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
   }
 
   async approveMessages(messageIds: string[]): Promise<number> {
-    // Fix #54: Clear quarantined label from safety_labels when approving
+    // Clear the quarantined label from safety_labels when approving
     const { data, error } = await this.client
       .from('messages')
       .update({ quarantined: false, safety_labels: [] })
