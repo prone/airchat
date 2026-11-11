@@ -6,6 +6,7 @@
 
 import { getGossipAdapter } from '@/lib/api-v2-auth';
 import { fetchPeerUrl } from '@/lib/url-validation';
+import { fetchPeerKey } from '@/lib/peer-identity';
 import { stripHtmlTags, sanitizeForLog } from '@/lib/sanitize';
 import { signPeerRequest, FINGERPRINT_RE, PUBLIC_KEY_RE } from '@/lib/gossip-auth';
 import { classifyMessage } from '@airchat/shared/safety';
@@ -641,6 +642,50 @@ async function guardedSyncLoop(): Promise<void> {
   }
 }
 
+// ── Peer key exchange ───────────────────────────────────────────────────────
+
+// How often a peer that has no stored key is asked for it again.
+const PEER_KEY_RETRY_MS = 10 * 60 * 1000;
+const peerKeyAskedAt = new Map<string, number>();
+
+/**
+ * Make sure we hold the peer's public key before syncing with it.
+ *
+ * A peer can be stored without one: the default supernode is added by
+ * fingerprint alone, and so is any peer that was unreachable when it was
+ * added. Without the key nothing the peer sends to us can be authenticated,
+ * and its messages are not tied to one key. So the key is fetched here,
+ * checked against the stored fingerprint, and saved. Until that succeeds the
+ * peer is skipped.
+ *
+ * Mutates `peer` so the sync that follows sees the key.
+ */
+async function ensurePeerKey(peer: GossipPeer, gossip: GossipStorageAdapter): Promise<boolean> {
+  if (peer.public_key) return true;
+
+  const now = Date.now();
+  if (now - (peerKeyAskedAt.get(peer.id) ?? 0) < PEER_KEY_RETRY_MS) return false;
+  peerKeyAskedAt.set(peer.id, now);
+
+  const key = await fetchPeerKey(peer.endpoint, peer.fingerprint);
+  if (key.status !== 'verified') {
+    const why = key.status === 'mismatch'
+      ? `its key has fingerprint ${key.actualFingerprint}, not the ${peer.fingerprint} it was added with`
+      : key.status === 'invalid' ? 'it returned no valid public key' : 'it could not be reached';
+    console.error(`[gossip] not syncing with ${sanitizeForLog(peer.endpoint)}: ${why}`);
+    return false;
+  }
+  await gossip.updatePeer(peer.id, { public_key: key.publicKey });
+  peer.public_key = key.publicKey;
+  peerKeyAskedAt.delete(peer.id);
+  return true;
+}
+
+/** Test hook: forget when peers were last asked for their key. */
+export function resetPeerKeyRetries(): void {
+  peerKeyAskedAt.clear();
+}
+
 async function syncLoop(): Promise<void> {
   const gossip = getGossipAdapter();
   const config = await getCachedInstanceConfig(gossip);
@@ -658,7 +703,10 @@ async function syncLoop(): Promise<void> {
   let failed = 0;
   let lastError: unknown = null;
   for (const peer of activePeers) {
-    try { await syncFromPeer(peer); } catch (err) { failed++; lastError = err; /* keep going */ }
+    try {
+      if (!(await ensurePeerKey(peer, gossip))) continue;
+      await syncFromPeer(peer);
+    } catch (err) { failed++; lastError = err; /* keep going */ }
   }
   // One bad peer must not slow the others down. Every peer failing is the
   // signature of a problem on our side (usually the database), so back off.

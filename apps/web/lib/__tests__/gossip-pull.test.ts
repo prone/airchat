@@ -55,7 +55,7 @@ describe('the sync request', () => {
     expect(init.headers['x-gossip-fingerprint']).toBe(myFp);
     expect(verifySignature(me.publicKey, payload(theirFp), init.headers['x-gossip-signature-v2'])).toBe(true);
     expect(verifySignature(me.publicKey, payload(myFp), init.headers['x-gossip-signature-v2'])).toBe(false);
-    expect(verifySignature(me.publicKey, init.headers['x-gossip-timestamp'], init.headers['x-gossip-signature'])).toBe(true);
+    expect(init.headers['x-gossip-signature']).toBeUndefined();
   });
 });
 

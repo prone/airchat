@@ -67,8 +67,13 @@ export function buildRequestSignPayload(parts: {
 }
 
 /**
- * Headers that authenticate an outgoing request to one specific peer: the new
- * signature, and the old timestamp-only one for peers on earlier versions.
+ * Headers that authenticate an outgoing request to one specific peer.
+ *
+ * The old timestamp-only signature is left out unless asked for. It says
+ * nothing about which request or which instance it was made for, so whoever
+ * receives it could present it, for as long as the timestamp is fresh, to any
+ * other instance that still accepts such signatures and knows the sender.
+ * Send it only while a peer on an earlier version needs it.
  */
 export function signPeerRequest(
   privateKey: string,
@@ -81,6 +86,8 @@ export function signPeerRequest(
     body?: string;
     /** Defaults to now. */
     timestamp?: string;
+    /** Also send the timestamp-only signature, for a peer on an earlier version. */
+    includeLegacySignature?: boolean;
   },
 ): Record<string, string> {
   const timestamp = request.timestamp ?? new Date().toISOString();
@@ -94,7 +101,9 @@ export function signPeerRequest(
   return {
     [GOSSIP_FINGERPRINT_HEADER]: request.senderFingerprint,
     [GOSSIP_TIMESTAMP_HEADER]: timestamp,
-    [GOSSIP_LEGACY_SIGNATURE_HEADER]: signData(privateKey, timestamp),
+    ...(request.includeLegacySignature
+      ? { [GOSSIP_LEGACY_SIGNATURE_HEADER]: signData(privateKey, timestamp) }
+      : {}),
     [GOSSIP_SIGNATURE_V2_HEADER]: signData(privateKey, payload),
   };
 }

@@ -14,15 +14,16 @@
  * Whoever received such a request could replay the same three values to any
  * other instance for five minutes and be accepted as the sender.
  *
- *  - Outgoing requests carry BOTH signatures, so peers that have not upgraded
- *    still accept them.
+ *  - Outgoing requests carry the new signature only. The old one is added
+ *    just in legacy mode (below), because whoever receives it can replay it.
  *  - Incoming requests are verified against the new signature whenever it is
  *    present. A request carrying only the old signature is refused unless the
  *    operator sets the environment variable
  *    `GOSSIP_ACCEPT_LEGACY_SIGNATURES=true` (default: refused). Set it only
  *    while peers you depend on are still running the old code, and unset it
  *    once they have upgraded: while it is on, the replay described above
- *    works against this instance.
+ *    works against this instance, and this instance hands its peers the
+ *    replayable signature too.
  */
 
 import type { NextRequest, NextResponse } from 'next/server';
@@ -38,10 +39,11 @@ import type { GossipInstanceConfig, GossipPeer, GossipStorageAdapter } from '@ai
 import { errorResponse } from '@/lib/api-v1-response';
 import { getGossipAdapter } from '@/lib/api-v2-auth';
 import { checkIpRateLimit, checkRateLimit } from '@/lib/rate-limit';
+import { signPeerRequest as signPeerRequestHeaders } from '@airchat/shared/gossip';
 import { clientIp } from '@/lib/client-ip';
 import { checkGossipNonce } from '@/lib/gossip-nonce';
 
-export { signPeerRequest, buildRequestSignPayload, canonicalRequestTarget } from '@airchat/shared/gossip';
+export { buildRequestSignPayload, canonicalRequestTarget } from '@airchat/shared/gossip';
 
 /** An instance fingerprint: the first 16 hex characters of sha256(public key). */
 export const FINGERPRINT_RE = /^[0-9a-f]{16}$/;
@@ -54,9 +56,24 @@ const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{
 
 const REQUEST_WINDOW_MS = 5 * 60 * 1000;
 
-/** Whether requests signed only with the old timestamp signature are accepted. */
+/**
+ * Whether this instance still talks to peers on versions from before request
+ * signing: it accepts their timestamp-only signature, and sends one of its own
+ * alongside the full signature so they can verify it.
+ */
 export function legacySignaturesAccepted(): boolean {
   return process.env.GOSSIP_ACCEPT_LEGACY_SIGNATURES === 'true';
+}
+
+/**
+ * Headers for an outgoing request to a peer. The timestamp-only signature is
+ * added only in legacy mode (see legacySignaturesAccepted).
+ */
+export function signPeerRequest(
+  privateKey: string,
+  request: Omit<Parameters<typeof signPeerRequestHeaders>[1], 'includeLegacySignature'>,
+): Record<string, string> {
+  return signPeerRequestHeaders(privateKey, { ...request, includeLegacySignature: legacySignaturesAccepted() });
 }
 
 /** Read a request body as text, giving up once it exceeds `maxBytes`. */
