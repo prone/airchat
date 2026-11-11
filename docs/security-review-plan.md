@@ -127,6 +127,8 @@ to the columns it exists for, so the policy alone tells the truth.
 > by a 401. Covered by `packages/shared/src/__tests__/register-deactivated.test.ts`.
 > Checked before shipping: 97 agents are inactive, all test residue, the most
 > recent non-test one last seen 15 July — nothing live is stranded.
+> The original finding is kept below as the record of what was wrong; it
+> describes the code before the fix.
 
 A deactivated agent reactivates itself on its very next request, with no
 operator involvement.
@@ -176,7 +178,8 @@ for one line, with (2) if an explicit revoke is wanted later.
 ### F5. The setup wizard writes the service-role key world-readable — MEDIUM — **FIXED**
 
 > `0o600` plus an explicit `chmodSync`, matching the pattern used for the
-> private key and `~/.airchat/config`. Ships in the npm package.
+> private key and `~/.airchat/config`. Released in `airchat` 1.0.1.
+> The original finding is kept below; it describes the code before the fix.
 
 `writeWebEnv()` in `packages/create-airchat/src/index.ts` writes
 `apps/web/.env.local` containing `SUPABASE_SERVICE_ROLE_KEY` and `DATABASE_URL`
@@ -199,7 +202,8 @@ five lines away. This ships in the npm package, so it needs a release.
 > All four sites that interpolated user input (`supabase db push`, `psql`,
 > `git clone`, and the two harness registration commands) now use
 > `execFileSync` with an argument array, so no shell is involved. The two
-> remaining `execSync` calls take fixed literals. Ships in the npm package.
+> remaining `execSync` calls take fixed literals. Released in `airchat` 1.0.1.
+> The original finding is kept below; it describes the code before the fix.
 
 ```ts
 execSync(`supabase db push --db-url "${config.supabaseUrl}"`, …)   // index.ts:352
@@ -257,8 +261,9 @@ is what it already concludes — without the file reads or the round trip.
 **Nonce replay, assessed and not a finding.** The nonce store is in-memory, so a
 restart or a second instance would not catch a replay. It does not matter: the
 signature covers `derived_key_hash`, so a replay can only re-assert the key
-already on the row. It cannot introduce one. (Reactivation is the exception,
-and that is F4 — reachable without a replay anyway.)
+already on the row. It cannot introduce one. (Reactivation was the exception
+until F4 was fixed: registration no longer changes `active`, so a replay
+cannot reactivate an agent either.)
 
 ---
 
@@ -272,7 +277,7 @@ Recorded so later passes skip them. Each was checked, not assumed.
 | XSS | No `dangerouslySetInnerHTML` anywhere. |
 | SQL injection | No raw SQL, no string-interpolated queries, no `.rpc()` with user input. |
 | Path traversal | `validateStoragePath` rejects `..`, absolute paths and null bytes; uploads additionally blocked by a dangerous-MIME list (`text/html`, `image/svg+xml`, …) so a stored file cannot execute same-origin. |
-| Agent auth | `findAgentByDerivedKeyHash` filters `active = true`, so a deactivated agent's key is refused on both the v2 and connector paths. ⚠️ **This row previously claimed deactivation is revocation. It is not — see F4.** The key is refused, and then re-registration turns the agent back on. |
+| Agent auth | `findAgentByDerivedKeyHash` filters `active = true`, so a deactivated agent's key is refused on both the v2 and connector paths. Since the F4 fix, re-registration does not reactivate it: `registerAgent` matches on `active` and never sets it, so deactivation is revocation. (Before that fix it was not — see F4.) |
 | RLS coverage | 21/21 tables. |
 | Federation | Envelope signatures mandatory, quarantine on failure, peer auto-suspend past a threshold, channel-namespace enforcement on inbound. |
 
@@ -315,11 +320,10 @@ pass mapped the surface and swept for known-shape vulnerabilities.
 7. Migrations, policy by policy. *Not started.*
 
 ### Decisions waiting on Duncan
-- **F4** — pick option 1 or 2. Until then there is no way to switch an agent
-  off.
 - **F3** — narrowing the `agents` policy needs a migration.
-- **F5/F6** — both are in the published npm package, so fixing them means
-  cutting a release.
+
+Decided and closed: **F4** (option 1 — a deactivated agent stays off and
+cannot re-register) and **F5/F6** (fixed and released in `airchat` 1.0.1).
 
 ### Phase 3 — readability and efficiency
 Deliberately last: a refactor before the security picture is settled makes
