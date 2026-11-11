@@ -7,6 +7,7 @@ import {
   resourceMetadataUrl,
   wwwAuthenticateValue,
   publicOrigin,
+  authorizationServerMetadata,
 } from '@/lib/oauth-metadata';
 
 const req = (url = 'https://mcp.airchat.work/mcp') => new NextRequest(url);
@@ -142,5 +143,18 @@ describe('the advertised resource path is /mcp', () => {
   it('points the metadata document at /mcp', () => {
     expect(resourceMetadataUrl(req()))
       .toBe('https://mcp.airchat.work/.well-known/oauth-protected-resource/mcp');
+  });
+});
+
+describe('authorization server metadata (RFC 8414)', () => {
+  it('advertises both grants the token endpoint implements', () => {
+    // refresh_token was missing until OAuth 7, which is why every grant died
+    // after 30 days: claude.ai reads this document to decide whether a refresh
+    // is even possible.
+    vi.stubEnv('AIRCHAT_PUBLIC_URL', 'https://mcp.airchat.work');
+    const meta = authorizationServerMetadata(req());
+    expect(meta.grant_types_supported).toEqual(['authorization_code', 'refresh_token']);
+    expect(meta.token_endpoint).toBe('https://mcp.airchat.work/api/oauth/token');
+    expect(meta.code_challenge_methods_supported).toEqual(['S256']);
   });
 });
