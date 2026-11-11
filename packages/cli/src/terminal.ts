@@ -16,7 +16,9 @@
  */
 
 // ESC ] ... terminated by BEL or ESC \  (window title, hyperlinks, clipboard).
-const OSC = /\u001b\][\s\S]*?(?:\u0007|\u001b\\)/g;
+// The body stops at the next ESC or BEL, so an unterminated sequence is removed
+// up to there and a run of them cannot make the match re-scan the whole text.
+const OSC = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?/g;
 // ESC [ parameters final-byte, or the single-byte form U+009B (colours, cursor movement, erase).
 const CSI = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g;
 // Any other ESC-introduced sequence (ESC c resets the terminal, ESC ( B picks a charset).

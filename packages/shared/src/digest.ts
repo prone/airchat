@@ -58,7 +58,7 @@ const TRANSCRIPT_TAG = 'untrusted_transcript';
 function flattenForTranscript(text: string): string {
   return String(text ?? '')
     .replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]+/g, ' ')
-    .replace(/<(\s*\/?\s*untrusted_transcript)/gi, '&lt;$1');
+    .replace(/<([\s/]*untrusted_transcript)/gi, '&lt;$1');
 }
 
 /** A fresh random id for the transcript markers of one prompt. */

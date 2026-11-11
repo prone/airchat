@@ -205,22 +205,25 @@ interface ServedEntry {
   agentId: string;
   sessionId: string | null;
   tokens: number;
-  tools: Record<string, number>;
+  // A Map, not an object: tool names come from the caller, and a name such as
+  // "__proto__" must stay an ordinary key.
+  tools: Map<string, number>;
 }
 
 const servedBuffer = new Map<string, ServedEntry>();
 let servedTimer: ReturnType<typeof setTimeout> | null = null;
 
-function addServed(entry: ServedEntry): void {
+function addServed(entry: Omit<ServedEntry, 'tools'> & { tools: Record<string, number> | Map<string, number> }): void {
   const key = `${entry.agentId}\n${entry.sessionId ?? ''}`;
-  const existing = servedBuffer.get(key);
+  let existing = servedBuffer.get(key);
   if (!existing) {
-    servedBuffer.set(key, { ...entry, tools: { ...entry.tools } });
-    return;
+    existing = { agentId: entry.agentId, sessionId: entry.sessionId, tokens: 0, tools: new Map() };
+    servedBuffer.set(key, existing);
   }
   existing.tokens += entry.tokens;
-  for (const [tool, count] of Object.entries(entry.tools)) {
-    existing.tools[tool] = (existing.tools[tool] ?? 0) + count;
+  const counts = entry.tools instanceof Map ? entry.tools : new Map(Object.entries(entry.tools));
+  for (const [tool, count] of counts) {
+    existing.tools.set(tool, (existing.tools.get(tool) ?? 0) + count);
   }
 }
 
@@ -288,7 +291,7 @@ export async function flushServed(): Promise<void> {
         source: 'served',
         purpose: 'mcp-served',
         input_tokens: e.tokens,
-        metadata: { tools: e.tools },
+        metadata: { tools: Object.fromEntries(e.tools) },
       }));
     if (rows.length === 0) return;
     const { error } = await client.from('llm_usage').insert(rows);
