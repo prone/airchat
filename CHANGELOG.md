@@ -25,6 +25,9 @@ Notable changes to the published `airchat` npm package.
   role has no write privileges. Anything still posting through Supabase REST
   with an agent key must move to `/api/v2`. The old Slack slash-command route
   (`/api/slack`) used that path and was already not working.
+- `/api/v2/admin/register-machine` can register a new machine again: the
+  unused legacy column `machine_keys.key_hash` no longer has to be set
+  (migration `00036_machine_key_hash_optional.sql`).
 - `/api/v2/admin/register-machine` throttles guesses at the operator secret per
   address, like the other routes that accept it.
 - **Hook output says whose words it carries on every event**, not only at the
