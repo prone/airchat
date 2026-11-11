@@ -19,7 +19,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { getSupabaseClient } from '@/lib/api-v2-auth';
 import { checkIpRateLimit } from '@/lib/rate-limit';
 import { CONNECTOR_TOKEN_PREFIX } from '@/lib/mcp-auth';
@@ -175,39 +175,39 @@ async function handleRefreshToken(request: NextRequest, form: FormData): Promise
 
   // Looked up regardless of state: a consumed or revoked token must still be
   // found, because presenting one is the reuse signal.
-  const { data: token } = await db
+  const { data: token, error: lookupError } = await db
     .from('oauth_refresh_tokens')
     .select('*')
     .eq('token_hash', sha256(presented))
     .maybeSingle();
 
+  // "The database did not answer" is not "this token is invalid". invalid_grant
+  // tells the client to throw the grant away and send the user back through
+  // consent; answering it for an outage would destroy a good grant.
+  if (lookupError) return unavailable('refresh token lookup', lookupError.message);
+
   // Unknown, revoked and expired are one answer (invalid_grant), which is what
   // tells the client to send the user back through consent rather than retry.
   if (!token) return oauthError('invalid_grant', 'Invalid refresh token');
 
-  if (token.consumed_at) {
-    // REUSE. This token was already rotated away, so whoever holds it now
-    // either kept a copy after rotation or intercepted it. Either way the
-    // legitimate client's current token is no longer trustworthy: revoke the
-    // whole family, and the access token that goes with it, rather than merely
-    // refusing this request.
-    await revokeFamily(db, token.family_id, now);
-    return oauthError('invalid_grant', 'Refresh token reuse detected; the grant has been revoked');
-  }
-  if (token.revoked_at) return oauthError('invalid_grant', 'Refresh token revoked');
-  if (new Date(token.expires_at) < now) return oauthError('invalid_grant', 'Refresh token expired');
   if (token.client_id !== clientId) {
     return oauthError('invalid_grant', 'Refresh token was not issued to this client');
   }
+  if (token.revoked_at) return oauthError('invalid_grant', 'Refresh token revoked');
+  if (token.consumed_at) return handleConsumedToken(db, token, now);
+  if (new Date(token.expires_at) < now) return oauthError('invalid_grant', 'Refresh token expired');
 
   // Revoking the access token from the dashboard or CLI ends the grant too.
   // Otherwise "revoke" would be undone by the very next refresh.
   if (token.access_token_id) {
-    const { data: access } = await db
+    const { data: access, error: accessError } = await db
       .from('connector_tokens')
       .select('revoked_at')
       .eq('id', token.access_token_id)
       .maybeSingle();
+    // Fail closed: if we cannot tell whether the grant was revoked, do not
+    // extend it. The client retries.
+    if (accessError) return unavailable('access token revocation check', accessError.message);
     if (access?.revoked_at) {
       await revokeFamily(db, token.family_id, now);
       return oauthError('invalid_grant', 'Grant revoked');
@@ -216,39 +216,157 @@ async function handleRefreshToken(request: NextRequest, form: FormData): Promise
 
   // Consume atomically. Two refreshes racing on the same token (claude.ai
   // refreshes proactively before expiry and reactively on a 401, and the two
-  // can coincide) both pass the checks above; only one wins this update. The
-  // loser is refused but does NOT trigger family revocation — at read time the
-  // token was unconsumed, so this is a race, not a replay. Replay is a token
-  // that was already consumed when it was presented, handled above.
-  const { data: consumed } = await db
+  // can coincide) both pass the checks above; only one wins this update.
+  const { data: consumed, error: consumeError } = await db
     .from('oauth_refresh_tokens')
     .update({ consumed_at: now.toISOString() })
     .eq('id', token.id)
     .is('consumed_at', null)
     .select('id')
     .maybeSingle();
-  if (!consumed) return oauthError('invalid_grant', 'Refresh token already used');
+  if (consumeError) return unavailable('refresh token consume', consumeError.message);
 
+  // Lost the race: the other request consumed it a moment ago. That is the
+  // same situation as a retry, so it gets the same answer — the successor pair.
+  if (!consumed) return handleConsumedToken(db, { ...token, consumed_at: now.toISOString() }, now);
+
+  return rotate(db, token, now);
+}
+
+/**
+ * How long after rotation the SAME refresh token may be presented again and
+ * still be treated as a retry rather than as theft.
+ */
+const ROTATION_RETRY_WINDOW_MS = 60_000;
+
+/**
+ * A refresh token that was already rotated has been presented again.
+ *
+ * Long after rotation, that is the reuse signal: whoever holds it either kept
+ * a copy or intercepted it, so the whole family is revoked.
+ *
+ * Within a minute of rotation it is almost always the legitimate client: the
+ * response to its first attempt was lost, or its proactive and reactive
+ * refreshes overlapped. Rotation had already consumed its only refresh token,
+ * so treating the retry as theft revoked the grant and sent the user back to
+ * consent — the silent expiry refresh tokens exist to prevent, now triggered
+ * by a dropped packet.
+ *
+ * A retry inside the window gets the SAME successor pair the first attempt
+ * produced (see successorTokens). Nothing new is minted, so the window does not
+ * weaken reuse detection: a thief replaying inside it ends up holding the same
+ * pair as the client, and whichever of them refreshes second, later, is
+ * presenting a consumed token outside any window and revokes the family.
+ */
+async function handleConsumedToken(db: Db, token: RefreshRow, now: Date): Promise<Response> {
+  const consumedAt = new Date(token.consumed_at as string).getTime();
+  const withinWindow = now.getTime() - consumedAt <= ROTATION_RETRY_WINDOW_MS;
+  const successor = withinWindow ? successorTokens(token) : null;
+
+  if (!successor) {
+    await revokeFamily(db, token.family_id, now);
+    return oauthError('invalid_grant', 'Refresh token reuse detected; the grant has been revoked');
+  }
+
+  const { data: next, error } = await db
+    .from('oauth_refresh_tokens')
+    .select('consumed_at, revoked_at')
+    .eq('token_hash', sha256(successor.refresh))
+    .maybeSingle();
+  if (error) return unavailable('successor lookup', error.message);
+
+  // The successor has itself moved on (rotated or revoked). Then this is not a
+  // retry of the last rotation; it is an old token being replayed.
+  if (next && (next.consumed_at || next.revoked_at)) {
+    await revokeFamily(db, token.family_id, now);
+    return oauthError('invalid_grant', 'Refresh token reuse detected; the grant has been revoked');
+  }
+
+  // Either the successor exists and is live (hand the same pair back), or the
+  // first attempt died before storing it (finish the job). rotate() does both.
+  return rotate(db, token, now);
+}
+
+/** Retire the access token a refresh token was issued with, and issue its successor pair. */
+async function rotate(db: Db, token: RefreshRow, now: Date): Promise<Response> {
   // One live access token per grant: retire the one this refresh token was
   // issued with. The client is about to receive its replacement.
   if (token.access_token_id) {
-    await db
+    const { error } = await db
       .from('connector_tokens')
       .update({ revoked_at: now.toISOString() })
       .eq('id', token.access_token_id)
       .is('revoked_at', null);
+    if (error) return unavailable('previous access token retirement', error.message);
   }
 
-  return issueTokenPair(db, {
-    agentId: token.agent_id,
-    userId: token.user_id,
-    clientId: token.client_id,
-    scope: token.scope === 'read-write' ? 'read-write' : 'read',
-    // The audience travels with the grant. Re-deriving it from this request
-    // would let a refresh move a grant to whatever host the request named.
-    audience: token.audience,
-    familyId: token.family_id,
-  });
+  return issueTokenPair(
+    db,
+    {
+      agentId: token.agent_id,
+      userId: token.user_id,
+      clientId: token.client_id,
+      scope: token.scope === 'read-write' ? 'read-write' : 'read',
+      // The audience travels with the grant. Re-deriving it from this request
+      // would let a refresh move a grant to whatever host the request named.
+      audience: token.audience,
+      familyId: token.family_id,
+    },
+    successorTokens(token) ?? undefined,
+  );
+}
+
+/** The columns of an oauth_refresh_tokens row this file relies on. */
+interface RefreshRow {
+  id: string;
+  token_hash: string;
+  family_id: string;
+  client_id: string;
+  agent_id: string;
+  user_id: string;
+  scope: string;
+  audience: string;
+  access_token_id: string | null;
+  expires_at: string;
+  consumed_at: string | null;
+  revoked_at: string | null;
+}
+
+interface TokenPair {
+  access: string;
+  refresh: string;
+}
+
+/**
+ * The token pair that rotating `parent` produces — always the same pair.
+ *
+ * Only hashes are stored, so a retried rotation could not otherwise return
+ * what the first attempt issued. Deriving the successor from the parent with a
+ * server-held key makes rotation repeatable: the retry recomputes the same two
+ * values.
+ *
+ * The key never leaves the server, so holding the parent token (or the whole
+ * database) is not enough to compute its successor; the values are as
+ * unguessable as random ones. Returns null when no key is configured, in which
+ * case rotation falls back to random tokens and a retry cannot be answered.
+ */
+function successorTokens(parent: Pick<RefreshRow, 'id' | 'token_hash'>): TokenPair | null {
+  const key = process.env.OAUTH_ROTATION_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!key) return null;
+  const derive = (label: string) =>
+    createHmac('sha256', key).update(`${label}\0${parent.id}\0${parent.token_hash}`).digest('hex');
+  return {
+    access: CONNECTOR_TOKEN_PREFIX + derive('airchat-oauth-access-v1'),
+    refresh: REFRESH_TOKEN_PREFIX + derive('airchat-oauth-refresh-v1'),
+  };
+}
+
+/** A dependency failed. The client should retry; its grant is untouched. */
+function unavailable(what: string, detail: string): Response {
+  console.error(`[oauth] ${what} failed: ${detail}`);
+  const res = oauthError('temporarily_unavailable', 'The authorization server is temporarily unavailable', 503);
+  res.headers.set('Retry-After', '5');
+  return res;
 }
 
 /** Revoke every refresh token in a family and every access token they issued. */
@@ -284,10 +402,14 @@ async function revokeFamily(db: Db, familyId: string, now: Date): Promise<void> 
  * RFC 6749 §5.1 token response. Shared by both grants so the two can never
  * drift in what they store or return.
  */
-async function issueTokenPair(db: Db, grant: GrantContext): Promise<Response> {
-  const accessToken = CONNECTOR_TOKEN_PREFIX + randomToken(32);
+async function issueTokenPair(db: Db, grant: GrantContext, fixed?: TokenPair): Promise<Response> {
+  // A rotation passes the pair derived from its parent, and may be the second
+  // attempt at storing it: an insert that collides on the token hash then
+  // means "already issued", which is success, not failure.
+  const accessToken = fixed?.access ?? CONNECTOR_TOKEN_PREFIX + randomToken(32);
   const accessExpiresAt = new Date(Date.now() + ACCESS_TOKEN_TTL_DAYS * 86_400_000);
 
+  let accessId: string | null = null;
   const { data: accessRow, error: accessError } = await db
     .from('connector_tokens')
     .insert({
@@ -302,13 +424,23 @@ async function issueTokenPair(db: Db, grant: GrantContext): Promise<Response> {
     })
     .select('id')
     .single();
+  accessId = accessRow?.id ?? null;
 
-  if (accessError || !accessRow) {
+  if (!accessId && fixed) {
+    const { data: existing } = await db
+      .from('connector_tokens')
+      .select('id, revoked_at')
+      .eq('token_hash', sha256(accessToken))
+      .maybeSingle();
+    if (existing && !existing.revoked_at) accessId = existing.id;
+  }
+
+  if (!accessId) {
     console.error('[oauth] could not issue access token:', accessError?.message ?? 'no row returned');
     return oauthError('server_error', 'Could not issue access token', 500);
   }
 
-  const refreshToken = REFRESH_TOKEN_PREFIX + randomToken(32);
+  const refreshToken = fixed?.refresh ?? REFRESH_TOKEN_PREFIX + randomToken(32);
   const refreshExpiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_DAYS * 86_400_000);
 
   const { error: refreshError } = await db.from('oauth_refresh_tokens').insert({
@@ -319,16 +451,29 @@ async function issueTokenPair(db: Db, grant: GrantContext): Promise<Response> {
     user_id: grant.userId,
     scope: grant.scope,
     audience: grant.audience,
-    access_token_id: accessRow.id,
+    access_token_id: accessId,
     expires_at: refreshExpiresAt.toISOString(),
   });
 
-  if (refreshError) {
+  let refreshStored = !refreshError;
+  if (refreshError && fixed) {
+    const { data: existing } = await db
+      .from('oauth_refresh_tokens')
+      .select('consumed_at, revoked_at')
+      .eq('token_hash', sha256(refreshToken))
+      .maybeSingle();
+    refreshStored = !!existing && !existing.consumed_at && !existing.revoked_at;
+  }
+
+  if (!refreshStored) {
     // Do not hand out an access token whose refresh half failed to store: the
     // client would believe it holds a renewable grant and discover otherwise
     // in 30 days, which is the silent failure this endpoint exists to end.
-    await db.from('connector_tokens').update({ revoked_at: new Date().toISOString() }).eq('id', accessRow.id);
-    console.error('[oauth] could not issue refresh token:', refreshError.message);
+    // (A rotation leaves its access token alone: a retry will reuse it.)
+    if (!fixed) {
+      await db.from('connector_tokens').update({ revoked_at: new Date().toISOString() }).eq('id', accessId);
+    }
+    console.error('[oauth] could not issue refresh token:', refreshError?.message ?? 'successor not live');
     return oauthError('server_error', 'Could not issue refresh token', 500);
   }
 

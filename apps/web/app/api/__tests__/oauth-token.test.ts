@@ -46,7 +46,12 @@ const state = {
   updates: [] as { table: string; patch: Row; filters: [string, string, unknown][] }[],
   /** Called once after the next refresh-token lookup; simulates a concurrent writer. */
   afterRefreshLookup: null as (() => void) | null,
+  /** Make the next matching query fail, as a database outage would. */
+  failNext: null as { table: string; mode: 'select' | 'update' | 'insert' } | null,
 };
+
+/** Rotated-away long enough ago that presenting it again is reuse, not a retry. */
+const longAgo = () => new Date(Date.now() - 10 * 60_000).toISOString();
 
 function tableFor(name: string): Row[] {
   if (name === 'oauth_authorization_codes') return state.codes;
@@ -70,6 +75,16 @@ function fakeFrom(table: string) {
   let mode: 'select' | 'update' | 'insert' = 'select';
   let patch: Row = {};
   let inserted: Row | null = null;
+  let insertError: { message: string; code?: string } | null = null;
+
+  /** Consume a pending injected failure if this query matches it. */
+  const injected = (): { message: string } | null => {
+    if (state.failNext && state.failNext.table === table && state.failNext.mode === mode) {
+      state.failNext = null;
+      return { message: 'connection reset' };
+    }
+    return insertError;
+  };
 
   const run = (): Row[] => {
     if (mode === 'insert') return inserted ? [inserted] : [];
@@ -98,6 +113,14 @@ function fakeFrom(table: string) {
     update(p: Row) { mode = 'update'; patch = p; return q; },
     insert(row: Row) {
       mode = 'insert';
+      if (state.failNext && state.failNext.table === table && state.failNext.mode === 'insert') {
+        return q; // injected() reports it; nothing is stored
+      }
+      // token_hash is UNIQUE on both token tables.
+      if (row.token_hash && rows.some((r) => r.token_hash === row.token_hash)) {
+        insertError = { message: 'duplicate key value violates unique constraint', code: '23505' };
+        return q;
+      }
       inserted = { id: `${table}-${state.nextId++}`, ...row };
       rows.push(inserted);
       return q;
@@ -105,9 +128,22 @@ function fakeFrom(table: string) {
     eq(col: string, val: unknown) { filters.push(['eq', col, val]); return q; },
     is(col: string, val: unknown) { filters.push(['is', col, val]); return q; },
     in(col: string, val: unknown[]) { filters.push(['in', col, val]); return q; },
-    async maybeSingle() { const r = run(); return { data: r[0] ?? null, error: null }; },
-    async single() { const r = run(); return r[0] ? { data: r[0], error: null } : { data: null, error: { message: 'no row' } }; },
-    then(resolve: (v: unknown) => void) { resolve({ data: run(), error: null }); },
+    async maybeSingle() {
+      const error = injected();
+      if (error) return { data: null, error };
+      const r = run();
+      return { data: r[0] ?? null, error: null };
+    },
+    async single() {
+      const error = injected();
+      if (error) return { data: null, error };
+      const r = run();
+      return r[0] ? { data: r[0], error: null } : { data: null, error: { message: 'no row' } };
+    },
+    then(resolve: (v: unknown) => void) {
+      const error = injected();
+      resolve(error ? { data: null, error } : { data: run(), error: null });
+    },
   };
   return q;
 }
@@ -164,6 +200,9 @@ const liveAccess = () => state.access.filter((r) => !r.revoked_at);
 
 beforeEach(() => {
   vi.stubEnv('AIRCHAT_PUBLIC_URL', 'https://mcp.airchat.work');
+  vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', 'test-service-role-key');
+  vi.stubEnv('OAUTH_ROTATION_SECRET', '');
+  state.failNext = null;
   state.codes = [{ ...CODE_ROW, code_hash: sha('the-code') }];
   state.access = [];
   state.refresh = [];
@@ -305,6 +344,7 @@ describe('refresh grant: reuse detection', () => {
   it('revokes the whole family and its access token when a consumed token is replayed', async () => {
     const first = await exchange();
     const second = await (await POST(refreshRequest(first.refresh_token))).json();
+    state.refresh[0].consumed_at = longAgo();
 
     const replay = await POST(refreshRequest(first.refresh_token));
     expect(replay.status).toBe(400);
@@ -328,27 +368,156 @@ describe('refresh grant: reuse detection', () => {
     const b = await (await POST(tokenRequest({ code: 'second-code' }))).json();
 
     await POST(refreshRequest(a.refresh_token)); // consume a
+    state.refresh[0].consumed_at = longAgo();
     await POST(refreshRequest(a.refresh_token)); // replay a -> revoke family a
+    expect(liveRefresh().every((r) => r.family_id !== state.refresh[0].family_id)).toBe(true);
 
     const stillFine = await POST(refreshRequest(b.refresh_token));
     expect(stillFine.status).toBe(200);
   });
 
-  it('treats a lost consume race as a refusal, not a replay', async () => {
-    // Both requests read the token as unconsumed; only one update wins. The
-    // loser must not revoke the family, or claude.ai's proactive + reactive
-    // refresh coinciding would log the user out.
+  it('revokes the family when the replayed token\'s successor has already been rotated', async () => {
+    // Inside the retry window, but the grant has moved on twice: this is not a
+    // retry of the last rotation.
+    const first = await exchange();
+    const second = await (await POST(refreshRequest(first.refresh_token))).json();
+    await POST(refreshRequest(second.refresh_token));
+
+    const replay = await POST(refreshRequest(first.refresh_token));
+    expect(replay.status).toBe(400);
+    expect((await replay.json()).error).toBe('invalid_grant');
+    expect(liveRefresh()).toHaveLength(0);
+    expect(liveAccess()).toHaveLength(0);
+  });
+});
+
+describe('refresh grant: a retry is not theft', () => {
+  // Rotation consumes the client's only refresh token before the response is
+  // delivered. If the response is lost, the client retries with the token it
+  // still has. Treating that as reuse revoked the grant and forced consent
+  // again — the silent expiry this endpoint exists to end.
+
+  it('answers a retry with the same pair the first attempt issued', async () => {
+    const first = await exchange();
+    const attempt = await (await POST(refreshRequest(first.refresh_token))).json();
+
+    const retry = await POST(refreshRequest(first.refresh_token));
+    expect(retry.status).toBe(200);
+    const again = await retry.json();
+
+    expect(again.access_token).toBe(attempt.access_token);
+    expect(again.refresh_token).toBe(attempt.refresh_token);
+    // Nothing extra was minted and nothing was revoked.
+    expect(state.refresh).toHaveLength(2);
+    expect(liveRefresh()).toHaveLength(1);
+    expect(liveAccess()).toHaveLength(1);
+  });
+
+  it('the pair from a retry keeps working', async () => {
+    const first = await exchange();
+    await POST(refreshRequest(first.refresh_token));
+    const again = await (await POST(refreshRequest(first.refresh_token))).json();
+
+    const next = await POST(refreshRequest(again.refresh_token));
+    expect(next.status).toBe(200);
+  });
+
+  it('gives the loser of a consume race the winner\'s pair', async () => {
+    // claude.ai refreshes proactively before expiry and reactively on a 401,
+    // and the two can coincide: both read the token as unconsumed, one update
+    // wins. Whichever response the client keeps must be a working pair.
     const first = await exchange();
     const row = state.refresh[0];
-    // The row is unconsumed when this request looks it up, and consumed by a
-    // concurrent request before the atomic update runs.
-    state.afterRefreshLookup = () => { row.consumed_at = 'raced'; };
-    const res = await POST(refreshRequest(first.refresh_token));
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe('invalid_grant');
-    // Refused, but nothing revoked: the winner's tokens keep working.
+    state.afterRefreshLookup = () => { row.consumed_at = new Date().toISOString(); };
+
+    const loser = await POST(refreshRequest(first.refresh_token));
+    expect(loser.status).toBe(200);
+    const winner = await (await POST(refreshRequest(first.refresh_token))).json();
+
+    expect((await loser.json()).refresh_token).toBe(winner.refresh_token);
     expect(row.revoked_at).toBeFalsy();
+    expect(liveRefresh()).toHaveLength(1);
     expect(liveAccess()).toHaveLength(1);
+  });
+
+  it('finishes the job when the first attempt died before storing the new pair', async () => {
+    const first = await exchange();
+    state.failNext = { table: 'oauth_refresh_tokens', mode: 'insert' };
+    const died = await POST(refreshRequest(first.refresh_token));
+    expect(died.status).toBe(500);
+
+    const retry = await POST(refreshRequest(first.refresh_token));
+    expect(retry.status).toBe(200);
+    const pair = await retry.json();
+    expect(liveRefresh()).toHaveLength(1);
+    expect((await POST(refreshRequest(pair.refresh_token))).status).toBe(200);
+  });
+
+  it('stops treating it as a retry once the window has passed', async () => {
+    const first = await exchange();
+    await POST(refreshRequest(first.refresh_token));
+    state.refresh[0].consumed_at = new Date(Date.now() - 61_000).toISOString();
+
+    const late = await POST(refreshRequest(first.refresh_token));
+    expect(late.status).toBe(400);
+    expect(liveRefresh()).toHaveLength(0);
+  });
+
+  it('a thief replaying inside the window is still caught at the next rotation', async () => {
+    const first = await exchange();
+    const client = await (await POST(refreshRequest(first.refresh_token))).json();
+    // The thief replays the stolen token inside the window and gets the same pair.
+    const thief = await (await POST(refreshRequest(first.refresh_token))).json();
+    expect(thief.refresh_token).toBe(client.refresh_token);
+
+    // The thief rotates it. Later the client presents the same, now consumed, token.
+    await POST(refreshRequest(thief.refresh_token));
+    state.refresh[1].consumed_at = longAgo();
+    const caught = await POST(refreshRequest(client.refresh_token));
+
+    expect(caught.status).toBe(400);
+    expect(liveRefresh()).toHaveLength(0);
+    expect(liveAccess()).toHaveLength(0);
+  });
+
+  it('rotated tokens are not derivable without the server key', async () => {
+    const first = await exchange();
+    const a = await (await POST(refreshRequest(first.refresh_token))).json();
+    expect(a.refresh_token).toMatch(/^acr_[0-9a-f]{64}$/);
+    expect(a.access_token).toMatch(/^acx_[0-9a-f]{64}$/);
+
+    // Same parent row, different key: a different successor.
+    const parent = state.refresh[0];
+    state.access = state.access.slice(0, 1);
+    state.refresh = [{ ...parent, consumed_at: null }];
+    state.access[0].revoked_at = null;
+    vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', 'a-different-key');
+    const b = await (await POST(refreshRequest(first.refresh_token))).json();
+    expect(b.refresh_token).not.toBe(a.refresh_token);
+    expect(b.access_token).not.toBe(a.access_token);
+  });
+});
+
+describe('refresh grant: a database failure is not an invalid token', () => {
+  // invalid_grant tells the client to discard the grant. Answering it for an
+  // outage would throw away a good grant during a blip.
+
+  it.each([
+    ['looking the token up', { table: 'oauth_refresh_tokens', mode: 'select' as const }],
+    ['checking the access token', { table: 'connector_tokens', mode: 'select' as const }],
+    ['consuming the token', { table: 'oauth_refresh_tokens', mode: 'update' as const }],
+  ])('answers 503, not invalid_grant, when %s fails', async (_what, failure) => {
+    const first = await exchange();
+    state.failNext = failure;
+
+    const res = await POST(refreshRequest(first.refresh_token));
+    expect(res.status).toBe(503);
+    expect((await res.json()).error).toBe('temporarily_unavailable');
+    expect(res.headers.get('retry-after')).toBeTruthy();
+
+    // The grant is intact: the same token works once the database is back.
+    expect(state.refresh.every((r) => !r.revoked_at)).toBe(true);
+    expect((await POST(refreshRequest(first.refresh_token))).status).toBe(200);
   });
 });
 
