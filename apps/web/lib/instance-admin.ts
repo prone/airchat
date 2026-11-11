@@ -1,8 +1,10 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import type { AgentContext } from '@airchat/shared';
 import { authenticateAgent, isDashboardAdmin } from '@/lib/api-v2-auth';
 import { createSupabaseServer } from '@/lib/supabase-server';
+import { checkIpRateLimit } from '@/lib/rate-limit';
+import { clientIp } from '@/lib/client-ip';
 
 /**
  * Operator-level authorization for actions that change what this instance
@@ -24,11 +26,22 @@ import { createSupabaseServer } from '@/lib/supabase-server';
 export async function requireInstanceAdmin(request: NextRequest): Promise<NextResponse | null> {
   const provided = request.headers.get('x-admin-secret');
   if (provided) {
+    // The secret also registers machines, and this check runs before any
+    // other authentication — so guesses are throttled per address.
+    const limited = checkIpRateLimit(clientIp(request));
+    if (!limited.allowed) {
+      return NextResponse.json(
+        { error: 'Too many requests' },
+        { status: 429, headers: { 'Retry-After': String(Math.ceil((limited.retryAfterMs ?? 60_000) / 1000)) } },
+      );
+    }
     const secret = process.env.ADMIN_REGISTRATION_SECRET;
     if (secret) {
-      const a = Buffer.from(secret);
-      const b = Buffer.from(provided);
-      if (a.length === b.length && timingSafeEqual(a, b)) return null;
+      // Hash both sides so the comparison takes the same time whatever the
+      // length of the guess.
+      const a = createHash('sha256').update(secret).digest();
+      const b = createHash('sha256').update(provided).digest();
+      if (timingSafeEqual(a, b)) return null;
     }
     return NextResponse.json({ error: 'Invalid admin secret' }, { status: 403 });
   }

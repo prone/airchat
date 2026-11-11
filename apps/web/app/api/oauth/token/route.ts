@@ -193,7 +193,13 @@ async function handleRefreshToken(request: NextRequest, form: FormData): Promise
   if (token.client_id !== clientId) {
     return oauthError('invalid_grant', 'Refresh token was not issued to this client');
   }
-  if (token.revoked_at) return oauthError('invalid_grant', 'Refresh token revoked');
+  if (token.revoked_at) {
+    // Idempotent: if an earlier revocation got as far as the refresh tokens
+    // but failed before the access tokens, this finishes it.
+    const failed = await revokeFamily(db, token.family_id, now);
+    if (failed) return unavailable('grant revocation', failed);
+    return oauthError('invalid_grant', 'Refresh token revoked');
+  }
   if (token.consumed_at) return handleConsumedToken(db, token, now);
   if (new Date(token.expires_at) < now) return oauthError('invalid_grant', 'Refresh token expired');
 
@@ -209,7 +215,22 @@ async function handleRefreshToken(request: NextRequest, form: FormData): Promise
     // extend it. The client retries.
     if (accessError) return unavailable('access token revocation check', accessError.message);
     if (access?.revoked_at) {
-      await revokeFamily(db, token.family_id, now);
+      // Rotation itself retires the old access token. So a revoked access
+      // token can also mean a concurrent refresh of this same token got there
+      // first, between our read above and this check. Re-read before treating
+      // it as a deliberate revocation: revoking the family here would destroy
+      // the pair that other request just issued to the same client.
+      const { data: fresh, error: freshError } = await db
+        .from('oauth_refresh_tokens')
+        .select('consumed_at, revoked_at')
+        .eq('id', token.id)
+        .maybeSingle();
+      if (freshError) return unavailable('refresh token re-read', freshError.message);
+      if (fresh?.consumed_at && !fresh.revoked_at) {
+        return handleConsumedToken(db, { ...token, consumed_at: fresh.consumed_at }, now);
+      }
+      const failed = await revokeFamily(db, token.family_id, now);
+      if (failed) return unavailable('grant revocation', failed);
       return oauthError('invalid_grant', 'Grant revoked');
     }
   }
@@ -261,11 +282,10 @@ const ROTATION_RETRY_WINDOW_MS = 60_000;
 async function handleConsumedToken(db: Db, token: RefreshRow, now: Date): Promise<Response> {
   const consumedAt = new Date(token.consumed_at as string).getTime();
   const withinWindow = now.getTime() - consumedAt <= ROTATION_RETRY_WINDOW_MS;
-  const successor = withinWindow ? successorTokens(token) : null;
+  const successor = successorTokens(token);
 
   if (!successor) {
-    await revokeFamily(db, token.family_id, now);
-    return oauthError('invalid_grant', 'Refresh token reuse detected; the grant has been revoked');
+    return reuseDetected(db, token, now);
   }
 
   const { data: next, error } = await db
@@ -275,16 +295,50 @@ async function handleConsumedToken(db: Db, token: RefreshRow, now: Date): Promis
     .maybeSingle();
   if (error) return unavailable('successor lookup', error.message);
 
-  // The successor has itself moved on (rotated or revoked). Then this is not a
-  // retry of the last rotation; it is an old token being replayed.
-  if (next && (next.consumed_at || next.revoked_at)) {
-    await revokeFamily(db, token.family_id, now);
-    return oauthError('invalid_grant', 'Refresh token reuse detected; the grant has been revoked');
+  // The rotation never finished: this token was consumed, but its successor
+  // was never stored (the database failed in between, as it did for hours at a
+  // time in September 2026). Nobody holds anything newer than this token, so
+  // presenting it again is not reuse of a superseded credential — at any
+  // distance from the first attempt. Finish the job. Without this, an outage
+  // longer than the retry window turned every in-flight refresh into a revoked
+  // grant once the database came back.
+  if (!next) return rotate(db, token, now);
+
+  // A successor exists. Outside the window that is the reuse signal. Inside
+  // it, the successor must still be untouched: if it has itself been rotated
+  // or revoked, this is an old token being replayed, not a retry.
+  if (!withinWindow || next.consumed_at || next.revoked_at) {
+    return reuseDetected(db, token, now);
   }
 
-  // Either the successor exists and is live (hand the same pair back), or the
-  // first attempt died before storing it (finish the job). rotate() does both.
+  // A live successor is about to be handed out a second time. That is allowed
+  // ONCE per token: a lost response or two overlapping refreshes produce one
+  // extra presentation, not several. Without the limit, anyone holding a copy
+  // of the token could keep collecting the current pair for as long as they
+  // replayed inside the window. The claim is atomic, so of several replays
+  // arriving together exactly one is served.
+  const { data: claimed, error: claimError } = await db
+    .from('oauth_refresh_tokens')
+    .update({ retry_served_at: now.toISOString() })
+    .eq('id', token.id)
+    .is('retry_served_at', null)
+    .select('id')
+    .maybeSingle();
+  if (claimError) return unavailable('retry claim', claimError.message);
+  if (!claimed) return reuseDetected(db, token, now);
+
+  // Logged because a retry on every rotation of one grant is what a second
+  // holder of the token would look like.
+  console.warn(`[oauth] refresh retry inside the rotation window (family ${token.family_id})`);
   return rotate(db, token, now);
+}
+
+/** A superseded refresh token was presented: end the grant. */
+async function reuseDetected(db: Db, token: RefreshRow, now: Date): Promise<Response> {
+  const failed = await revokeFamily(db, token.family_id, now);
+  // Not revoked means not safe to say so; the client retries and we try again.
+  if (failed) return unavailable('grant revocation', failed);
+  return oauthError('invalid_grant', 'Refresh token reuse detected; the grant has been revoked');
 }
 
 /** Retire the access token a refresh token was issued with, and issue its successor pair. */
@@ -300,7 +354,7 @@ async function rotate(db: Db, token: RefreshRow, now: Date): Promise<Response> {
     if (error) return unavailable('previous access token retirement', error.message);
   }
 
-  return issueTokenPair(
+  const issued = await issueTokenPair(
     db,
     {
       agentId: token.agent_id,
@@ -314,6 +368,24 @@ async function rotate(db: Db, token: RefreshRow, now: Date): Promise<Response> {
     },
     successorTokens(token) ?? undefined,
   );
+  if (!issued.ok) return issued;
+
+  // The family may have been revoked while this pair was being written (reuse
+  // detected on a parallel request, or a revocation that read the family just
+  // before our insert). A pair issued into a revoked family must not survive.
+  const { data: revokedMember, error: checkError } = await db
+    .from('oauth_refresh_tokens')
+    .select('id')
+    .eq('family_id', token.family_id)
+    .not('revoked_at', 'is', null)
+    .limit(1);
+  if (checkError) return unavailable('family revocation check', checkError.message);
+  if (revokedMember && revokedMember.length > 0) {
+    const failed = await revokeFamily(db, token.family_id, now);
+    if (failed) return unavailable('grant revocation', failed);
+    return oauthError('invalid_grant', 'Grant revoked');
+  }
+  return issued;
 }
 
 /** The columns of an oauth_refresh_tokens row this file relies on. */
@@ -330,6 +402,7 @@ interface RefreshRow {
   expires_at: string;
   consumed_at: string | null;
   revoked_at: string | null;
+  retry_served_at?: string | null;
 }
 
 interface TokenPair {
@@ -369,30 +442,43 @@ function unavailable(what: string, detail: string): Response {
   return res;
 }
 
-/** Revoke every refresh token in a family and every access token they issued. */
-async function revokeFamily(db: Db, familyId: string, now: Date): Promise<void> {
+/**
+ * Revoke every refresh token in a family and every access token they issued.
+ *
+ * Returns null on success, or a description of what failed. A failure must
+ * not be reported to the client as a completed revocation: the grant would
+ * still be live. Safe to repeat — each step only touches rows not yet revoked,
+ * and the members are read AFTER the refresh tokens are revoked, so a member
+ * added in between is still found.
+ */
+async function revokeFamily(db: Db, familyId: string, now: Date): Promise<string | null> {
   const stamp = now.toISOString();
-  const { data: members } = await db
-    .from('oauth_refresh_tokens')
-    .select('access_token_id')
-    .eq('family_id', familyId);
 
-  await db
+  const { error: refreshError } = await db
     .from('oauth_refresh_tokens')
     .update({ revoked_at: stamp })
     .eq('family_id', familyId)
     .is('revoked_at', null);
+  if (refreshError) return `refresh tokens: ${refreshError.message}`;
+
+  const { data: members, error: membersError } = await db
+    .from('oauth_refresh_tokens')
+    .select('access_token_id')
+    .eq('family_id', familyId);
+  if (membersError) return `family members: ${membersError.message}`;
 
   const accessIds = (members ?? [])
     .map((m: { access_token_id: string | null }) => m.access_token_id)
     .filter((id): id is string => typeof id === 'string');
   if (accessIds.length > 0) {
-    await db
+    const { error: accessError } = await db
       .from('connector_tokens')
       .update({ revoked_at: stamp })
       .in('id', accessIds)
       .is('revoked_at', null);
+    if (accessError) return `access tokens: ${accessError.message}`;
   }
+  return null;
 }
 
 // ── issuance ────────────────────────────────────────────────────────────────
@@ -436,6 +522,9 @@ async function issueTokenPair(db: Db, grant: GrantContext, fixed?: TokenPair): P
   }
 
   if (!accessId) {
+    // On a rotation the refresh token is already consumed, and a retry will
+    // finish the job (handleConsumedToken) — so tell the client to retry.
+    if (fixed) return unavailable('successor access token issue', accessError?.message ?? 'no row returned');
     console.error('[oauth] could not issue access token:', accessError?.message ?? 'no row returned');
     return oauthError('server_error', 'Could not issue access token', 500);
   }
@@ -473,7 +562,8 @@ async function issueTokenPair(db: Db, grant: GrantContext, fixed?: TokenPair): P
     if (!fixed) {
       await db.from('connector_tokens').update({ revoked_at: new Date().toISOString() }).eq('id', accessId);
     }
-    console.error('[oauth] could not issue refresh token:', refreshError?.message ?? 'successor not live');
+    if (fixed) return unavailable('successor refresh token issue', refreshError?.message ?? 'successor not live');
+    console.error('[oauth] could not issue refresh token:', refreshError?.message ?? 'no row stored');
     return oauthError('server_error', 'Could not issue refresh token', 500);
   }
 

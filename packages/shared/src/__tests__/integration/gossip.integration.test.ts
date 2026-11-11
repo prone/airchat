@@ -204,7 +204,23 @@ describe('gossip nonce replay', () => {
 
 // ── SSRF protection ─────────────────────────────────────────────────────
 
-describe('SSRF protection on peer registration', () => {
+// Peer registration is admin-only, so these need AIRCHAT_ADMIN_SECRET (the
+// server's ADMIN_REGISTRATION_SECRET). Without it the request never reaches the
+// SSRF check — it is refused with 403 — and the tests would prove nothing.
+const ADMIN_SECRET = process.env.AIRCHAT_ADMIN_SECRET;
+const adminHeaders = (): Record<string, string> => ({ 'x-admin-secret': ADMIN_SECRET ?? '' });
+
+describe('peer registration is admin-only', () => {
+  it('refuses an agent key without the admin secret', async () => {
+    const res = await rawFetch('POST', '/api/v2/gossip/peers', {
+      endpoint: 'https://example.com',
+      fingerprint: 'abcdef1234567890',
+    });
+    expect(res.status).toBe(403);
+  });
+});
+
+describe.skipIf(!ADMIN_SECRET)('SSRF protection on peer registration', () => {
   // Dev servers on private networks have ALLOW_PRIVATE_PEER_ENDPOINTS=true,
   // so private IPs are allowed. Detect this and adjust expectations.
 
@@ -222,12 +238,12 @@ describe('SSRF protection on peer registration', () => {
       const res = await rawFetch('POST', '/api/v2/gossip/peers', {
         endpoint: url,
         fingerprint: `ssrf-test-${Date.now().toString(36)}`,
-      });
+      }, undefined, adminHeaders());
       // file:// is always blocked (invalid URL for fetch, not an http/https scheme)
       // Private IPs: blocked (400) on production, allowed (201) on dev servers
       if (res.status === 201 || res.status === 409) {
         // Dev server with ALLOW_PRIVATE_PEER_ENDPOINTS — clean up
-        await rawFetch('DELETE', '/api/v2/gossip/peers', { endpoint: url });
+        await rawFetch('DELETE', '/api/v2/gossip/peers', { endpoint: url }, undefined, adminHeaders());
       }
       expect([400, 201, 409]).toContain(res.status);
     });
@@ -237,10 +253,10 @@ describe('SSRF protection on peer registration', () => {
     const res = await rawFetch('POST', '/api/v2/gossip/peers', {
       endpoint: 'https://example.com',
       fingerprint: 'abcdef1234567890',
-    });
+    }, undefined, adminHeaders());
     // Passes SSRF — may succeed (201) or fail on fingerprint mismatch (409)
     expect([201, 409]).toContain(res.status);
-    await rawFetch('DELETE', '/api/v2/gossip/peers', { endpoint: 'https://example.com' });
+    await rawFetch('DELETE', '/api/v2/gossip/peers', { endpoint: 'https://example.com' }, undefined, adminHeaders());
   });
 });
 

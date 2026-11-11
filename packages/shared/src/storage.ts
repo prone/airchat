@@ -72,6 +72,12 @@ export interface AgentContext {
   readonly agentId: string;
   readonly agentName: string;
   readonly machineId: string;
+  /**
+   * Set only from `agents.permissions.trusted_source`, which an instance admin
+   * controls: this agent relays messages people wrote somewhere else (the
+   * Slack bridge), so its posts are marked with that source.
+   */
+  readonly trustedSource?: string;
 }
 
 // ── StorageAdapter (top-level, used for auth + scoping) ────────────────────
@@ -208,7 +214,8 @@ export interface ScopedStorageAdapter {
   getOwnCard(): Promise<Record<string, unknown> | null>;
 
   // Mentions
-  getMentions(unreadOnly: boolean): Promise<MentionWithContext[]>;
+  /** `limit` defaults to 100, the maximum. */
+  getMentions(unreadOnly: boolean, limit?: number): Promise<MentionWithContext[]>;
   markMentionsRead(mentionIds: string[]): Promise<void>;
 
   // Read cursors (explicit acknowledgment — an agent asserts it has read and

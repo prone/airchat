@@ -26,12 +26,17 @@ const UNIQUE_TAG = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}
 
 let client: AirChatRestClient;
 
+// Instance admin secret (the server's ADMIN_REGISTRATION_SECRET). Optional:
+// tests that need to get past the admin gate are skipped without it.
+const ADMIN_SECRET = process.env.AIRCHAT_ADMIN_SECRET;
+
 // Helper: raw fetch with the agent's derived key
 async function rawFetch(
   method: string,
   pathname: string,
   body?: unknown,
   params?: URLSearchParams,
+  extraHeaders?: Record<string, string>,
 ): Promise<Response> {
   const keyPath = path.join(os.homedir(), '.airchat', 'agents', 'macbook-integration-test.key');
   const apiKey = fs.readFileSync(keyPath, 'utf-8').trim();
@@ -41,7 +46,7 @@ async function rawFetch(
   let url = `${webUrl}${pathname}`;
   if (params?.toString()) url += `?${params}`;
 
-  const headers: Record<string, string> = { 'x-agent-api-key': apiKey };
+  const headers: Record<string, string> = { 'x-agent-api-key': apiKey, ...extraHeaders };
   const init: RequestInit = { method, headers, signal: AbortSignal.timeout(15000) };
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
@@ -86,6 +91,12 @@ describe('messages', () => {
     );
     expect(found).toBeDefined();
     expect(found.content).toBe(content);
+  });
+
+  it('returns each message id, so a reply can be threaded to it', async () => {
+    const result = (await client.readMessages(TEST_CHANNEL, 10)) as any;
+    const found = result.messages.find((m: any) => m.content === content);
+    expect(found.id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it('sends a message with metadata', async () => {
@@ -255,6 +266,23 @@ describe('direct messages', () => {
   });
 });
 
+// ── The legacy v1 API is retired ──────────────────────────────────────────
+//
+// /api/v1 accepted the same agent key but read through row-level security
+// rather than the v2 filters, which let any agent read every direct message.
+
+describe('legacy v1 API is retired', () => {
+  const v1 = (method: string, pathname: string, body?: unknown) =>
+    rawFetch(method, pathname, body, undefined, { 'x-agent-name': 'macbook-integration-test' });
+
+  it('no longer serves direct messages, or anything else', async () => {
+    expect((await v1('GET', '/api/v1/messages?channel=direct-messages&limit=50')).status).toBe(410);
+    expect((await v1('GET', '/api/v1/search?q=the')).status).toBe(410);
+    expect((await v1('GET', '/api/v1/board')).status).toBe(410);
+    expect((await v1('POST', '/api/v1/messages', { channel: TEST_CHANNEL, content: 'x' })).status).toBe(410);
+  });
+});
+
 // ── File upload and download ──────────────────────────────────────────────
 
 describe('file operations', () => {
@@ -340,6 +368,22 @@ describe('file operations', () => {
     expect(body.file.size).toBe(16);
   });
 
+  it('refuses file reads and uploads without credentials', async () => {
+    const configText = fs.readFileSync(path.join(os.homedir(), '.airchat', 'config'), 'utf-8');
+    const webUrl = configText.match(/AIRCHAT_WEB_URL=(.+)/)?.[1]?.trim() ?? '';
+    const read = await fetch(`${webUrl}/api/files?path=${encodeURIComponent(`${TEST_CHANNEL}/x.txt`)}`, {
+      signal: AbortSignal.timeout(15000),
+    });
+    expect(read.status).toBe(401);
+    const write = await fetch(`${webUrl}/api/files`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: 'x.txt', content: 'x', channel: TEST_CHANNEL }),
+      signal: AbortSignal.timeout(15000),
+    });
+    expect(write.status).toBe(401);
+  });
+
   it('rejects path traversal in download', async () => {
     const res = await rawFetch(
       'GET',
@@ -399,18 +443,52 @@ describe('gossip', () => {
     expect(result.peers).toBeInstanceOf(Array);
   });
 
-  it('rejects invalid gossip action', async () => {
+  // Gossip administration (enable/disable, peers, quarantine) changes what the
+  // whole instance trusts, so an ordinary agent key is not enough: it needs the
+  // instance admin secret or a dashboard admin session.
+  it('refuses gossip actions from an agent key alone', async () => {
     const res = await rawFetch('POST', '/api/v2/gossip', { action: 'explode' });
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses adding a peer from an agent key alone', async () => {
+    const res = await rawFetch('POST', '/api/v2/gossip/peers', {
+      endpoint: 'https://fake-peer.example.com',
+      fingerprint: 'abcdef1234567890',
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses the quarantine list from an agent key alone', async () => {
+    const res = await rawFetch('GET', '/api/v2/gossip/quarantine');
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses a wrong admin secret', async () => {
+    const res = await rawFetch('POST', '/api/v2/gossip', { action: 'explode' }, undefined, {
+      'x-admin-secret': 'not-the-secret',
+    });
+    expect(res.status).toBe(403);
+  });
+
+  // With the real secret the request gets past the gate and is judged on its
+  // content. Needs AIRCHAT_ADMIN_SECRET in the environment.
+  it.skipIf(!ADMIN_SECRET)('with the admin secret, rejects an invalid gossip action', async () => {
+    const res = await rawFetch('POST', '/api/v2/gossip', { action: 'explode' }, undefined, {
+      'x-admin-secret': ADMIN_SECRET!,
+    });
     expect(res.status).toBe(400);
   });
 
-  it('rejects adding peer with invalid fingerprint', async () => {
-    const res = await rawFetch('POST', '/api/v2/gossip/peers', {
-      endpoint: 'https://fake-peer.example.com',
-      fingerprint: 'abc', // too short, must be >= 8 hex chars
-    });
-    // Should fail validation or connectivity check
-    expect(res.status).toBeGreaterThanOrEqual(400);
+  it.skipIf(!ADMIN_SECRET)('with the admin secret, rejects a peer with an invalid fingerprint', async () => {
+    const res = await rawFetch(
+      'POST',
+      '/api/v2/gossip/peers',
+      { endpoint: 'https://fake-peer.example.com', fingerprint: 'abc' }, // too short
+      undefined,
+      { 'x-admin-secret': ADMIN_SECRET! },
+    );
+    expect(res.status).toBe(400);
   });
 });
 
@@ -563,6 +641,25 @@ describe('pagination', () => {
         new Date(before).getTime(),
       );
     }
+  });
+
+  it('reads forward with after: only newer messages, oldest first', async () => {
+    const first = (await client.sendMessage(TEST_CHANNEL, `After-anchor [${UNIQUE_TAG}]`)) as any;
+    const second = (await client.sendMessage(TEST_CHANNEL, `After-one [${UNIQUE_TAG}]`)) as any;
+    const third = (await client.sendMessage(TEST_CHANNEL, `After-two [${UNIQUE_TAG}]`)) as any;
+    const anchor = first.message.created_at;
+
+    const result = (await client.readMessages(TEST_CHANNEL, 50, undefined, anchor)) as any;
+    const ids = result.messages.map((m: any) => m.id);
+
+    expect(ids).not.toContain(first.message.id);
+    expect(ids).toContain(second.message.id);
+    expect(ids).toContain(third.message.id);
+    for (const msg of result.messages) {
+      expect(new Date(msg.created_at).getTime()).toBeGreaterThan(new Date(anchor).getTime());
+    }
+    // Forward reads run oldest → newest, so a caller can resume from the last row.
+    expect(ids.indexOf(second.message.id)).toBeLessThan(ids.indexOf(third.message.id));
   });
 
   it('caps limit at 200', async () => {

@@ -39,7 +39,9 @@ export async function GET(request: NextRequest) {
       : [];
 
     const [allMentions, openMatching, mineClaimed, myCreatedDone] = await Promise.all([
-      scoped.getMentions(true),
+      // Only 20 are returned below; each row carries the full message content,
+      // and this route is polled by every agent.
+      scoped.getMentions(true, 20),
       scoped.listTasks({ status: 'open', matchingCapabilities: capabilities, limit: 50 }),
       scoped.listTasks({ status: 'claimed', mine: 'claimed', limit: 50 }),
       scoped.listTasks({ status: 'done', mine: 'created', limit: 50 }),

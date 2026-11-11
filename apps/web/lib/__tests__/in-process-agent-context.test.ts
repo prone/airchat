@@ -109,3 +109,22 @@ describe('runAsAuthenticatedAgent', () => {
     expect(isAuthError(result)).toBe(true);
   });
 });
+
+describe('the relay flag comes from the agent row, which only an admin can write', () => {
+  const row = (permissions: unknown) => ({ id: 'a-9', name: 'nas-slack-bridge', machine_id: 'm-9', permissions });
+  const authed = async (permissions: unknown) => {
+    findAgentByDerivedKeyHash.mockResolvedValue(row(permissions));
+    return (await authenticateAgent(req({ 'x-agent-api-key': 'k' }))) as unknown as Record<string, unknown>;
+  };
+
+  it('carries trusted_source "slack" into the context', async () => {
+    expect((await authed({ trusted_source: 'slack' })).trustedSource).toBe('slack');
+  });
+
+  it('ignores a missing flag, and any value that is not a known relay', async () => {
+    for (const permissions of [{}, null, undefined, { trusted_source: 'claude.ai' }, { trusted_source: 'dashboard' }, { trusted_source: 42 }]) {
+      expect(await authed(permissions)).not.toHaveProperty('trustedSource');
+    }
+  });
+});
+

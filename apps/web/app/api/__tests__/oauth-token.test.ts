@@ -65,6 +65,7 @@ function applyFilters(rows: Row[], filters: [string, string, unknown][]): Row[] 
     if (op === 'eq') return r[col] === val;
     if (op === 'is') return r[col] === val || (val === null && r[col] === undefined);
     if (op === 'in') return (val as unknown[]).includes(r[col]);
+    if (op === 'notnull') return r[col] !== null && r[col] !== undefined;
     return false;
   }));
 }
@@ -128,6 +129,8 @@ function fakeFrom(table: string) {
     eq(col: string, val: unknown) { filters.push(['eq', col, val]); return q; },
     is(col: string, val: unknown) { filters.push(['is', col, val]); return q; },
     in(col: string, val: unknown[]) { filters.push(['in', col, val]); return q; },
+    not(col: string, _op: string, _val: unknown) { filters.push(['notnull', col, null]); return q; },
+    limit() { return q; },
     async maybeSingle() {
       const error = injected();
       if (error) return { data: null, error };
@@ -444,13 +447,51 @@ describe('refresh grant: a retry is not theft', () => {
     const first = await exchange();
     state.failNext = { table: 'oauth_refresh_tokens', mode: 'insert' };
     const died = await POST(refreshRequest(first.refresh_token));
-    expect(died.status).toBe(500);
+    // Retryable, not a server_error: the retry below is what finishes the job.
+    expect(died.status).toBe(503);
+    expect(died.headers.get('Retry-After')).toBeTruthy();
 
     const retry = await POST(refreshRequest(first.refresh_token));
     expect(retry.status).toBe(200);
     const pair = await retry.json();
     expect(liveRefresh()).toHaveLength(1);
     expect((await POST(refreshRequest(pair.refresh_token))).status).toBe(200);
+  });
+
+  it('finishes the job even after the window, when the successor was never stored', async () => {
+    // An outage longer than the retry window: the token was consumed, then the
+    // database failed before the new pair was written. Nobody holds a newer
+    // token, so the late retry is not reuse and must not revoke the grant.
+    const first = await exchange();
+    state.failNext = { table: 'oauth_refresh_tokens', mode: 'insert' };
+    await POST(refreshRequest(first.refresh_token));
+    state.refresh[0].consumed_at = new Date(Date.now() - 3_600_000).toISOString();
+
+    const late = await POST(refreshRequest(first.refresh_token));
+    expect(late.status).toBe(200);
+    const pair = await late.json();
+    expect(state.refresh[0].revoked_at).toBeFalsy();
+    expect(liveRefresh()).toHaveLength(1);
+    expect(liveAccess()).toHaveLength(1);
+    expect((await POST(refreshRequest(pair.refresh_token))).status).toBe(200);
+  });
+
+  it('does not revoke the grant when a concurrent refresh retired the access token first', async () => {
+    // Request B reads the token as unconsumed. Request A then consumes it and,
+    // as rotation always does, retires the old access token. B must not read
+    // that retired access token as "revoked from the dashboard".
+    const first = await exchange();
+    const winner = await (await POST(refreshRequest(first.refresh_token))).json();
+    const row = state.refresh[0];
+    const consumedAt = row.consumed_at;
+    row.consumed_at = null; // B's stale read...
+    state.afterRefreshLookup = () => { row.consumed_at = consumedAt; }; // ...then A lands
+
+    const loser = await POST(refreshRequest(first.refresh_token));
+    expect(loser.status).toBe(200);
+    expect((await loser.json()).refresh_token).toBe(winner.refresh_token);
+    expect(liveRefresh()).toHaveLength(1);
+    expect(liveAccess()).toHaveLength(1);
   });
 
   it('stops treating it as a retry once the window has passed', async () => {
@@ -461,6 +502,29 @@ describe('refresh grant: a retry is not theft', () => {
     const late = await POST(refreshRequest(first.refresh_token));
     expect(late.status).toBe(400);
     expect(liveRefresh()).toHaveLength(0);
+  });
+
+  it('serves a retry only once per token', async () => {
+    // One lost response or one overlap explains one extra presentation. A
+    // second replay of the same consumed token is someone collecting pairs.
+    const first = await exchange();
+    await POST(refreshRequest(first.refresh_token));
+    expect((await POST(refreshRequest(first.refresh_token))).status).toBe(200);
+
+    const third = await POST(refreshRequest(first.refresh_token));
+    expect(third.status).toBe(400);
+    expect((await third.json()).error).toBe('invalid_grant');
+    expect(liveRefresh()).toHaveLength(0);
+    expect(liveAccess()).toHaveLength(0);
+  });
+
+  it('finishing an interrupted rotation does not use up the one retry', async () => {
+    const first = await exchange();
+    state.failNext = { table: 'oauth_refresh_tokens', mode: 'insert' };
+    await POST(refreshRequest(first.refresh_token)); // died before storing
+    expect((await POST(refreshRequest(first.refresh_token))).status).toBe(200); // finishes the job
+    expect((await POST(refreshRequest(first.refresh_token))).status).toBe(200); // the one retry
+    expect(liveRefresh()).toHaveLength(1);
   });
 
   it('a thief replaying inside the window is still caught at the next rotation', async () => {
@@ -565,6 +629,45 @@ describe('refresh grant: stale or foreign tokens', () => {
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe('invalid_grant');
     expect(state.refresh[0].revoked_at).toBeTruthy();
+    expect(liveAccess()).toHaveLength(0);
+  });
+
+  it('does not claim the grant is revoked when the revocation failed', async () => {
+    const first = await exchange();
+    state.access[0].revoked_at = new Date().toISOString();
+    state.failNext = { table: 'oauth_refresh_tokens', mode: 'update' };
+    const res = await POST(refreshRequest(first.refresh_token));
+    expect(res.status).toBe(503);
+    // The retry completes it.
+    const retry = await POST(refreshRequest(first.refresh_token));
+    expect((await retry.json()).error).toBe('invalid_grant');
+    expect(liveRefresh()).toHaveLength(0);
+  });
+
+  it('finishes a half-done revocation when a revoked token is presented again', async () => {
+    // Refresh tokens revoked, but the step that revokes the access tokens failed.
+    const first = await exchange();
+    state.refresh[0].revoked_at = new Date().toISOString();
+    expect(liveAccess()).toHaveLength(1);
+    const res = await POST(refreshRequest(first.refresh_token));
+    expect((await res.json()).error).toBe('invalid_grant');
+    expect(liveAccess()).toHaveLength(0);
+  });
+
+  it('does not let a pair survive in a family revoked while it was being issued', async () => {
+    const first = await exchange();
+    const second = await (await POST(refreshRequest(first.refresh_token))).json();
+    // Reuse of the first token is detected on a parallel request just as the
+    // second token rotates: its family is revoked mid-rotation.
+    const realInsert = state.refresh.push.bind(state.refresh);
+    state.refresh.push = (...rows: Row[]) => {
+      state.refresh[0].revoked_at = new Date().toISOString();
+      state.refresh.push = realInsert;
+      return realInsert(...rows);
+    };
+    const res = await POST(refreshRequest(second.refresh_token));
+    expect(res.status).toBe(400);
+    expect(liveRefresh()).toHaveLength(0);
     expect(liveAccess()).toHaveLength(0);
   });
 

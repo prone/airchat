@@ -597,7 +597,30 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     if (error) throw new Error(`Failed to read messages: ${error.message}`);
 
     const rows = data as unknown as Message[];
-    return forward ? rows : rows.reverse();
+    if (!forward) return rows.reverse();
+
+    // A forward reader resumes from the last row's timestamp ("after" is
+    // strictly greater-than). If the page ended in the middle of a group of
+    // messages that share one timestamp — a batch written in one transaction —
+    // the rest of the group would be skipped for good. So a full page is
+    // completed with every other message at its final timestamp; the page may
+    // run a few rows over `limit`, and nothing is lost between pages.
+    if (rows.length === cap && rows.length > 0) {
+      const lastAt = rows[rows.length - 1].created_at;
+      const { data: tied, error: tiedError } = await this.client
+        .from('messages')
+        .select(MESSAGE_COLUMNS)
+        .eq('channel_id', channelId)
+        .eq('quarantined', false)
+        .eq('created_at', lastAt)
+        .limit(200);
+      if (tiedError) throw new Error(`Failed to read messages: ${tiedError.message}`);
+      const have = new Set(rows.map((r) => r.id));
+      for (const extra of (tied ?? []) as unknown as Message[]) {
+        if (!have.has(extra.id)) rows.push(extra);
+      }
+    }
+    return rows;
   }
 
   /**
@@ -670,11 +693,21 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     for (const m of [...(authored.data as unknown as Message[]), ...addressedRows]) {
       byId.set(m.id, m);
     }
-    const chronological = [...byId.values()].sort((a, b) =>
-      String(a.created_at ?? '').localeCompare(String(b.created_at ?? ''))
-    );
-    // Forward: the first `cap` after the point. Otherwise: the newest `cap`.
-    return forward ? chronological.slice(0, cap) : chronological.slice(-cap);
+    // Compare instants, not strings: "…:05+00:00" and "…:05.5+00:00" sort the
+    // wrong way round as text. The string breaks ties below a millisecond.
+    const chronological = [...byId.values()].sort((a, b) => {
+      const as = String(a.created_at ?? '');
+      const bs = String(b.created_at ?? '');
+      return (Date.parse(as) || 0) - (Date.parse(bs) || 0) || (as < bs ? -1 : as > bs ? 1 : 0);
+    });
+    // Forward: the first `cap` after the point — plus any further messages at
+    // the same timestamp as the last one, so a reader resuming from it skips
+    // nothing (see getMessages). Otherwise: the newest `cap`.
+    if (!forward) return chronological.slice(-cap);
+    let end = Math.min(cap, chronological.length);
+    while (end > 0 && end < chronological.length
+        && chronological[end].created_at === chronological[end - 1].created_at) end++;
+    return chronological.slice(0, end);
   }
 
   async sendMessage(
@@ -783,6 +816,9 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
 
     if (error) throw new Error(`Search failed: ${error.message}`);
 
+    // Deliberately filtered again here even when the function applied the DM
+    // rule: it costs one small query only when DM rows are present, and keeps
+    // private rows out if the function is ever replaced or rolled back.
     return this.filterDirectMessages(data as SearchResult[], (r) => ({
       id: r.id,
       authorId: r.author_agent_id,
@@ -790,7 +826,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     }));
   }
 
-  async getMentions(unreadOnly: boolean): Promise<MentionWithContext[]> {
+  async getMentions(unreadOnly: boolean, limit = 100): Promise<MentionWithContext[]> {
     // Direct query instead of check_mentions RPC (which uses get_agent_id())
     let query = this.client
       .from('mentions')
@@ -809,7 +845,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       // prompt hook prints it), so a quarantined message must not arrive by it.
       .eq('messages.quarantined', false)
       .order('created_at', { ascending: false })
-      .limit(100);
+      .limit(Math.max(1, Math.min(limit, 100)));
 
     if (unreadOnly) {
       query = query.eq('read', false);
@@ -932,7 +968,10 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
                 .from('mentions')
                 .select('id', { count: 'exact', head: true })
                 .eq('mentioned_agent_id', this.ctx.agentId)
-                .eq('channel_id', m.channel_id);
+                .eq('channel_id', m.channel_id)
+                // A DM is dealt with either by acknowledging the mention or by
+                // marking the channel read; both must clear the count.
+                .eq('read', false);
               if (since) q = q.gt('created_at', since);
               return q;
             }
@@ -1023,7 +1062,9 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
   }
 
   async ensureChannelMembership(channelId: string): Promise<void> {
-    // Upsert membership — ignore conflict if already a member
+    // Insert-if-missing. `ignoreDuplicates` makes this ON CONFLICT DO NOTHING:
+    // without it the upsert was DO UPDATE, which rewrote the row (a new tuple
+    // and a WAL record) on every message read by an existing member.
     const { error } = await this.client
       .from('channel_memberships')
       .upsert(
@@ -1031,7 +1072,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
           agent_id: this.ctx.agentId,
           channel_id: channelId,
         },
-        { onConflict: 'agent_id,channel_id' }
+        { onConflict: 'agent_id,channel_id', ignoreDuplicates: true }
       );
 
     if (error) {

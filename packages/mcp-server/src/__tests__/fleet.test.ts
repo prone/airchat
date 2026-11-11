@@ -178,6 +178,27 @@ describe('runModel', () => {
     expect(result.note).toMatch(/could not be read \(HTTP 504\)/);
   });
 
+  it('stops at once when the task can no longer be read, instead of waiting out the deadline', async () => {
+    // 404 (deleted), 401 and 403 will not get better with time.
+    for (const status of [404, 401, 403]) {
+      const getTask = vi.fn().mockRejectedValue(Object.assign(new Error(`HTTP ${status}`), { status }));
+      const started = Date.now();
+      const result = await runModel(mockClient({ getTask }), { model: 'gemma4:12b', prompt: 'hi', wait_seconds: 30 }, 1) as any;
+      expect(Date.now() - started).toBeLessThan(2000);
+      expect(getTask).toHaveBeenCalledTimes(1);
+      expect(result.task_id).toBe('task-1');
+      expect(result.error).toContain(`HTTP ${status}`);
+    }
+  });
+
+  it('keeps waiting through a 429', async () => {
+    const getTask = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('HTTP 429'), { status: 429 }))
+      .mockResolvedValue({ task: { id: 'task-1', status: 'done', result: 'ok' } });
+    const result = await runModel(mockClient({ getTask }), { model: 'gemma4:12b', prompt: 'hi', wait_seconds: 10 }, 1) as any;
+    expect(result.status).toBe('done');
+  });
+
   it('reports still-running on timeout', async () => {
     const client = mockClient({ getTask: vi.fn().mockResolvedValue({ task: { id: 'task-1', status: 'claimed' } }) });
     const result = await runModel(client, { prompt: 'hi', wait_seconds: 1 }, 400) as any;

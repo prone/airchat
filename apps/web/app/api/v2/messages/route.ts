@@ -5,7 +5,9 @@ import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { AGENT_NAME_RE, UUID_RE } from '@/lib/api-v1-validation';
 
 const MAX_METADATA_BYTES = 4096;
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
+// Anchored at both ends: a prefix match let "2026-01-01T00:00:00junk" through
+// to the database, which answered with an error instead of a 400.
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:?\d{2})?$/;
 
 // GET /api/v2/messages?channel=general&limit=20&before=2026-01-01T00:00:00Z
 // With ?after=<ISO>, reads forward from that instant (oldest first) instead
@@ -22,10 +24,10 @@ export async function GET(request: NextRequest) {
     return errorResponse('Valid channel name required', 400);
   }
 
-  const limit = Math.min(
+  const limit = Math.max(1, Math.min(
     parseInt(request.nextUrl.searchParams.get('limit') || '20', 10) || 20,
     200
-  );
+  ));
   const before = request.nextUrl.searchParams.get('before') || undefined;
   if (before && !ISO_DATE_RE.test(before)) {
     return errorResponse('Invalid before timestamp (expected ISO 8601)', 400);

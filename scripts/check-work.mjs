@@ -1,3 +1,4 @@
+import { formatWork } from './check-work-format.mjs';
 import { readFileSync, writeFileSync, mkdirSync, statSync } from 'fs';
 import { join, basename } from 'path';
 import { homedir } from 'os';
@@ -201,58 +202,8 @@ try {
     ? body.data
     : body;
 
-  const mentions = Array.isArray(payload?.mentions) ? payload.mentions : [];
-  const openMatching = Array.isArray(payload?.open_matching) ? payload.open_matching : [];
-  const mineClaimed = Array.isArray(payload?.mine_claimed) ? payload.mine_claimed : [];
-  const completedForMe = Array.isArray(payload?.completed_for_me) ? payload.completed_for_me : [];
-
-  if (!mentions.length && !openMatching.length && !mineClaimed.length && !completedForMe.length) {
-    process.exit(0);
-  }
-
-  if (mentions.length) {
-    console.log(`You have ${mentions.length} unread AirChat mention(s):`);
-    console.log('');
-    for (const m of mentions) {
-      const author = m.from ?? 'unknown';
-      const proj = m.from_project ? ` (${m.from_project})` : '';
-      // Server-assigned: a person wrote this through claude.ai or Slack.
-      const via = m.source === 'claude.ai' || m.source === 'slack' ? ` [a person, via ${m.source}]` : '';
-      console.log(`From: ${author}${proj}${via} in #${m.channel ?? 'unknown'}`);
-      const text = String(m.content ?? '');
-      console.log(`> ${text.length > 300 ? text.slice(0, 300) + '...' : text}`);
-      console.log(`Mention ID: ${m.mention_id}`);
-      console.log('');
-    }
-  }
-
-  if (openMatching.length) {
-    console.log(`${openMatching.length} open AirChat task(s) match your capabilities:`);
-    for (const t of openMatching.slice(0, 5)) {
-      const tags = t.capability_tags?.length ? ` [${t.capability_tags.join(', ')}]` : '';
-      console.log(`  ${String(t.id).slice(0, 8)}  ${t.title}${tags}`);
-    }
-    if (openMatching.length > 5) console.log(`  …and ${openMatching.length - 5} more`);
-    console.log('');
-  }
-
-  if (mineClaimed.length) {
-    console.log(`You have ${mineClaimed.length} claimed task(s) awaiting completion:`);
-    for (const t of mineClaimed.slice(0, 5)) {
-      console.log(`  ${String(t.id).slice(0, 8)}  ${t.title}`);
-    }
-    console.log('');
-  }
-
-  if (completedForMe.length) {
-    console.log(`${completedForMe.length} task(s) you posted completed recently:`);
-    for (const t of completedForMe.slice(0, 5)) {
-      console.log(`  ${String(t.id).slice(0, 8)}  ${t.title}`);
-    }
-    console.log('');
-  }
-
-  console.log('Use the check_work MCP tool for details; mark_mentions_read to acknowledge mentions; update_task to claim or complete tasks.');
+  const text = formatWork(payload);
+  if (text) console.log(text);
 } catch (err) {
   console.error('[check-work]', err?.message ?? err);
   process.exit(0);

@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getStorageClient } from '@/lib/api-auth';
-import { authenticateAgent, isAuthError, getStorageAdapter, checkAgentRateLimit, isDashboardAdmin } from '@/lib/api-v2-auth';
+import { authenticateAgent, isAuthError, getStorageAdapter, getSupabaseClient, checkAgentRateLimit, isDashboardAdmin } from '@/lib/api-v2-auth';
 import { createSupabaseServer } from '@/lib/supabase-server';
 import type { AgentContext } from '@airchat/shared';
-import { STORAGE_BUCKET, formatSize } from '@airchat/shared';
+import { DIRECT_MESSAGES_CHANNEL, STORAGE_BUCKET, formatSize } from '@airchat/shared';
 
 function validateStoragePath(p: string): boolean {
   if (p.includes('..') || p.startsWith('/') || p.includes('\0')) return false;
@@ -49,6 +49,46 @@ async function authorizeFileAccess(
   return { agent: null };
 }
 
+function isDirectMessagePath(p: string): boolean {
+  // First real segment, so "./direct-messages/x" and "direct-messages//x"
+  // are recognised as well.
+  const first = p.split('/').find((seg) => seg !== '' && seg !== '.');
+  return first === DIRECT_MESSAGES_CHANNEL;
+}
+
+/**
+ * Files attached to direct messages are as private as the messages. An agent
+ * may fetch one only if it wrote, or is mentioned in, a direct message that
+ * carries the file (`metadata.files[].path`). Dashboard admins are not
+ * restricted — they can already read every message.
+ *
+ * Fails closed: any lookup error is a refusal.
+ */
+async function agentMayReadDirectMessageFile(agentId: string, filePath: string): Promise<boolean> {
+  const db = getSupabaseClient();
+  const { data: channel, error: channelError } = await db
+    .from('channels').select('id').eq('name', DIRECT_MESSAGES_CHANNEL).maybeSingle();
+  if (channelError || !channel) return false;
+
+  const { data: carriers, error } = await db
+    .from('messages')
+    .select('id, author_agent_id')
+    .eq('channel_id', channel.id)
+    .eq('quarantined', false)
+    .contains('metadata', { files: [{ path: filePath }] })
+    .limit(50);
+  if (error || !carriers || carriers.length === 0) return false;
+  if (carriers.some((m: { author_agent_id: string }) => m.author_agent_id === agentId)) return true;
+
+  const { data: mention, error: mentionError } = await db
+    .from('mentions')
+    .select('id')
+    .eq('mentioned_agent_id', agentId)
+    .in('message_id', carriers.map((m: { id: string }) => m.id))
+    .limit(1);
+  return !mentionError && !!mention && mention.length > 0;
+}
+
 /** Bare media type: lower-cased, parameters dropped ("Text/HTML; charset=utf-8" -> "text/html"). */
 function baseMimeType(type: string): string {
   return type.split(';')[0].trim().toLowerCase();
@@ -81,6 +121,12 @@ export async function GET(request: NextRequest) {
 
   const access = await authorizeFileAccess(request, 'read');
   if (access instanceof NextResponse) return access;
+
+  if (access.agent && isDirectMessagePath(filePath)
+      && !(await agentMayReadDirectMessageFile(access.agent.agentId, filePath))) {
+    // Same answer as a missing file: do not confirm that it exists.
+    return NextResponse.json({ error: 'File not found' }, { status: 404 });
+  }
 
   // Use service role key to access storage (files are private)
   const storageClient = getStorageClient();
@@ -239,8 +285,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
+  if (folder !== undefined && folder !== null && typeof folder !== 'string') {
+    return NextResponse.json({ error: 'Invalid folder path' }, { status: 400 });
+  }
   if (folder && !validateStoragePath(folder)) {
     return NextResponse.json({ error: 'Invalid folder path' }, { status: 400 });
+  }
+  // Listing would hand an agent the names of everyone's DM attachments.
+  if (access.agent && folder && isDirectMessagePath(folder)) {
+    return NextResponse.json({ error: 'Direct-message files cannot be listed' }, { status: 403 });
   }
 
   const storageClient = getStorageClient();

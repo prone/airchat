@@ -25,6 +25,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { AirChatRestClient } from '@airchat/shared/rest-client';
 import { Backoff, describeFailure, formatDelay } from '@airchat/shared';
+import { escapeSlackMrkdwn, forwardNewMessages } from './forwarder.js';
 import {
   HUMAN_MESSAGES_CHANNEL,
   DIRECT_MESSAGES_CHANNEL,
@@ -119,13 +120,6 @@ function createAirChatClient(config: SlackBridgeConfig): AirChatRestClient {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-function escapeSlackMrkdwn(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
 
 // ── Agent Cache ─────────────────────────────────────────────────────────────
 
@@ -320,48 +314,33 @@ function startForwarder(
   webhookUrl: string,
   watchedChannels: string[],
 ): NodeJS.Timeout {
-  let lastPollTime = new Date(Date.now() - 60_000).toISOString();
+  const startedAt = new Date(Date.now() - 60_000).toISOString();
+  // One cursor per channel, advanced message by message — see forwarder.ts.
+  const cursors = new Map<string, string>();
   // After a failed poll: 30s doubling to 5m; ticks inside the window are skipped.
   const backoff = new Backoff({ baseMs: 30_000, maxMs: 5 * 60_000 });
 
   const poll = async () => {
     if (backoff.shouldSkip()) return;
     try {
-      for (const channel of watchedChannels) {
-        const result = await airchatClient.readMessages(channel, 50) as any;
-        const messages = result?.messages || [];
-
-        for (const msg of messages) {
-          const timestamp = msg.timestamp || msg.created_at;
-          if (!timestamp || timestamp <= lastPollTime) continue;
-
-          // Skip messages originating from Slack (metadata-based echo prevention)
-          if (msg.project === 'slack' || msg.metadata?.source === 'slack') continue;
-
-          const author = msg.author || msg.agents?.name || 'unknown';
-
-          const mentionsHuman = /\b@human\b/i.test(msg.content);
-          const prefix = mentionsHuman ? ':rotating_light: ' : '';
-          const safeAuthor = escapeSlackMrkdwn(author);
-          const safeContent = escapeSlackMrkdwn(msg.content);
-          const slackText = `${prefix}*${safeAuthor}* in #${escapeSlackMrkdwn(channel)}:\n${safeContent}`;
-
-          await fetch(webhookUrl, {
+      await forwardNewMessages(watchedChannels, cursors, startedAt, {
+        readMessages: (channel, limit) => airchatClient.readMessages(channel, limit) as Promise<any>,
+        postToSlack: async (text) => {
+          const res = await fetch(webhookUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: slackText }),
+            body: JSON.stringify({ text }),
           });
-        }
-      }
+          // A rejected webhook is a failed delivery: do not advance past it.
+          if (!res.ok) throw new Error(`Slack webhook answered HTTP ${res.status}`);
+        },
+      });
       const recovered = backoff.success();
       if (recovered) console.log(`[slack-bridge] poll recovered after ${recovered} failure(s)`);
     } catch (e: any) {
       const { delayMs, attempts, changed } = backoff.failure();
       if (changed) console.error(`[slack-bridge] poll failed (${describeFailure(e)}); backing off ${formatDelay(delayMs)} after ${attempts} failure(s)`);
-      return; // keep lastPollTime so the missed window is re-read on recovery
     }
-
-    lastPollTime = new Date().toISOString();
   };
 
   poll(); // Initial poll

@@ -103,7 +103,16 @@ function mergeJsonFile(
  * `manualSnippet` is still a display string — it is printed for the user to
  * paste when the CLI is absent, never executed.
  */
-function tryCliRegister(bin: string, argv: string[], manualSnippet: string): HarnessResult {
+function tryCliRegister(
+  bin: string,
+  argv: string[],
+  manualSnippet: string,
+  /** Run first and allowed to fail — e.g. removing an existing registration. */
+  before?: string[],
+): HarnessResult {
+  if (before) {
+    try { execFileSync(bin, before, { stdio: 'pipe' }); } catch { /* nothing to remove */ }
+  }
   try {
     execFileSync(bin, argv, { stdio: 'pipe' });
     return { ok: true, message: 'Registered via CLI' };
@@ -126,7 +135,12 @@ export const HARNESSES: Harness[] = [
       const { command, args } = launchParts(launch);
       const argv = ['mcp', 'add', 'airchat', '-s', 'user', '--', command, ...args];
       const display = `claude mcp add airchat -s user -- "${command}" ${args.map((a) => `"${a}"`).join(' ')}`;
-      return tryCliRegister('claude', argv, display);
+      // Replace any existing registration rather than leave it. `mcp add`
+      // refuses a name that exists, and older setups registered a wrapped
+      // command (`bash -c "cd <airchat> && node …"`) that names every
+      // project's agent after the AirChat folder. The direct command below is
+      // started in the session's own folder, so each project gets its own name.
+      return tryCliRegister('claude', argv, display, ['mcp', 'remove', 'airchat', '-s', 'user']);
     },
   },
   {
@@ -137,13 +151,15 @@ export const HARNESSES: Harness[] = [
     registerMcp(launch) {
       const { command, args } = launchParts(launch);
       const argv = ['mcp', 'add', 'airchat', '--', command, ...args];
+      // Same reason as Claude Code above: replace, never keep a wrapped command.
+      const before = ['mcp', 'remove', 'airchat'];
       const toml = [
         '# ~/.codex/config.toml',
         '[mcp_servers.airchat]',
         `command = "${command}"`,
         `args = [${args.map((a) => `"${a}"`).join(', ')}]`,
       ].join('\n');
-      return tryCliRegister('codex', argv, toml);
+      return tryCliRegister('codex', argv, toml, before);
     },
   },
   {
