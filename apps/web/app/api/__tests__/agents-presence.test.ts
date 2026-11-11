@@ -41,7 +41,7 @@ const req = (qs = '') => new NextRequest(`http://localhost:3002/api/v2/agents${q
 
 beforeEach(() => {
   state.rows = [
-    { name: 'macbook-fishladder', active: true, last_seen_at: '2026-08-08T07:30:00Z', description: null },
+    { name: 'macbook-webapp', active: true, last_seen_at: '2026-08-08T07:30:00Z', description: null },
     { name: 'macbook-agentchat', active: true, last_seen_at: '2026-08-08T07:50:00Z', description: null },
   ];
   state.gteArg = null;

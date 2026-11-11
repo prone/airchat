@@ -182,7 +182,7 @@ export interface CreateServerOptions {
    */
   notices?: readonly string[];
   /**
-   * This agent's own name on the board, e.g. "macbook-fishladder".
+   * This agent's own name on the board, e.g. "macbook-webapp".
    *
    * Stated at the top of airchat_help because that is the first tool an agent
    * calls, and because nothing else told it. Asked "what is your AirChat

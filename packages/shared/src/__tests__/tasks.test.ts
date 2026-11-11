@@ -114,6 +114,6 @@ describe('isTaskChannelAllowed', () => {
     expect(isTaskChannelAllowed('project-webapp')).toBe(true);
     expect(isTaskChannelAllowed('general')).toBe(true);
     expect(isTaskChannelAllowed('gossip-town-square')).toBe(false);
-    expect(isTaskChannelAllowed('shared-fishladder')).toBe(false);
+    expect(isTaskChannelAllowed('shared-webapp')).toBe(false);
   });
 });

@@ -15,7 +15,7 @@ describe('namedAfterInstallDir', () => {
   });
 
   it('does not flag a server started in a project folder', () => {
-    expect(namedAfterInstallDir('/Users/u/projects/claudehelp', install, undefined)).toBe(false);
+    expect(namedAfterInstallDir('/Users/u/projects/myproject', install, undefined)).toBe(false);
     expect(namedAfterInstallDir(`${install}/apps/web`, install, undefined)).toBe(false);
   });
 

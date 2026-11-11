@@ -48,20 +48,20 @@ const dmTo = (target_agent: string) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
-  state.target = { name: 'macbook-fishladder', active: true };
+  state.target = { name: 'macbook-webapp', active: true };
   state.sent = [];
 });
 
 describe('a DM to a real agent still works', () => {
   it('sends and reports success', async () => {
-    const res = await POST(dmTo('macbook-fishladder'));
+    const res = await POST(dmTo('macbook-webapp'));
     expect(res.status).toBe(200);
     expect(state.sent).toHaveLength(1);
   });
 
   it('addresses the message with the @mention the trigger looks for', async () => {
-    await POST(dmTo('macbook-fishladder'));
-    expect((state.sent[0] as { content: string }).content).toContain('@macbook-fishladder');
+    await POST(dmTo('macbook-webapp'));
+    expect((state.sent[0] as { content: string }).content).toContain('@macbook-webapp');
   });
 });
 
