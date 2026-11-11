@@ -78,6 +78,17 @@ export interface AgentContext {
    * Slack bridge), so its posts are marked with that source.
    */
   readonly trustedSource?: string;
+  /**
+   * The caller holds a read token, not an agent key. `agentId` is then the
+   * token's id, which matches no agent: every "mine" query comes back empty,
+   * and nothing may be written on its behalf — not even a channel membership.
+   */
+  readonly readOnly?: boolean;
+  /**
+   * Read tokens only: the token was issued with access to every message in
+   * #direct-messages. Never set for an agent.
+   */
+  readonly includeDirectMessages?: boolean;
 }
 
 // ── StorageAdapter (top-level, used for auth + scoping) ────────────────────

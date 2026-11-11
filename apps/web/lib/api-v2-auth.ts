@@ -17,6 +17,7 @@ import {
 import { SupabaseGossipAdapter } from '@airchat/shared/supabase-gossip-adapter';
 import type { AgentContext, StorageAdapter, GossipStorageAdapter } from '@airchat/shared';
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit';
+import { READ_TOKEN_HEADER, findLiveReadToken } from '@/lib/read-tokens';
 
 // ── Supabase client singleton (service role) ────────────────────────────────
 
@@ -183,6 +184,83 @@ function noteAgentActivity(agentId: string): void {
   }
 }
 
+// ── Read tokens ─────────────────────────────────────────────────────────────
+
+/**
+ * The only requests a read token is accepted for: GET on these exact paths.
+ *
+ * An allow-list, checked here rather than in each route, so that a route added
+ * later is closed to read tokens until someone decides otherwise. Every v2
+ * route authenticates through authenticateAgent, so this is the one gate.
+ *
+ * Before adding a path, check what its GET handler does with the caller's
+ * identity. A read token's `agentId` is the token's id and matches no agent:
+ * anything that writes a row for the caller would fail or, worse, succeed.
+ */
+export const READ_TOKEN_ROUTES: ReadonlySet<string> = new Set([
+  '/api/v2/agents',
+  '/api/v2/channels',
+  '/api/v2/messages',
+  '/api/v2/search',
+]);
+
+const READ_TOKEN_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
+const readTokenTouchedAt = new Map<string, number>();
+
+function noteReadTokenUse(tokenId: string): void {
+  const now = Date.now();
+  if (now - (readTokenTouchedAt.get(tokenId) ?? 0) < READ_TOKEN_TOUCH_INTERVAL_MS) return;
+  readTokenTouchedAt.set(tokenId, now);
+  try {
+    // Best-effort, like last_seen_at: never adds latency or a failure mode.
+    void getSupabaseClient()
+      .from('read_tokens')
+      .update({ last_used_at: new Date().toISOString() })
+      .eq('id', tokenId)
+      .then(({ error }) => {
+        if (error) console.error(`[auth] read token last_used_at failed: ${error.message}`);
+      });
+  } catch {
+    // No Supabase env (unit tests) — skip silently.
+  }
+}
+
+async function authenticateReadToken(
+  request: NextRequest,
+  token: string,
+): Promise<AgentContext | NextResponse> {
+  // Refuse by method and path before looking anything up, so a write attempt
+  // costs no database call and gets the same answer for any token.
+  const pathname = request.nextUrl.pathname.replace(/\/+$/, '');
+  if (request.method !== 'GET' || !READ_TOKEN_ROUTES.has(pathname)) {
+    return NextResponse.json(
+      { error: 'A read token cannot be used for this request. It reads agents, channels, messages and search only.' },
+      { status: 403 },
+    );
+  }
+
+  let row;
+  try {
+    row = await findLiveReadToken(getSupabaseClient(), token);
+  } catch {
+    // Unknown is not the same as invalid: do not tell a valid holder that its
+    // token is bad because the database hiccuped.
+    return NextResponse.json({ error: 'Authentication unavailable' }, { status: 503 });
+  }
+  if (!row) {
+    return NextResponse.json({ error: 'Invalid read token' }, { status: 401 });
+  }
+
+  noteReadTokenUse(row.id);
+  return {
+    agentId: row.id,
+    agentName: `read-token:${row.name}`,
+    machineId: '',
+    readOnly: true,
+    includeDirectMessages: row.include_dms === true,
+  };
+}
+
 /**
  * Authenticate a v2 API request using the derived key auth model.
  *
@@ -201,6 +279,12 @@ export async function authenticateAgent(
     noteAgentActivity(injected.ctx.agentId);
     return injected.ctx;
   }
+
+  // A read token is its own credential class. When the header is present the
+  // request is judged as a read token and nothing else: it never falls through
+  // to the agent-key path below.
+  const readToken = request.headers.get(READ_TOKEN_HEADER);
+  if (readToken !== null) return authenticateReadToken(request, readToken);
 
   const derivedKey = request.headers.get('x-agent-api-key');
 
