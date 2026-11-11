@@ -401,8 +401,13 @@ export interface GossipStorageAdapter {
   /** Find or create a channel by name, returning the channel ID. */
   findOrCreateChannelId(name: string, type: string, scope: FederationScope): Promise<string | null>;
 
-  /** Find or create a remote agent placeholder, returning the agent ID. */
-  findOrCreateRemoteAgent(name: string, peerFingerprint: string, originInstance: string | null): Promise<string | null>;
+  /**
+   * Find or create the placeholder agent for an author on another instance,
+   * returning its ID. Returns null when the author name is not acceptable or
+   * when the placeholder's name is already held by an agent that is not the
+   * placeholder for that same origin (for example an agent on this instance).
+   */
+  findOrCreateRemoteAgent(author: string, peerFingerprint: string, originInstance: string | null): Promise<string | null>;
 
   /** Insert a federated message. */
   insertFederatedMessage(msg: {
@@ -432,6 +437,15 @@ export interface GossipStorageAdapter {
 
   /** Quarantine a message by ID (exact match). */
   quarantineMessage(messageId: string): Promise<void>;
+
+  /** Recorded origin (originating instance and delivering peer) of federated messages, by ID. */
+  getMessageOrigins(messageIds: string[]): Promise<Array<{ message_id: string; origin_instance_fingerprint: string; peer_id: string | null }>>;
+
+  /**
+   * Quarantine one message that arrived over federation. Does nothing, and
+   * returns false, for a message written on this instance.
+   */
+  quarantineFederatedMessage(messageId: string): Promise<boolean>;
 
   /** Quarantine messages matching an ID suffix (for namespaced IDs). */
   quarantineMessagesBySuffix(idSuffix: string): Promise<void>;

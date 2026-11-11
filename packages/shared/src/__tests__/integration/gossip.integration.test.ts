@@ -28,6 +28,7 @@ import {
 } from '../../crypto.js';
 import { signData, deriveFingerprint } from '../../gossip/instance-identity.js';
 import { signEnvelope } from '../../gossip/envelope.js';
+import { signPeerRequest } from '../../gossip/request-signature.js';
 
 let webUrl: string;
 let instancePrivateKey: string;
@@ -71,14 +72,36 @@ async function publicFetch(
   return fetch(url, init);
 }
 
-// Helper: build gossip auth headers
-function gossipAuthHeaders(privateKey: string, fingerprint: string) {
+// Helper: build gossip auth headers for one request. The signature covers the
+// method, path, body and the recipient, which here is always the instance
+// under test (it is addressed as if it were a peer of itself).
+function gossipAuthHeaders(
+  privateKey: string,
+  fingerprint: string,
+  method: string,
+  pathname: string,
+  body?: unknown,
+  timestamp?: string,
+) {
+  return signPeerRequest(privateKey, {
+    method,
+    url: `${webUrl}${pathname}`,
+    senderFingerprint: fingerprint,
+    recipientFingerprint: instanceFingerprint,
+    // publicFetch sends exactly JSON.stringify(body).
+    body: body === undefined ? '' : JSON.stringify(body),
+    timestamp,
+  });
+}
+
+// Helper: headers as instances before request signing sent them — a signature
+// over the timestamp and nothing else.
+function legacyGossipAuthHeaders(privateKey: string, fingerprint: string) {
   const timestamp = new Date().toISOString();
-  const signature = signData(privateKey, timestamp);
   return {
     'x-gossip-fingerprint': fingerprint,
     'x-gossip-timestamp': timestamp,
-    'x-gossip-signature': signature,
+    'x-gossip-signature': signData(privateKey, timestamp),
   };
 }
 
@@ -142,31 +165,36 @@ describe('gossip push auth', () => {
 
   it('rejects push with expired timestamp', async () => {
     const oldTimestamp = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-    const signature = signData(instancePrivateKey, oldTimestamp);
-    const res = await publicFetch('POST', '/api/v2/gossip/push', { messages: [] }, {
-      'x-gossip-fingerprint': instanceFingerprint,
-      'x-gossip-timestamp': oldTimestamp,
-      'x-gossip-signature': signature,
-    });
+    const body = { messages: [] };
+    const res = await publicFetch('POST', '/api/v2/gossip/push', body,
+      gossipAuthHeaders(instancePrivateKey, instanceFingerprint, 'POST', '/api/v2/gossip/push', body, oldTimestamp));
     expect(res.status).toBe(401);
   });
 
+  it('refuses a timestamp-only signature unless the server opted in to legacy peers', async () => {
+    const res = await publicFetch('POST', '/api/v2/gossip/push', { messages: [] },
+      legacyGossipAuthHeaders(instancePrivateKey, instanceFingerprint));
+    // 401 by default. With GOSSIP_ACCEPT_LEGACY_SIGNATURES=true on the server
+    // it gets as far as the peer lookup or the body check instead.
+    expect([401, 400, 403, 429]).toContain(res.status);
+  });
+
   it('rejects push from unknown fingerprint', async () => {
-    const headers = gossipAuthHeaders(instancePrivateKey, 'deadbeef12345678');
+    const headers = gossipAuthHeaders(instancePrivateKey, 'deadbeef12345678', 'POST', '/api/v2/gossip/push', { messages: [] });
     const res = await publicFetch('POST', '/api/v2/gossip/push', { messages: [] }, headers);
-    // 401 (nonce) or 403 (unknown peer) depending on order
+    // 403 (unknown peer) or 429 (rate limited)
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
 
   it('rejects push with wrong signature', async () => {
     const wrongKeypair = generateKeypair();
-    const headers = gossipAuthHeaders(wrongKeypair.privateKey, instanceFingerprint);
+    const headers = gossipAuthHeaders(wrongKeypair.privateKey, instanceFingerprint, 'POST', '/api/v2/gossip/push', { messages: [] });
     const res = await publicFetch('POST', '/api/v2/gossip/push', { messages: [] }, headers);
     expect([403, 429]).toContain(res.status);
   });
 
   it('rejects push with empty messages array', async () => {
-    const headers = gossipAuthHeaders(instancePrivateKey, instanceFingerprint);
+    const headers = gossipAuthHeaders(instancePrivateKey, instanceFingerprint, 'POST', '/api/v2/gossip/push', { messages: [] });
     const res = await publicFetch('POST', '/api/v2/gossip/push', { messages: [] }, headers);
     // 400 (empty), 403 (not a peer of itself), or 429 (rate limited)
     expect([400, 403, 429]).toContain(res.status);
@@ -176,28 +204,24 @@ describe('gossip push auth', () => {
 // ── Nonce replay ────────────────────────────────────────────────────────
 
 describe('gossip nonce replay', () => {
-  it('rejects replayed timestamp on sync', async () => {
-    const timestamp = new Date().toISOString();
-    const signature = signData(instancePrivateKey, timestamp);
-    const headers = {
-      'x-gossip-fingerprint': instanceFingerprint,
-      'x-gossip-timestamp': timestamp,
-      'x-gossip-signature': signature,
-    };
+  it('rejects a replayed request on sync', async () => {
+    const headers = gossipAuthHeaders(
+      instancePrivateKey, instanceFingerprint, 'GET', '/api/v2/gossip/sync?since=2020-01-01T00:00:00Z',
+    );
 
     // First request — may succeed (200), fail auth (403 if not own peer), or rate limit (429)
     const res1 = await publicFetch('GET', '/api/v2/gossip/sync?since=2020-01-01T00:00:00Z', undefined, headers);
     expect([200, 403, 429]).toContain(res1.status);
 
-    // Second request with same timestamp — should be rejected as replay (401)
-    // unless the first failed before nonce was recorded
+    // The same signed request again — should be rejected as a replay (401).
+    // If the first one was refused, nothing was recorded for it.
     const res2 = await publicFetch('GET', '/api/v2/gossip/sync?since=2020-01-01T00:00:00Z', undefined, headers);
     if (res1.status === 200) {
       // Nonce was recorded on first success — replay should be rejected
       expect(res2.status).toBe(401);
     } else {
-      // First failed (403 or 429) — nonce may or may not have been recorded
-      expect([401, 403, 429]).toContain(res2.status);
+      // First failed (403 or 429), so the second fails the same way
+      expect([403, 429]).toContain(res2.status);
     }
   });
 });
@@ -237,7 +261,8 @@ describe.skipIf(!ADMIN_SECRET)('SSRF protection on peer registration', () => {
     it(`blocks ${name} endpoint`, async () => {
       const res = await rawFetch('POST', '/api/v2/gossip/peers', {
         endpoint: url,
-        fingerprint: `ssrf-test-${Date.now().toString(36)}`,
+        // A well-formed fingerprint, so the request gets as far as the endpoint check.
+        fingerprint: '5517e57000000000',
       }, undefined, adminHeaders());
       // file:// is always blocked (invalid URL for fetch, not an http/https scheme)
       // Private IPs: blocked (400) on production, allowed (201) on dev servers
@@ -268,7 +293,6 @@ describe('gossip push message flow', () => {
   // handling, accepting 403 (not a peer) as a valid outcome.
 
   it('push with valid auth reaches the endpoint', async () => {
-    const headers = gossipAuthHeaders(instancePrivateKey, instanceFingerprint);
     const instancePublicKey = fs.readFileSync(
       path.join(os.homedir(), '.airchat', 'instance.pub'), 'utf-8'
     ).split('\n')[0].trim();
@@ -287,9 +311,9 @@ describe('gossip push message flow', () => {
       federation_scope: 'global',
     });
 
-    const res = await publicFetch('POST', '/api/v2/gossip/push', {
-      messages: [{ ...envelope, origin_public_key: instancePublicKey }],
-    }, headers);
+    const body = { messages: [{ ...envelope, origin_public_key: instancePublicKey }] };
+    const res = await publicFetch('POST', '/api/v2/gossip/push', body,
+      gossipAuthHeaders(instancePrivateKey, instanceFingerprint, 'POST', '/api/v2/gossip/push', body));
 
     // 200 (accepted), 403 (not own peer), or 429 (rate limited)
     expect([200, 403, 429]).toContain(res.status);
@@ -300,7 +324,6 @@ describe('gossip push message flow', () => {
   });
 
   it('rejects push with tampered content', async () => {
-    const headers = gossipAuthHeaders(instancePrivateKey, instanceFingerprint);
     const instancePublicKey = fs.readFileSync(
       path.join(os.homedir(), '.airchat', 'instance.pub'), 'utf-8'
     ).split('\n')[0].trim();
@@ -319,7 +342,9 @@ describe('gossip push message flow', () => {
     });
 
     const tampered = { ...envelope, content: 'TAMPERED content', origin_public_key: instancePublicKey };
-    const res = await publicFetch('POST', '/api/v2/gossip/push', { messages: [tampered] }, headers);
+    const body = { messages: [tampered] };
+    const res = await publicFetch('POST', '/api/v2/gossip/push', body,
+      gossipAuthHeaders(instancePrivateKey, instanceFingerprint, 'POST', '/api/v2/gossip/push', body));
 
     // 200 with stored:0 (tampered rejected), 403 (not own peer), or 429
     if (res.status === 200) {
@@ -331,7 +356,6 @@ describe('gossip push message flow', () => {
   });
 
   it('rejects push targeting local channel', async () => {
-    const headers = gossipAuthHeaders(instancePrivateKey, instanceFingerprint);
     const instancePublicKey = fs.readFileSync(
       path.join(os.homedir(), '.airchat', 'instance.pub'), 'utf-8'
     ).split('\n')[0].trim();
@@ -349,9 +373,9 @@ describe('gossip push message flow', () => {
       federation_scope: 'global',
     });
 
-    const res = await publicFetch('POST', '/api/v2/gossip/push', {
-      messages: [{ ...envelope, origin_public_key: instancePublicKey }],
-    }, headers);
+    const body = { messages: [{ ...envelope, origin_public_key: instancePublicKey }] };
+    const res = await publicFetch('POST', '/api/v2/gossip/push', body,
+      gossipAuthHeaders(instancePrivateKey, instanceFingerprint, 'POST', '/api/v2/gossip/push', body));
 
     if (res.status === 200) {
       const data = (await res.json()).data;

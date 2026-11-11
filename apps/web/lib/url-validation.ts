@@ -3,52 +3,133 @@
  *
  * Prevents SSRF by blocking requests to private/internal networks.
  *
- * Use `fetchPeerUrl` for any request to a peer-controlled URL: it validates
- * every hop, including redirect targets. `validatePeerEndpoint` on its own
- * only judges the URL you hand it, so validating once and then calling bare
- * `fetch` is not sufficient -- fetch follows redirects.
+ * Use `fetchPeerUrl` for any request to a peer-controlled URL: it connects to
+ * the address that was validated and refuses redirects. `validatePeerEndpoint`
+ * on its own only judges the URL you hand it, so validating once and then
+ * calling bare `fetch` is not sufficient -- fetch resolves the name again and
+ * follows redirects.
  */
 
 import dns from 'dns/promises';
 import http from 'node:http';
 import https from 'node:https';
+import { BlockList, isIP } from 'node:net';
+
+/** IPv4 ranges a peer endpoint may never resolve to. */
+const BLOCKED_V4 = new BlockList();
+for (const [network, prefix] of [
+  ['0.0.0.0', 8], // "This" network
+  ['10.0.0.0', 8], // RFC 1918
+  ['100.64.0.0', 10], // CGNAT (RFC 6598), includes Tailscale
+  ['127.0.0.0', 8], // Loopback
+  ['169.254.0.0', 16], // Link-local / cloud metadata
+  ['172.16.0.0', 12], // RFC 1918
+  ['192.0.0.0', 24], // IETF protocol assignments
+  ['192.0.2.0', 24], // TEST-NET-1
+  ['192.88.99.0', 24], // 6to4 relay anycast (deprecated)
+  ['192.168.0.0', 16], // RFC 1918
+  ['198.18.0.0', 15], // Benchmarking
+  ['198.51.100.0', 24], // TEST-NET-2
+  ['203.0.113.0', 24], // TEST-NET-3
+  ['224.0.0.0', 4], // Multicast
+  ['240.0.0.0', 4], // Reserved, includes broadcast
+] as Array<[string, number]>) {
+  BLOCKED_V4.addSubnet(network, prefix, 'ipv4');
+}
+
+/** IPv6 ranges that are blocked outright. */
+const BLOCKED_V6 = new BlockList();
+for (const [network, prefix] of [
+  ['64:ff9b:1::', 48], // Local-use NAT64
+  ['100::', 64], // Discard-only
+  ['2001::', 23], // IETF protocol assignments, includes Teredo
+  ['2001:db8::', 32], // Documentation
+  ['fc00::', 7], // Unique local (RFC 4193)
+  ['fe80::', 10], // Link-local
+  ['fec0::', 10], // Site-local (deprecated)
+  ['ff00::', 8], // Multicast
+] as Array<[string, number]>) {
+  BLOCKED_V6.addSubnet(network, prefix, 'ipv6');
+}
+
+/**
+ * Parse an IPv6 address into its 16 bytes, or null if it is not one.
+ *
+ * Handles `::` compression and a trailing dotted IPv4 part. Needed because the
+ * same address has many spellings (`::ffff:169.254.169.254` and
+ * `::ffff:a9fe:a9fe` are identical), and only the bytes can be range-checked
+ * reliably.
+ */
+function parseIpv6(ip: string): Uint8Array | null {
+  if (isIP(ip) !== 6 || ip.includes('%')) return null;
+
+  let text = ip;
+  const lastColon = text.lastIndexOf(':');
+  const tail = text.slice(lastColon + 1);
+  if (tail.includes('.')) {
+    const octets = tail.split('.').map(Number);
+    text = `${text.slice(0, lastColon + 1)}${((octets[0] << 8) | octets[1]).toString(16)}:${((octets[2] << 8) | octets[3]).toString(16)}`;
+  }
+
+  const [head, rest] = text.split('::');
+  const headGroups = head ? head.split(':') : [];
+  const restGroups = rest ? rest.split(':') : [];
+  const groups =
+    rest === undefined
+      ? headGroups
+      : [...headGroups, ...new Array(8 - headGroups.length - restGroups.length).fill('0'), ...restGroups];
+  if (groups.length !== 8) return null;
+
+  const bytes = new Uint8Array(16);
+  groups.forEach((group, i) => {
+    const value = parseInt(group, 16);
+    bytes[i * 2] = value >> 8;
+    bytes[i * 2 + 1] = value & 0xff;
+  });
+  return bytes;
+}
+
+/**
+ * The IPv4 address an IPv6 address stands for, when it is one of the forms
+ * that carry an IPv4 address inside them. A connection to such an address ends
+ * up at (or is translated to) the embedded IPv4 host, so that is the address
+ * that has to pass the range check.
+ */
+function embeddedIpv4(bytes: Uint8Array): string | null {
+  const dotted = (offset: number) => Array.from(bytes.slice(offset, offset + 4)).join('.');
+  const zero = (from: number, to: number) => bytes.slice(from, to).every((b) => b === 0);
+
+  // ::ffff:a.b.c.d — IPv4-mapped
+  if (zero(0, 10) && bytes[10] === 0xff && bytes[11] === 0xff) return dotted(12);
+  // ::a.b.c.d — IPv4-compatible (deprecated). Also covers :: and ::1, which
+  // come out as 0.0.0.0 and 0.0.0.1 and are blocked as the "this" network.
+  if (zero(0, 12)) return dotted(12);
+  // 64:ff9b::a.b.c.d — NAT64 well-known prefix
+  if (bytes[0] === 0x00 && bytes[1] === 0x64 && bytes[2] === 0xff && bytes[3] === 0x9b && zero(4, 12)) {
+    return dotted(12);
+  }
+  // 2002:aabb:ccdd:: — 6to4, IPv4 address in the 32 bits after the prefix
+  if (bytes[0] === 0x20 && bytes[1] === 0x02) return dotted(2);
+  return null;
+}
 
 /**
  * Check if an IP address is in a private, loopback, or reserved range.
+ *
+ * Anything that does not parse as an IP address counts as private: this
+ * function answers "is it safe to connect here", and the answer for something
+ * unrecognised is no.
  */
-function isPrivateIp(ip: string): boolean {
-  // IPv4 private/reserved ranges
-  const patterns = [
-    /^127\./, // Loopback
-    /^10\./, // RFC 1918
-    /^172\.(1[6-9]|2\d|3[01])\./, // RFC 1918
-    /^192\.168\./, // RFC 1918
-    /^169\.254\./, // Link-local / cloud metadata
-    /^0\./, // "This" network
-    /^100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\./, // CGNAT (RFC 6598)
-    /^192\.0\.0\./, // IETF protocol assignments
-    /^192\.0\.2\./, // TEST-NET-1
-    /^198\.51\.100\./, // TEST-NET-2
-    /^203\.0\.113\./, // TEST-NET-3
-    /^224\./, // Multicast
-    /^240\./, // Reserved
-    /^255\.255\.255\.255$/, // Broadcast
-  ];
+export function isPrivateIp(ip: string): boolean {
+  const version = isIP(ip);
+  if (version === 4) return BLOCKED_V4.check(ip, 'ipv4');
+  if (version !== 6) return true;
 
-  // IPv6 private/reserved
-  const ipv6Patterns = [
-    /^::1$/, // Loopback
-    /^fe80:/i, // Link-local
-    /^fc/i, // Unique local (RFC 4193)
-    /^fd/i, // Unique local (RFC 4193)
-    /^::ffff:127\./i, // IPv4-mapped loopback
-    /^::ffff:10\./i, // IPv4-mapped private
-    /^::ffff:172\.(1[6-9]|2\d|3[01])\./i, // IPv4-mapped private
-    /^::ffff:192\.168\./i, // IPv4-mapped private
-    /^::ffff:169\.254\./i, // IPv4-mapped link-local
-  ];
-
-  return patterns.some((p) => p.test(ip)) || ipv6Patterns.some((p) => p.test(ip));
+  const bytes = parseIpv6(ip);
+  if (!bytes) return true;
+  const v4 = embeddedIpv4(bytes);
+  if (v4) return BLOCKED_V4.check(v4, 'ipv4');
+  return BLOCKED_V6.check(ip, 'ipv6');
 }
 
 /**
@@ -149,14 +230,17 @@ export async function validatePeerEndpoint(endpoint: string): Promise<UrlValidat
     return { valid: false, error: 'Endpoint hostname is blocked' };
   }
 
-  // 3. Direct IP check (if hostname is an IP literal)
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname) || hostname.startsWith('[')) {
-    const ip = hostname.replace(/^\[|\]$/g, '');
-    if (isPrivateIp(ip)) {
+  // 3. Direct IP check (if hostname is an IP literal). The URL parser has
+  // already normalised the literal, e.g. [::ffff:169.254.169.254] arrives
+  // here as [::ffff:a9fe:a9fe]; isPrivateIp works on the address bytes, so
+  // the spelling does not matter.
+  const literal = hostname.replace(/^\[|\]$/g, '');
+  if (hostname.startsWith('[') || isIP(literal) !== 0) {
+    if (isPrivateIp(literal)) {
       return { valid: false, error: 'Endpoint resolves to a private address' };
     }
     // Literal address: nothing to re-resolve, so it is already pinned.
-    return { valid: true, address: ip, family: ip.includes(':') ? 6 : 4 };
+    return { valid: true, address: literal, family: isIP(literal) === 6 ? 6 : 4 };
   }
 
   // Note: integer/hex/octal host forms (http://2130706433, http://0x7f000001,
@@ -189,11 +273,15 @@ export async function validatePeerEndpoint(endpoint: string): Promise<UrlValidat
   return { valid: true, address: chosen, family: addresses[0] ? 4 : 6 };
 }
 
-/** Maximum redirects followed by fetchPeerUrl, each re-validated. */
-const MAX_REDIRECTS = 3;
-
 /** Statuses whose Response must be constructed with a null body. */
 const NULL_BODY_STATUS = new Set([204, 205, 304]);
+
+/**
+ * Largest response body accepted from a peer. A sync response is at most 100
+ * short messages; anything near this size is not a legitimate answer, and
+ * without a cap a peer could make this process buffer whatever it sends.
+ */
+export const MAX_PEER_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 /**
  * Issue a single request to an already-validated address.
@@ -207,6 +295,10 @@ const NULL_BODY_STATUS = new Set([204, 205, 304]);
  * The URL hostname is still used for the Host header, TLS SNI and certificate
  * verification -- only the address dialled is pinned -- so virtual hosting and
  * certificate validation behave normally.
+ *
+ * `timeoutMs` bounds the request twice: as an idle timeout on the socket, and
+ * as a deadline for the whole exchange. The idle timeout alone is not enough,
+ * because a peer that sends one byte every few seconds never trips it.
  */
 async function requestPinned(
   url: string,
@@ -230,6 +322,20 @@ async function requestPinned(
   }
 
   return new Promise<Response>((resolve, reject) => {
+    let settled = false;
+    // `req` and `deadline` are created below; these two only run from
+    // callbacks, by which time both exist.
+    const finish = (outcome: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      outcome();
+    };
+    const fail = (error: Error) => {
+      finish(() => reject(error));
+      req.destroy(error);
+    };
+
     const req = transport.request(
       {
         protocol: target.protocol,
@@ -244,8 +350,16 @@ async function requestPinned(
       },
       (res) => {
         const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('error', reject);
+        let received = 0;
+        res.on('data', (chunk: Buffer) => {
+          received += chunk.byteLength;
+          if (received > MAX_PEER_RESPONSE_BYTES) {
+            fail(new Error(`Peer response exceeded ${MAX_PEER_RESPONSE_BYTES} bytes: ${url}`));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on('error', (error: Error) => finish(() => reject(error)));
         res.on('end', () => {
           const responseHeaders = new Headers();
           for (const [key, value] of Object.entries(res.headers)) {
@@ -253,79 +367,71 @@ async function requestPinned(
             else if (value !== undefined) responseHeaders.set(key, value);
           }
           const status = res.statusCode ?? 502;
-          resolve(
-            new Response(NULL_BODY_STATUS.has(status) ? null : Buffer.concat(chunks), {
-              status,
-              headers: responseHeaders,
-            }),
+          finish(() =>
+            resolve(
+              new Response(NULL_BODY_STATUS.has(status) ? null : Buffer.concat(chunks), {
+                status,
+                headers: responseHeaders,
+              }),
+            ),
           );
         });
       },
     );
 
-    req.setTimeout(timeoutMs, () => req.destroy(new Error(`Peer request timed out: ${url}`)));
-    req.on('error', reject);
+    const deadline = setTimeout(() => fail(new Error(`Peer request timed out: ${url}`)), timeoutMs);
+    req.setTimeout(timeoutMs, () => fail(new Error(`Peer request timed out: ${url}`)));
+    req.on('error', (error: Error) => finish(() => reject(error)));
     if (body) req.write(body);
     req.end();
   });
 }
 
 /**
- * Fetch a peer URL with SSRF protection applied to every hop.
+ * Fetch a peer URL with SSRF protection.
  *
- * Closes three separate holes:
+ * Closes four separate holes:
  *
- * 1. Redirects. Bare `fetch` follows them, so validating only the initial URL
- *    is not enough -- a peer that passes validation can answer 302 with
- *    `Location: http://169.254.169.254/` and the request is made anyway.
- *    Redirects are followed manually here, re-validating each Location.
+ * 1. Redirects. They are not followed at all: a 3xx answer is an error. A
+ *    peer is a fixed API endpoint with no reason to redirect, and following
+ *    one would mean sending the request -- its signed headers and its body --
+ *    to wherever the peer points, including other hosts and internal
+ *    addresses such as `http://169.254.169.254/`.
  *
  * 2. DNS rebinding. Validation and connection would otherwise resolve the
  *    hostname independently, letting an attacker with a low-TTL record answer
  *    public for the check and private for the connection. The address checked
  *    is the address dialled.
  *
- * 3. Unbounded requests. Every hop carries an explicit timeout.
+ * 3. Unbounded time. `timeoutMs` is a deadline for the whole request as well
+ *    as an idle timeout.
  *
- * Throws on an unsafe URL, too many redirects, or a redirect with no usable
- * Location. Network errors propagate.
+ * 4. Unbounded size. The response body is capped at MAX_PEER_RESPONSE_BYTES.
+ *
+ * Throws on an unsafe URL, a redirect, a timeout or an oversized response.
+ * Network errors propagate.
  */
 export async function fetchPeerUrl(
   rawUrl: string,
   init: RequestInit & { timeoutMs?: number } = {},
 ): Promise<Response> {
   const { timeoutMs = 15000, ...requestInit } = init;
-  let current = rawUrl;
 
-  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const check = await validatePeerEndpoint(current);
-    if (!check.valid) {
-      throw new Error(`Blocked peer request to ${current}: ${check.error}`);
-    }
-
-    // Every accepted endpoint carries a validated address, including in
-    // development mode, so there is exactly one transport and no unpinned
-    // fallback path.
-    if (!check.address) {
-      throw new Error(`Blocked peer request to ${current}: no validated address`);
-    }
-    const res = await requestPinned(
-      current,
-      check.address,
-      check.family ?? 4,
-      requestInit,
-      timeoutMs,
-    );
-
-    if (res.status < 300 || res.status > 399) return res;
-
-    const location = res.headers.get('location');
-    if (!location) {
-      throw new Error(`Peer redirect from ${current} had no Location header`);
-    }
-    // Resolve relative Locations against the current URL before re-checking.
-    current = new URL(location, current).toString();
+  const check = await validatePeerEndpoint(rawUrl);
+  if (!check.valid) {
+    throw new Error(`Blocked peer request to ${rawUrl}: ${check.error}`);
   }
 
-  throw new Error(`Peer request exceeded ${MAX_REDIRECTS} redirects: ${rawUrl}`);
+  // Every accepted endpoint carries a validated address, including in
+  // development mode, so there is exactly one transport and no unpinned
+  // fallback path.
+  if (!check.address) {
+    throw new Error(`Blocked peer request to ${rawUrl}: no validated address`);
+  }
+  const res = await requestPinned(rawUrl, check.address, check.family ?? 4, requestInit, timeoutMs);
+
+  if (res.status >= 300 && res.status <= 399) {
+    throw new Error(`Peer at ${rawUrl} answered with a redirect (HTTP ${res.status}); redirects are not followed`);
+  }
+  return res;
 }

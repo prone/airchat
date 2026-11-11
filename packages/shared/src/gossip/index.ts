@@ -22,3 +22,13 @@ export {
 } from './envelope.js';
 
 export type { GossipEnvelope, RetractionEnvelope } from './envelope.js';
+
+export {
+  GOSSIP_FINGERPRINT_HEADER,
+  GOSSIP_TIMESTAMP_HEADER,
+  GOSSIP_LEGACY_SIGNATURE_HEADER,
+  GOSSIP_SIGNATURE_V2_HEADER,
+  canonicalRequestTarget,
+  buildRequestSignPayload,
+  signPeerRequest,
+} from './request-signature.js';

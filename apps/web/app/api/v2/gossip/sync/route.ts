@@ -1,80 +1,70 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
-import { getGossipAdapter } from '@/lib/api-v2-auth';
-import { verifySignature, signEnvelope } from '@airchat/shared/gossip';
-import { checkRateLimit } from '@/lib/rate-limit';
-import { checkGossipNonce } from '@/lib/gossip-nonce';
-import { getPrivateKey } from '@/lib/gossip-sync';
+import { signEnvelope } from '@airchat/shared/gossip';
+import { authenticatePeerRequest } from '@/lib/gossip-auth';
+import { getPrivateKey, classifyOutbound } from '@/lib/gossip-sync';
+import { stripReservedFederatedMetadata } from '@airchat/shared/supabase-gossip-adapter';
 
 /**
  * GET /api/v2/gossip/sync — Pull federated messages from this instance.
  *
- * Authenticated via signed timestamp (challenge-response).
+ * Authenticated by the peer's request signature (see lib/gossip-auth.ts).
  */
 export async function GET(request: NextRequest) {
-  const fingerprint = request.headers.get('x-gossip-fingerprint');
-  const timestamp = request.headers.get('x-gossip-timestamp');
-  const signature = request.headers.get('x-gossip-signature');
-
-  if (!fingerprint || !timestamp || !signature) {
-    return errorResponse('x-gossip-fingerprint, x-gossip-timestamp, and x-gossip-signature headers required', 401);
-  }
-
-  // Replay protection: timestamp window
-  const requestAge = Date.now() - new Date(timestamp).getTime();
-  if (isNaN(requestAge) || Math.abs(requestAge) > 5 * 60 * 1000) {
-    return errorResponse('Request timestamp too old or invalid', 401);
-  }
-
-  // Replay protection: nonce dedup
-  if (checkGossipNonce(fingerprint, timestamp)) {
-    return errorResponse('Duplicate request', 401);
-  }
-
-  const gossip = getGossipAdapter();
-
-  // Verify peer
-  const peer = await gossip.getPeerByFingerprint(fingerprint);
-  if (!peer) return errorResponse('Unknown peer', 403);
-  if (!peer.active || peer.suspended) return errorResponse('Peer is suspended', 403);
-
-  // Per-peer rate limiting (60 syncs/min)
-  const rateLimit = checkRateLimit(`gossip-sync:${fingerprint}`, 60_000, 60);
-  if (!rateLimit.allowed) {
-    return errorResponse('Rate limit exceeded', 429);
-  }
-
-  // Verify signature
-  if (!peer.public_key) return errorResponse('Peer public key not yet exchanged', 403);
-  if (!verifySignature(peer.public_key, timestamp, signature)) {
-    return errorResponse('Invalid signature', 403);
-  }
-
-  // Check gossip is enabled
-  const config = await gossip.getInstanceConfig();
-  if (!config?.gossip_enabled) return errorResponse('Gossip is disabled on this instance', 503);
+  const auth = await authenticatePeerRequest(request, { bucket: 'gossip-sync', maxPerMinute: 60 });
+  if (auth instanceof NextResponse) return auth;
+  const { peer, config, gossip } = auth;
 
   // Parse query params
   const since = request.nextUrl.searchParams.get('since');
-  if (!since) return errorResponse('since parameter required (ISO timestamp)', 400);
+  if (!since || isNaN(new Date(since).getTime())) {
+    return errorResponse('since parameter required (ISO timestamp)', 400);
+  }
 
   const limit = Math.min(parseInt(request.nextUrl.searchParams.get('limit') || '100', 10) || 100, 100);
 
-  const scope = request.nextUrl.searchParams.get('scope') || 'global';
-  if (!['peers', 'global'].includes(scope)) return errorResponse('scope must be "peers" or "global"', 400);
+  // What this peer may receive is decided by OUR record of the peer, not by
+  // what it asks for. shared-* channels (scope 'peers') go only to peers the
+  // operator registered with federation_scope 'peers'; everyone else gets
+  // gossip-* (scope 'global') and nothing more. The `scope` parameter can
+  // narrow that — a 'peers' peer may ask for the public gossip-* feed — but
+  // never widen it.
+  const requested = request.nextUrl.searchParams.get('scope') || peer.federation_scope;
+  if (!['peers', 'global'].includes(requested)) return errorResponse('scope must be "peers" or "global"', 400);
+  if (requested === 'peers' && peer.federation_scope !== 'peers') {
+    return errorResponse('This peer is not registered for shared channels', 403);
+  }
 
   try {
-    // Red team #9: Global peers only get gossip-* messages (scope 'global').
-    // Shared-* messages (scope 'peers') are only served to direct peers.
-    const scopeFilter = scope === 'global' ? ['global'] : ['peers'];
+    const scopeFilter = requested === 'peers' ? ['peers'] : ['global'];
     const allMessages = await gossip.getFederatedMessages({ since, limit, scopeFilter });
 
     // Post-filter: per-channel-type hop limits
-    const messages = allMessages.filter((msg: Record<string, unknown>) => {
+    const withinHops = allMessages.filter((msg: Record<string, unknown>) => {
       const ch = msg.channels as unknown as { name: string };
       const maxHops = ch?.name?.startsWith('gossip-') ? 3 : 1;
       return ((msg.hop_count as number) ?? 0) < maxHops;
-    }).slice(0, limit);
+    });
+
+    // Messages written on this instance are stored without safety labels, so
+    // they are classified here, on the way out. Anything the classifier would
+    // quarantine is not handed to peers. Relayed messages were classified when
+    // they arrived and quarantined ones are already excluded by the query.
+    const messages: Record<string, unknown>[] = [];
+    for (const msg of withinHops) {
+      if (messages.length >= limit) break;
+      // Server-assigned metadata (who posted from the dashboard, their email,
+      // stored file paths) describes this instance's users and storage and is
+      // not handed to other instances.
+      const metadata = stripReservedFederatedMetadata(msg.metadata as Record<string, unknown> | null);
+      if (msg.origin_instance == null) {
+        const outbound = classifyOutbound(typeof msg.content === 'string' ? msg.content : '', metadata);
+        if (outbound.quarantined) continue;
+        messages.push({ ...msg, metadata, safety_labels: outbound.labels });
+      } else {
+        messages.push({ ...msg, metadata });
+      }
+    }
 
     // Sign locally-originated messages that don't have envelope signatures yet.
     const privateKey = await getPrivateKey();
@@ -91,7 +81,7 @@ export async function GET(request: NextRequest) {
       const envelope = {
         message_id: msg.id as string,
         channel_name: ch?.name ?? '',
-        origin_instance: config!.fingerprint,
+        origin_instance: config.fingerprint,
         author_agent: agent?.name ?? '',
         content: msg.content as string,
         metadata: msg.metadata as Record<string, unknown> | null,
@@ -105,8 +95,8 @@ export async function GET(request: NextRequest) {
         ...msg,
         hop_count: (msg.hop_count as number) ?? 0,
         signature: signed.signature,
-        origin_public_key: config!.public_key,
-        origin_instance: config!.fingerprint,
+        origin_public_key: config.public_key,
+        origin_instance: config.fingerprint,
         author_display: agent?.name ?? msg.author_display,
       };
     });

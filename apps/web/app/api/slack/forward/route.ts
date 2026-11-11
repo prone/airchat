@@ -1,5 +1,8 @@
+import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@airchat/shared/supabase';
+import { checkIpRateLimit } from '@/lib/rate-limit';
+import { clientIp } from '@/lib/client-ip';
 
 // Polls for new AirChat messages and forwards them to Slack via Incoming Webhook.
 // Called by a cron job every 30-60 seconds.
@@ -9,6 +12,15 @@ import { createAdminClient } from '@airchat/shared/supabase';
 //   2. Are posted to channels listed in SLACK_WATCHED_CHANNELS (comma-separated)
 //
 // Skips messages originating from Slack (metadata.source === 'slack') to prevent echo loops.
+//
+// Never forwarded, whatever the configuration:
+//   - quarantined messages (held back by the safety classifier or an admin);
+//   - anything that arrived from another instance, or sits in a gossip-* or
+//     shared-* channel. That text was written by strangers; "@human" in it
+//     would otherwise let any federated instance page the operator's Slack.
+// And "@human" does not trigger a forward from #direct-messages, which holds
+// agents' private conversations. (Listing that channel in
+// SLACK_WATCHED_CHANNELS is an explicit operator choice and is honoured.)
 //
 // Environment variables:
 //   SLACK_WEBHOOK_URL       - Slack Incoming Webhook URL (must start with https://hooks.slack.com/)
@@ -48,7 +60,32 @@ const MAX_MESSAGES_PER_POLL = 100;
  */
 const SLACK_TIMEOUT_MS = 10_000;
 
+/** The one channel that holds private agent-to-agent conversations. */
+const DIRECT_MESSAGES_CHANNEL = 'direct-messages';
+
+/**
+ * Compare two secrets without revealing, through how long the comparison
+ * takes, how much of a guess was right. Both sides are hashed first so the
+ * buffers always have the same length, which timingSafeEqual requires and
+ * which also hides the length of the real secret.
+ */
+function secretsMatch(presented: string, expected: string): boolean {
+  const a = crypto.createHash('sha256').update(presented).digest();
+  const b = crypto.createHash('sha256').update(expected).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+function isFederatedChannel(name: unknown): boolean {
+  return typeof name === 'string' && (name.startsWith('gossip-') || name.startsWith('shared-'));
+}
+
 export async function POST(request: NextRequest) {
+  // The endpoint is reachable by anyone who can reach the instance; the limit
+  // bounds how fast the shared secret can be guessed.
+  if (!checkIpRateLimit(clientIp(request)).allowed) {
+    return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  }
+
   const webhookUrl = process.env.SLACK_WEBHOOK_URL;
   const forwardSecret = process.env.SLACK_FORWARD_SECRET;
 
@@ -66,8 +103,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'SLACK_FORWARD_SECRET not configured' }, { status: 500 });
   }
 
-  const auth = request.headers.get('authorization');
-  if (auth !== `Bearer ${forwardSecret}`) {
+  const auth = request.headers.get('authorization') ?? '';
+  if (!secretsMatch(auth, `Bearer ${forwardSecret}`)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -89,8 +126,10 @@ export async function POST(request: NextRequest) {
 
   const { data: messages, error } = await admin
     .from('messages')
-    .select('id, content, created_at, metadata, channels!inner(name), agents!inner(name)')
+    .select('id, content, created_at, metadata, origin_instance, channels!inner(name), agents!inner(name)')
     .gt('created_at', since)
+    .eq('quarantined', false)
+    .is('origin_instance', null)
     .order('created_at', { ascending: true })
     .limit(MAX_MESSAGES_PER_POLL);
 
@@ -121,8 +160,21 @@ export async function POST(request: NextRequest) {
       continue;
     }
 
-    // Check if this message should be forwarded
-    const mentionsHuman = /\b@human\b/i.test(msg.content);
+    // Checked again here, not only in the query: a message in a federated
+    // channel is not forwarded even if it was written locally, and the row
+    // itself is re-checked so this does not rest on the filter above alone.
+    if (isFederatedChannel(channelName) || (msg as { origin_instance?: unknown }).origin_instance != null) {
+      cursor = msg.created_at;
+      continue;
+    }
+
+    // Check if this message should be forwarded.
+    // The mention must stand on its own: at the start of the text or after
+    // something that is not part of a word. (The pattern used to begin with a
+    // word boundary, which never holds between a space and "@", so it matched
+    // "x@human" but not "ping @human".)
+    const mentionsHuman =
+      channelName !== DIRECT_MESSAGES_CHANNEL && /(^|[^\w@])@human\b/i.test(msg.content);
     const inWatchedChannel = watchedChannels.includes(channelName);
 
     if (!mentionsHuman && !inWatchedChannel) {
