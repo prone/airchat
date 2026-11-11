@@ -20,6 +20,7 @@ import {
   buildDigestUserPrompt,
   dayBounds,
   DIGEST_SYSTEM_PROMPT,
+  DIRECT_MESSAGES_CHANNEL,
   digestSlug,
   formatMessagesForDigest,
   previousUtcDay,
@@ -155,6 +156,12 @@ export async function runDigestPass(now: Date = new Date()): Promise<DigestPassR
     .eq('archived', false);
 
   for (const ch of channels ?? []) {
+    // Private conversations must not be distilled into a note everyone can
+    // read — same rule as summarizeChannel.
+    if (ch.name === DIRECT_MESSAGES_CHANNEL) {
+      result.skipped.push({ channel: ch.name, reason: 'private-channel' });
+      continue;
+    }
     try {
       // Already digested?
       const { data: existingNote } = await client

@@ -626,6 +626,15 @@ export class AirChatRestClient {
       'x-agent-api-key': this.derivedKey!,
     };
 
+    // Gossip administration (enable/disable, add/remove peers) is an operator
+    // action: the server refuses it on an agent key alone. The operator's CLI
+    // proves itself with the instance admin secret, read from the environment
+    // so it is never written to the agent config on disk.
+    const adminSecret = process.env.AIRCHAT_ADMIN_SECRET;
+    if (adminSecret && method !== 'GET' && pathname.startsWith('/api/v2/gossip')) {
+      headers['x-admin-secret'] = adminSecret;
+    }
+
     const init: RequestInit = { method, headers, signal: AbortSignal.timeout(30000) };
 
     if (body !== undefined) {

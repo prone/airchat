@@ -1,11 +1,57 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateRequest, getStorageClient } from '@/lib/api-auth';
-import { authenticateAgent, isAuthError, getStorageAdapter } from '@/lib/api-v2-auth';
+import { getStorageClient } from '@/lib/api-auth';
+import { authenticateAgent, isAuthError, getStorageAdapter, checkAgentRateLimit, isDashboardAdmin } from '@/lib/api-v2-auth';
+import { createSupabaseServer } from '@/lib/supabase-server';
+import type { AgentContext } from '@airchat/shared';
 import { STORAGE_BUCKET, formatSize } from '@airchat/shared';
 
 function validateStoragePath(p: string): boolean {
   if (p.includes('..') || p.startsWith('/') || p.includes('\0')) return false;
   return true;
+}
+
+/**
+ * Who may touch stored files: a registered agent (verified derived key, the
+ * same check every /api/v2 route uses) or a dashboard admin session.
+ *
+ * This route reads and writes storage with the service role, so nothing
+ * downstream constrains the caller — the check here is the only one. It used
+ * to be "a query through RLS with this key returned no error", which a
+ * made-up key satisfies: RLS answers an unknown key with zero rows, not an
+ * error. And a session alone is not enough either, because sign-up is open
+ * and only admin_users members are dashboard admins.
+ *
+ * Returns the agent context (null for an admin session), or the error response.
+ */
+async function authorizeFileAccess(
+  request: NextRequest,
+  operation: 'read' | 'write',
+): Promise<{ agent: AgentContext | null } | NextResponse> {
+  if (request.headers.get('x-agent-api-key')) {
+    const auth = await authenticateAgent(request);
+    if (isAuthError(auth)) return auth;
+    const limited = checkAgentRateLimit(auth.agentId, operation);
+    if (limited) return limited;
+    return { agent: auth };
+  }
+
+  const supabase = await createSupabaseServer();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json(
+      { error: 'Unauthorized. Provide x-agent-api-key header or login via dashboard.' },
+      { status: 401 },
+    );
+  }
+  if (!(await isDashboardAdmin(user.id))) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+  return { agent: null };
+}
+
+/** Bare media type: lower-cased, parameters dropped ("Text/HTML; charset=utf-8" -> "text/html"). */
+function baseMimeType(type: string): string {
+  return type.split(';')[0].trim().toLowerCase();
 }
 
 const CHANNEL_NAME_RE = /^[a-z0-9][a-z0-9-]{1,99}$/;
@@ -33,19 +79,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid file path' }, { status: 400 });
   }
 
-  // Validate the caller is an authenticated agent or dashboard user
-  const authenticated = await authenticateRequest(request);
-  if (!authenticated) {
-    return NextResponse.json({ error: 'Unauthorized. Provide x-agent-api-key header or login via dashboard.' }, { status: 401 });
-  }
+  const access = await authorizeFileAccess(request, 'read');
+  if (access instanceof NextResponse) return access;
 
   // Use service role key to access storage (files are private)
-  let storageClient = getStorageClient();
-
+  const storageClient = getStorageClient();
   if (!storageClient) {
-    // Fall back to authenticated session
-    const { createSupabaseServer } = await import('@/lib/supabase-server');
-    storageClient = await createSupabaseServer();
+    return NextResponse.json({ error: 'Storage not configured (missing SUPABASE_SERVICE_ROLE_KEY)' }, { status: 500 });
   }
 
   if (urlOnly) {
@@ -75,7 +115,7 @@ export async function GET(request: NextRequest) {
   const buffer = Buffer.from(await data.arrayBuffer());
 
   const rawType = data.type || 'application/octet-stream';
-  const safeType = DANGEROUS_MIME_TYPES.has(rawType) ? 'application/octet-stream' : rawType;
+  const safeType = DANGEROUS_MIME_TYPES.has(baseMimeType(rawType)) ? 'application/octet-stream' : rawType;
 
   return new NextResponse(buffer, {
     headers: {
@@ -96,10 +136,8 @@ function sanitizeFileName(name: string): string {
 // PUT /api/files - Upload a file via JSON body (for agents)
 // Body: { filename, content, channel, content_type?, encoding?, post_message? }
 export async function PUT(request: NextRequest) {
-  const authenticated = await authenticateRequest(request);
-  if (!authenticated) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const access = await authorizeFileAccess(request, 'write');
+  if (access instanceof NextResponse) return access;
 
   let body: {
     filename: string;
@@ -147,7 +185,7 @@ export async function PUT(request: NextRequest) {
   }
 
   const rawMime = content_type || 'application/octet-stream';
-  const mimeType = DANGEROUS_MIME_TYPES.has(rawMime) ? 'application/octet-stream' : rawMime;
+  const mimeType = DANGEROUS_MIME_TYPES.has(baseMimeType(rawMime)) ? 'application/octet-stream' : rawMime;
   const { error: uploadErr } = await storageClient.storage
     .from(STORAGE_BUCKET)
     .upload(storagePath, buffer, { contentType: mimeType, upsert: false });
@@ -162,21 +200,21 @@ export async function PUT(request: NextRequest) {
   // under derived-key auth and turned every default upload into a 500 —
   // after the file was already stored. The upload result must never depend
   // on the announcement.
-  if (post_message !== false) {
+  // Only an agent has an identity to post as; a dashboard admin uploading
+  // here gets the file without an announcement.
+  const agent = access.agent;
+  if (post_message !== false && agent) {
     try {
-      const auth = await authenticateAgent(request);
-      if (!isAuthError(auth)) {
-        const scoped = getStorageAdapter().forAgent(auth);
-        await scoped.sendMessage(
-          channel,
-          `Shared a file: **${safeName}** (${formatSize(buffer.length)})`,
-          {
-            source: 'agent-upload',
-            agent: auth.agentName,
-            files: [{ name: safeName, size: buffer.length, type: mimeType, path: storagePath, bucket: STORAGE_BUCKET }],
-          },
-        );
-      }
+      const scoped = getStorageAdapter().forAgent(agent);
+      await scoped.sendMessage(
+        channel,
+        `Shared a file: **${safeName}** (${formatSize(buffer.length)})`,
+        {
+          source: 'agent-upload',
+          agent: agent.agentName,
+          files: [{ name: safeName, size: buffer.length, type: mimeType, path: storagePath, bucket: STORAGE_BUCKET }],
+        },
+      );
     } catch (err) {
       console.error(`[files] upload announcement failed: ${err instanceof Error ? err.message : err}`);
     }
@@ -190,10 +228,8 @@ export async function PUT(request: NextRequest) {
 // POST /api/files - List files in a folder
 // Body: { folder: "direct-messages" }
 export async function POST(request: NextRequest) {
-  const authenticated = await authenticateRequest(request);
-  if (!authenticated) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const access = await authorizeFileAccess(request, 'read');
+  if (access instanceof NextResponse) return access;
 
   let folder: string;
   try {
@@ -207,11 +243,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid folder path' }, { status: 400 });
   }
 
-  let storageClient = getStorageClient();
-
+  const storageClient = getStorageClient();
   if (!storageClient) {
-    const { createSupabaseServer } = await import('@/lib/supabase-server');
-    storageClient = await createSupabaseServer();
+    return NextResponse.json({ error: 'Storage not configured (missing SUPABASE_SERVICE_ROLE_KEY)' }, { status: 500 });
   }
 
   const { data, error } = await storageClient.storage
