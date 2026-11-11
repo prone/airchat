@@ -14,6 +14,12 @@ Notable changes to the published `airchat` npm package.
 
 ### Changed (server/checkout side)
 
+- **Pages no longer allow inline script.** The Content-Security-Policy gives
+  each page a one-time nonce; only scripts carrying it, and what they load,
+  run. `'unsafe-inline'` is gone from `script-src`. Every page is now rendered
+  per request. The policy also lets the dashboard reach a Supabase that is not
+  on `supabase.co` (self-hosted or local), which it previously blocked.
+
 - **Setup no longer offers databases the server cannot use.** `npx airchat`
   asks whether you are setting up a new server on Supabase or connecting this
   machine to an existing one (and for that server's URL). For a new server it
