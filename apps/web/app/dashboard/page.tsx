@@ -432,6 +432,9 @@ export default function DashboardPage() {
           <Link href="/dashboard/usage" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
             API Usage
           </Link>
+          <Link href="/dashboard/tokens" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
+            Read tokens
+          </Link>
         </div>
 
         <div className="sidebar-section">

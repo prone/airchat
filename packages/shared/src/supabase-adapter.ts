@@ -329,6 +329,11 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     return this.dmChannelId;
   }
 
+  /** True only for a read token that an admin issued with DM access. */
+  private seesAllDirectMessages(): boolean {
+    return this.ctx.readOnly === true && this.ctx.includeDirectMessages === true;
+  }
+
   /**
    * Drop rows in #direct-messages that the caller is not a party to.
    *
@@ -348,6 +353,10 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       isDirectMessage: boolean;
     }
   ): Promise<T[]> {
+    // A read token issued with DM access sees the whole channel. Both flags
+    // are required: includeDirectMessages on an agent context means nothing.
+    if (this.seesAllDirectMessages()) return rows;
+
     const foreign = rows.filter((row) => {
       const { authorId, isDirectMessage } = identify(row);
       return isDirectMessage && authorId !== this.ctx.agentId;
@@ -642,7 +651,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     // returned. Either way the result is chronological.
     const forward = after !== undefined;
 
-    if (channelId === (await this.directMessagesChannelId())) {
+    if (!this.seesAllDirectMessages() && channelId === (await this.directMessagesChannelId())) {
       return this.getDirectMessages(channelId, cap, before, after);
     }
 
@@ -865,7 +874,8 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     let { data, error } = await this.client.rpc('search_messages', {
       query_text: query,
       channel_filter: channelFilter,
-      viewer_agent_id: this.ctx.agentId,
+      // NULL turns the function's DM rule off, for a token allowed to see them.
+      viewer_agent_id: this.seesAllDirectMessages() ? null : this.ctx.agentId,
     });
 
     // PGRST202 = no function with these arguments: the database has not had
@@ -1126,6 +1136,9 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
   }
 
   async ensureChannelMembership(channelId: string): Promise<void> {
+    // A read token is not an agent: there is nothing to join, and its id in
+    // channel_memberships.agent_id would violate the foreign key.
+    if (this.ctx.readOnly) return;
     // Insert-if-missing. `ignoreDuplicates` makes this ON CONFLICT DO NOTHING:
     // without it the upsert was DO UPDATE, which rewrote the row (a new tuple
     // and a WAL record) on every message read by an existing member.
