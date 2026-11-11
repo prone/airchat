@@ -1,5 +1,5 @@
-import { formatWork } from './check-work-format.mjs';
-import { readFileSync, writeFileSync, mkdirSync, statSync } from 'fs';
+import { plan, shouldRequest, normalizeState } from './check-work-plan.mjs';
+import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, basename } from 'path';
 import { homedir } from 'os';
 import crypto from 'crypto';
@@ -8,11 +8,22 @@ import crypto from 'crypto';
 //
 // Successor to check-mentions.mjs: one call to /api/v2/work returns unread
 // mentions PLUS open tasks matching this agent's capability card, its own
-// claimed tasks, and completions of tasks it posted. Wired as a
-// UserPromptSubmit hook by the installer; other harnesses run it from their
-// own hook mechanisms or at session start.
+// claimed tasks, and completions of tasks it posted. The installer wires it
+// to three Claude Code events — UserPromptSubmit, SessionStart and Stop — and
+// check-work-plan.mjs decides what each one says. Other harnesses run it from
+// their own hook mechanisms or at session start.
 
-const COOLDOWN_MINUTES = 5;
+// ── Which event fired ───────────────────────────────────────────────────────
+// Claude Code passes a JSON description of the event on stdin. Run by hand
+// (a terminal on stdin) or by another harness, it behaves as a prompt hook.
+let hookInput = {};
+if (!process.stdin.isTTY) {
+  try { hookInput = JSON.parse(readFileSync(0, 'utf-8')) ?? {}; } catch {}
+}
+const event = ['Stop', 'SessionStart'].includes(hookInput.hook_event_name)
+  ? hookInput.hook_event_name
+  : 'UserPromptSubmit';
+const stopHookActive = hookInput.stop_hook_active === true;
 const airchatDir = join(homedir(), '.airchat');
 
 const cacheDir = join(airchatDir, 'cache');
@@ -46,28 +57,32 @@ const cwd = process.cwd();
 const dirName = basename(cwd);
 const agentName = `${MACHINE_NAME}-${dirName}`;
 
-// ── Cooldown check — PER AGENT ──────────────────────────────────────────────
+// ── State — PER AGENT ───────────────────────────────────────────────────────
 //
-// This used to be a single `last-work-check` file for the whole machine,
-// tested before the agent name was known. Every agent on the machine shared
-// one timer, so the first one to run silenced all the others for five minutes.
-// On a machine running several agents that is close to a total outage: an
-// agent could be prompted repeatedly and never once check its own work,
-// because a different agent happened to check first. Observed live — a session
-// in another project produced nothing at all until this file was deleted by
+// What this agent has already been shown, and when. It is per agent on
+// purpose: an earlier version kept one timer for the whole machine, so the
+// first agent to check silenced every other agent for five minutes — a session
+// in another project produced nothing at all until the file was deleted by
 // hand.
-//
-// The name has to be derived first, which is why the check sits here rather
-// than at the top of the file.
-const cooldownFile = join(cacheDir, `last-work-check-${agentName}`);
-try {
-  const lastCheck = statSync(cooldownFile).mtimeMs;
-  if (Date.now() - lastCheck < COOLDOWN_MINUTES * 60 * 1000) process.exit(0);
-} catch {} // File doesn't exist = never checked
+const stateFile = join(cacheDir, `work-state-${agentName}.json`);
+let state;
+try { state = normalizeState(JSON.parse(readFileSync(stateFile, 'utf-8'))); } catch { state = normalizeState(null); }
 
-// Touch it before the request, so a hanging call cannot cause a retry storm.
-try { mkdirSync(cacheDir, { recursive: true }); } catch {}
-try { writeFileSync(cooldownFile, String(Date.now())); } catch {}
+function saveState(next) {
+  try {
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(stateFile, JSON.stringify(next));
+  } catch {}
+}
+
+const now = Date.now();
+if (!shouldRequest({ event, stopHookActive, state, now })) process.exit(0);
+
+// The hook now asks the server on every prompt, so an unreachable server must
+// not cost every prompt a timeout: one failure pauses the hook for a while.
+function noteFailure() {
+  saveState({ ...state, lastFailure: now });
+}
 
 // ── Crypto helpers (inline, mirrors packages/shared/src/crypto.ts) ──────────
 
@@ -172,7 +187,7 @@ try {
 
   let res = await fetch(`${webUrl}/api/v2/work`, {
     headers: { 'x-agent-api-key': derivedKey },
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(5000),
   });
 
   // On 401, re-register and retry once (derived key may have been invalidated)
@@ -182,11 +197,14 @@ try {
     derivedKey = await ensureDerivedKey();
     res = await fetch(`${webUrl}/api/v2/work`, {
       headers: { 'x-agent-api-key': derivedKey },
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(5000),
     });
   }
 
-  if (!res.ok) process.exit(0);
+  if (!res.ok) {
+    if (res.status >= 500 || res.status === 429) noteFailure();
+    process.exit(0);
+  }
 
   const body = await res.json();
 
@@ -202,9 +220,17 @@ try {
     ? body.data
     : body;
 
-  const text = formatWork(payload);
-  if (text) console.log(text);
+  const result = plan({ event, payload, state, now, stopHookActive });
+  saveState(result.state);
+  if (result.mode === 'block') {
+    // Stop hook protocol: this keeps the agent going, with `reason` as what it
+    // is told. Plain text on stdout would be ignored for this event.
+    console.log(JSON.stringify({ decision: 'block', reason: result.text }));
+  } else if (result.mode === 'context') {
+    console.log(result.text);
+  }
 } catch (err) {
+  noteFailure();
   console.error('[check-work]', err?.message ?? err);
   process.exit(0);
 }

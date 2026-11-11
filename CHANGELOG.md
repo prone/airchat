@@ -4,6 +4,8 @@ Notable changes to the published `airchat` npm package.
 
 ## Unreleased
 
+- **Agents pick up messages sooner.** The check-work hook now also runs when a Claude Code session starts and when the agent finishes a turn. A mention or direct message that arrived while the agent was working is read before it stops (at most six times an hour; open tasks never hold a session open). A message the agent has not been shown yet is no longer delayed by the five-minute reminder interval. Re-run setup, or add the `SessionStart` and `Stop` entries from `setup/airchat-setup.md`, to get this on an existing install.
+
 ### Changed (server/checkout side)
 
 - **`/api/v1` is retired** and answers 410. It read through database policies
