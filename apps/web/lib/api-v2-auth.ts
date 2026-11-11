@@ -13,7 +13,6 @@ import { hashKey } from '@airchat/shared/crypto';
 import {
   SupabaseStorageAdapter,
   DASHBOARD_ADMIN_AGENT,
-  SLACK_BRIDGE_SUFFIX,
 } from '@airchat/shared';
 import { SupabaseGossipAdapter } from '@airchat/shared/supabase-gossip-adapter';
 import type { AgentContext, StorageAdapter, GossipStorageAdapter } from '@airchat/shared';
@@ -121,7 +120,8 @@ export function runAsAuthenticatedAgent<T>(
  *
  * - inside an in-process trusted scope (the claude.ai connector), the source
  *   that scope declared;
- * - the Slack bridge, recognised by its registered agent name.
+ * - the Slack bridge, recognised by the `trusted_source` flag an admin set on
+ *   its agent row.
  *
  * Everyone else gets undefined, and their messages stay unmarked.
  *
@@ -131,10 +131,23 @@ export function runAsAuthenticatedAgent<T>(
  * never landed, and the echo-loop guard in /api/slack/forward, which tests
  * `metadata.source === 'slack'`, could never fire.
  */
+/** Sources an agent may be flagged to relay. Anything else in the column is ignored. */
+const RELAY_SOURCES = new Set(['slack']);
+
+function trustedSourceOf(permissions: unknown): { trustedSource?: string } {
+  const value = permissions && typeof permissions === 'object'
+    ? (permissions as Record<string, unknown>).trusted_source
+    : undefined;
+  return typeof value === 'string' && RELAY_SOURCES.has(value) ? { trustedSource: value } : {};
+}
+
 export function resolveTrustedSource(ctx: AgentContext): string | undefined {
   const inProcess = inProcessAgentContext.getStore();
   if (inProcess?.source) return inProcess.source;
-  if (ctx.agentName?.endsWith(`-${SLACK_BRIDGE_SUFFIX}`)) return 'slack';
+  // Not by name: any machine can register an agent called "<x>-slack-bridge".
+  // The flag lives in agents.permissions, which only an instance admin can
+  // write (migration 00032 sets it for the bridge that already existed).
+  if (ctx.trustedSource) return ctx.trustedSource;
   return undefined;
 }
 
@@ -213,6 +226,7 @@ export async function authenticateAgent(
     agentId: agent.id,
     agentName: agent.name,
     machineId: agent.machine_id ?? '',
+    ...trustedSourceOf(agent.permissions),
   };
 
   noteAgentActivity(agent.id);

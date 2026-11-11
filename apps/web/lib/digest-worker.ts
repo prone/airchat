@@ -153,11 +153,14 @@ export async function runDigestPass(now: Date = new Date()): Promise<DigestPassR
   const scoped = getStorageAdapter().forAgent(summarizer);
 
   // Digest local channels only — notes are local-only by design
-  const { data: channels } = await client
+  const { data: channels, error: channelsError } = await client
     .from('channels')
     .select('id, name')
     .eq('federation_scope', 'local')
     .eq('archived', false);
+  // Not an empty pass: without the channel list nothing was checked, and the
+  // loop should back off rather than report success.
+  if (channelsError) throw new Error(`Failed to list channels: ${channelsError.message}`);
 
   for (const ch of channels ?? []) {
     // Private conversations must not be distilled into a note everyone can

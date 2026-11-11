@@ -407,12 +407,19 @@ async function main(): Promise<void> {
     try {
       // Inventory refresh: hourly, or sooner if a backend was down at start
       if (Date.now() - lastInventoryAt >= INVENTORY_REFRESH_MS || models.length === 0) {
-        const fresh = await discoverAll(backends);
-        const changed = JSON.stringify(fresh.map((m) => m.capability).sort())
-          !== JSON.stringify(models.map((m) => m.capability).sort());
-        models = fresh;
-        lastInventoryAt = Date.now();
-        if (changed) await publishInventory();
+        // Its own try: a model backend that is down is a local problem. Left
+        // in the outer try it counted as a failed server poll and paused task
+        // polling for up to five minutes, with the server perfectly healthy.
+        try {
+          const fresh = await discoverAll(backends);
+          const changed = JSON.stringify(fresh.map((m) => m.capability).sort())
+            !== JSON.stringify(models.map((m) => m.capability).sort());
+          models = fresh;
+          lastInventoryAt = Date.now();
+          if (changed) await publishInventory();
+        } catch (err) {
+          console.error(`[model-worker] inventory refresh failed (${describeFailure(err)}); serving with the previous inventory`);
+        }
       }
 
       const work = (await client.checkWork()) as {

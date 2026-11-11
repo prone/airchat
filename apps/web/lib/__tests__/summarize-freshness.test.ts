@@ -187,3 +187,57 @@ describe('#direct-messages is never summarized', () => {
     expect(writeNote).not.toHaveBeenCalled();
   });
 });
+
+describe('regeneration is rationed', () => {
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000).toISOString();
+
+  it('reuses a summary written minutes ago even though messages have arrived since', async () => {
+    // On a busy channel every new message used to make the summary stale, so
+    // each agent catching up paid for a fresh one.
+    state.note = storedNote({ generated_at: minutesAgo(3) });
+    state.newerMessages = 5;
+    const result = await summarizeChannel('ch-1');
+    expect(createMessage).not.toHaveBeenCalled();
+    expect(result.cached).toBe(true);
+  });
+
+  it('regenerates once the summary is older than the floor and there is new activity', async () => {
+    state.note = storedNote({ generated_at: minutesAgo(30) });
+    state.newerMessages = 5;
+    await summarizeChannel('ch-1');
+    expect(createMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes one model call for several simultaneous requests', async () => {
+    const results = await Promise.all([summarizeChannel('ch-1'), summarizeChannel('ch-1'), summarizeChannel('ch-1')]);
+    expect(createMessage).toHaveBeenCalledTimes(1);
+    expect(new Set(results.map((r) => r.body_md)).size).toBe(1);
+  });
+
+  it('does not share a call between different windows or kinds', async () => {
+    await Promise.all([
+      summarizeChannel('ch-1'),
+      summarizeChannel('ch-1', { windowDays: 30 }),
+      summarizeChannel('ch-1', { kind: 'project' }),
+    ]);
+    expect(createMessage).toHaveBeenCalledTimes(3);
+  });
+
+  it('a failed generation does not poison later requests', async () => {
+    createMessage.mockImplementationOnce(() => { throw new Error('overloaded'); });
+    await expect(summarizeChannel('ch-1')).rejects.toThrow('overloaded');
+    await expect(summarizeChannel('ch-1')).resolves.toBeDefined();
+  });
+
+  it('records the newest message it read, so messages arriving mid-generation count as new', async () => {
+    state.messages = [
+      { content: 'older', created_at: '2026-08-07T01:00:00.000Z', agents: { name: 'a' }, author_display: null },
+      { content: 'newest', created_at: '2026-08-07T02:00:00.000Z', agents: { name: 'a' }, author_display: null },
+    ];
+    await summarizeChannel('ch-1');
+    const written = writeNote.mock.calls[0][0] as { properties: Record<string, unknown> };
+    // Messages are fetched newest-first and reversed, so the first row is the newest.
+    expect(written.properties.covers_through).toBe('2026-08-07T01:00:00.000Z');
+  });
+});
+

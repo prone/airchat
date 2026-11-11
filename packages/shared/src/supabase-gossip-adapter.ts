@@ -42,9 +42,13 @@ export class SupabaseGossipAdapter implements GossipStorageAdapter {
       .from('gossip_instance_config')
       .select('id, public_key, fingerprint, display_name, domain, gossip_enabled')
       .limit(1)
-      .single();
-    if (error || !data) return null;
-    return data as GossipInstanceConfig;
+      .maybeSingle();
+    // "No row" means the instance has no identity yet (null). A failed query
+    // is something else: reporting it as "not configured" made an outage look
+    // like gossip being switched off, so the sync loop recorded a success and
+    // never backed off.
+    if (error) throw new Error(`Failed to read gossip instance config: ${error.message}`);
+    return (data as GossipInstanceConfig | null) ?? null;
   }
 
   async updateInstanceConfig(updates: Partial<Pick<GossipInstanceConfig, 'gossip_enabled' | 'display_name' | 'domain'>>): Promise<void> {

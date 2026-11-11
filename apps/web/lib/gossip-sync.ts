@@ -516,8 +516,15 @@ async function syncLoop(): Promise<void> {
   const peers = await gossip.listPeers();
   const activePeers = peers.filter((p: { active: boolean; suspended: boolean }) => p.active && !p.suspended);
 
+  let failed = 0;
+  let lastError: unknown = null;
   for (const peer of activePeers) {
-    try { await syncFromPeer(peer); } catch { /* individual failures don't stop loop */ }
+    try { await syncFromPeer(peer); } catch (err) { failed++; lastError = err; /* keep going */ }
+  }
+  // One bad peer must not slow the others down. Every peer failing is the
+  // signature of a problem on our side (usually the database), so back off.
+  if (activePeers.length > 0 && failed === activePeers.length) {
+    throw lastError instanceof Error ? lastError : new Error('every peer sync failed');
   }
 }
 
@@ -621,6 +628,9 @@ export function startSyncWorker(): void {
   // Drop any cached config — an explicit start (e.g. gossip just enabled via
   // the API) must not be no-oped by a stale cached gossip_enabled=false.
   configCache = null;
+  // An explicit start also clears any backoff left from earlier failures;
+  // otherwise the first sync after "enable" could be skipped for half an hour.
+  syncBackoff.success();
   console.log(`[gossip] Sync worker started (polling every ${SYNC_INTERVAL_MS / 1000}s)`);
   syncInterval = setInterval(() => { void guardedSyncLoop(); }, SYNC_INTERVAL_MS);
   void guardedSyncLoop();

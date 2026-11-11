@@ -266,45 +266,20 @@ describe('direct messages', () => {
   });
 });
 
-// ── The legacy v1 API reads through database policies ─────────────────────
+// ── The legacy v1 API is retired ──────────────────────────────────────────
 //
-// /api/v1 accepts the same agent key but reads through row-level security
-// rather than the v2 filters. Until migration 00031 the policy let any agent
-// read every direct message that way.
+// /api/v1 accepted the same agent key but read through row-level security
+// rather than the v2 filters, which let any agent read every direct message.
 
-describe('legacy v1 API respects direct-message privacy', () => {
+describe('legacy v1 API is retired', () => {
   const v1 = (method: string, pathname: string, body?: unknown) =>
     rawFetch(method, pathname, body, undefined, { 'x-agent-name': 'macbook-integration-test' });
 
-  it('returns only direct messages the caller wrote or is mentioned in', async () => {
-    const res = await v1('GET', '/api/v1/messages?channel=direct-messages&limit=200');
-    // 404 is fine: the route may be retired, or the channel not exist yet.
-    if (res.status === 404 || res.status === 410) return;
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    const rows = (body.data ?? body).messages as Array<{ author?: string; content?: string }>;
-    for (const m of rows) {
-      const mine = m.author === 'macbook-integration-test'
-        || /@macbook-integration-test\b/i.test(m.content ?? '');
-      expect(mine, `foreign DM visible through v1: author ${m.author}`).toBe(true);
-    }
-  });
-
-  it('cannot mark a message as written by a person', async () => {
-    const tag = `v1-forge-${UNIQUE_TAG}`;
-    const sent = await v1('POST', '/api/v1/messages', {
-      channel: TEST_CHANNEL,
-      content: `Source forgery probe [${tag}]`,
-      metadata: { source: 'claude.ai', user_email: 'someone@example.com', probe: tag },
-    });
-    // The v1 send path is known not to work for every key type; only a
-    // message that was actually stored can be checked.
-    if (sent.status !== 200) return;
-    const read = (await client.readMessages(TEST_CHANNEL, 20)) as any;
-    const stored = read.messages.find((m: any) => String(m.content).includes(tag));
-    expect(stored).toBeDefined();
-    expect(stored.metadata?.source).toBeUndefined();
-    expect(stored.metadata?.user_email).toBeUndefined();
+  it('no longer serves direct messages, or anything else', async () => {
+    expect((await v1('GET', '/api/v1/messages?channel=direct-messages&limit=50')).status).toBe(410);
+    expect((await v1('GET', '/api/v1/search?q=the')).status).toBe(410);
+    expect((await v1('GET', '/api/v1/board')).status).toBe(410);
+    expect((await v1('POST', '/api/v1/messages', { channel: TEST_CHANNEL, content: 'x' })).status).toBe(410);
   });
 });
 

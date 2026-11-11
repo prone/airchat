@@ -38,6 +38,15 @@ const DEFAULT_WINDOW_DAYS = 7;
 // Project summaries sample a wider window to describe the whole project.
 const PROJECT_WINDOW_DAYS = 90;
 const MAX_MESSAGES = 400;
+/**
+ * A summary younger than this is returned as it is, even if messages have
+ * arrived since. On a busy channel every new message made the stored summary
+ * "stale", so each agent catching up paid for a fresh one a few messages apart.
+ */
+const MIN_REGENERATION_INTERVAL_MS = 10 * 60_000;
+
+/** Requests already generating, so simultaneous askers share one model call. */
+const inFlight = new Map<string, Promise<ChannelSummaryResult>>();
 
 export function summariesEnabled(): boolean {
   return !!process.env.ANTHROPIC_API_KEY;
@@ -135,14 +144,21 @@ async function freshSummary(
   const storedKind = kind === 'project' ? 'project-summary' : 'channel-summary';
   if (props?.kind !== storedKind) return null;
 
-  const { count } = await client
-    .from('messages')
-    .select('id', { count: 'exact', head: true })
-    .eq('channel_id', channelId)
-    .eq('quarantined', false)
-    .gt('created_at', generatedAt);
+  // `covers_through` is the newest message the summary actually read. Older
+  // notes lack it; for them fall back to when the note was written.
+  const coversThrough = typeof props?.covers_through === 'string' ? props.covers_through : generatedAt;
+  const recentlyWritten = Date.now() - new Date(generatedAt).getTime() < MIN_REGENERATION_INTERVAL_MS;
 
-  if ((count ?? 0) > 0) return null;
+  if (!recentlyWritten) {
+    const { count } = await client
+      .from('messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('channel_id', channelId)
+      .eq('quarantined', false)
+      .gt('created_at', coversThrough);
+
+    if ((count ?? 0) > 0) return null;
+  }
 
   return {
     channel: channelName,
@@ -206,6 +222,24 @@ export async function summarizeChannel(
     if (cached) return cached;
   }
 
+  // Several agents asking for the same summary at once get one model call.
+  const key = `${channel.id}:${kind}:${windowDays}`;
+  const running = inFlight.get(key);
+  if (running) return running;
+
+  const work = generateSummary(channel, kind, windowDays, opts?.requestedBy).finally(() => inFlight.delete(key));
+  inFlight.set(key, work);
+  return work;
+}
+
+async function generateSummary(
+  channel: { id: string; name: string },
+  kind: SummaryKind,
+  windowDays: number,
+  requestedBy?: { agentId: string },
+): Promise<ChannelSummaryResult> {
+  const client = getSupabaseClient();
+  const channelId = channel.id;
   const since = new Date(Date.now() - windowDays * 86_400_000).toISOString();
   // Sample the MOST RECENT messages in the window, not the oldest. With a cap
   // (MAX_MESSAGES) an ascending fetch keeps only a channel's earliest messages
@@ -254,7 +288,7 @@ export async function summarizeChannel(
   await client.from('llm_usage').insert({
     purpose: `channel-summary:${kind}`,
     channel_id: channelId,
-    agent_id: opts?.requestedBy?.agentId ?? null,
+    agent_id: requestedBy?.agentId ?? null,
     source: 'native',
     model,
     input_tokens: response.usage.input_tokens,
@@ -271,6 +305,10 @@ export async function summarizeChannel(
   if (!body) throw new SummaryError('Summary generation returned no text', 502);
 
   const generatedAt = new Date().toISOString();
+  // The newest message the model was actually shown. Staleness is judged from
+  // here, not from generatedAt: messages that arrived while the model was
+  // writing are newer than this and correctly count as not yet summarised.
+  const coversThrough = (msgs[msgs.length - 1] as { created_at: string }).created_at;
   const slug = SLUG_BY_KIND[kind];
   const summarizer = await ensureSummarizerAgent();
   const scoped = getStorageAdapter().forAgent(summarizer);
@@ -285,6 +323,7 @@ export async function summarizeChannel(
       message_count: included,
       model,
       generated_at: generatedAt,
+      covers_through: coversThrough,
     },
     protect: true,
   });

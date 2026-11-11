@@ -35,19 +35,17 @@ describe('resolveTrustedSource', () => {
     expect(source).toBe('claude.ai');
   });
 
-  it('marks the Slack bridge, recognised by its registered agent name', () => {
-    // Repairs a real bug: the bridge sent source:'slack' in metadata via
-    // AirChatRestClient -> /api/v2/messages, where the key was stripped. The
-    // marking never landed, so the echo-loop guard in /api/slack/forward, which
-    // tests metadata.source === 'slack', could never fire.
-    expect(resolveTrustedSource(agent('nas-slack-bridge'))).toBe('slack');
-    expect(resolveTrustedSource(agent('macbook-slack-bridge'))).toBe('slack');
+  it('marks the Slack bridge by the flag an admin set on its agent, not by its name', () => {
+    expect(resolveTrustedSource({ ...agent('nas-slack-bridge'), trustedSource: 'slack' })).toBe('slack');
+    expect(resolveTrustedSource({ ...agent('anything-at-all'), trustedSource: 'slack' })).toBe('slack');
   });
 
-  it('does not mark an agent that merely mentions slack-bridge in its name', () => {
-    // Suffix match on the registered form, not a substring anywhere.
+  it('does not mark an agent just because it is named like the bridge', () => {
+    // Any machine can register an agent called "<x>-slack-bridge"; the name
+    // used to be enough to have its posts shown as written by a person.
+    expect(resolveTrustedSource(agent('nas-slack-bridge'))).toBeUndefined();
+    expect(resolveTrustedSource(agent('evil-slack-bridge'))).toBeUndefined();
     expect(resolveTrustedSource(agent('slack-bridge-impostor'))).toBeUndefined();
-    expect(resolveTrustedSource(agent('fake-slack-bridge-2'))).toBeUndefined();
   });
 
   it('does not let an agent name itself into the connector source', () => {

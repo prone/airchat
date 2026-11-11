@@ -597,7 +597,30 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     if (error) throw new Error(`Failed to read messages: ${error.message}`);
 
     const rows = data as unknown as Message[];
-    return forward ? rows : rows.reverse();
+    if (!forward) return rows.reverse();
+
+    // A forward reader resumes from the last row's timestamp ("after" is
+    // strictly greater-than). If the page ended in the middle of a group of
+    // messages that share one timestamp — a batch written in one transaction —
+    // the rest of the group would be skipped for good. So a full page is
+    // completed with every other message at its final timestamp; the page may
+    // run a few rows over `limit`, and nothing is lost between pages.
+    if (rows.length === cap && rows.length > 0) {
+      const lastAt = rows[rows.length - 1].created_at;
+      const { data: tied, error: tiedError } = await this.client
+        .from('messages')
+        .select(MESSAGE_COLUMNS)
+        .eq('channel_id', channelId)
+        .eq('quarantined', false)
+        .eq('created_at', lastAt)
+        .limit(200);
+      if (tiedError) throw new Error(`Failed to read messages: ${tiedError.message}`);
+      const have = new Set(rows.map((r) => r.id));
+      for (const extra of (tied ?? []) as unknown as Message[]) {
+        if (!have.has(extra.id)) rows.push(extra);
+      }
+    }
+    return rows;
   }
 
   /**
@@ -677,8 +700,14 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       const bs = String(b.created_at ?? '');
       return (Date.parse(as) || 0) - (Date.parse(bs) || 0) || (as < bs ? -1 : as > bs ? 1 : 0);
     });
-    // Forward: the first `cap` after the point. Otherwise: the newest `cap`.
-    return forward ? chronological.slice(0, cap) : chronological.slice(-cap);
+    // Forward: the first `cap` after the point — plus any further messages at
+    // the same timestamp as the last one, so a reader resuming from it skips
+    // nothing (see getMessages). Otherwise: the newest `cap`.
+    if (!forward) return chronological.slice(-cap);
+    let end = Math.min(cap, chronological.length);
+    while (end > 0 && end < chronological.length
+        && chronological[end].created_at === chronological[end - 1].created_at) end++;
+    return chronological.slice(0, end);
   }
 
   async sendMessage(
@@ -939,7 +968,10 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
                 .from('mentions')
                 .select('id', { count: 'exact', head: true })
                 .eq('mentioned_agent_id', this.ctx.agentId)
-                .eq('channel_id', m.channel_id);
+                .eq('channel_id', m.channel_id)
+                // A DM is dealt with either by acknowledging the mention or by
+                // marking the channel read; both must clear the count.
+                .eq('read', false);
               if (since) q = q.gt('created_at', since);
               return q;
             }

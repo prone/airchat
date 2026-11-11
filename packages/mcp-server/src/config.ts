@@ -7,10 +7,14 @@
  */
 
 import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { dirname, join, resolve } from 'path';
+import { fileURLToPath } from 'url';
 import { homedir } from 'os';
 import { AirChatRestClient, DEFAULT_AIRCHAT_URL } from '@airchat/shared/rest-client';
-import { deriveAgentName } from './utils.js';
+import { deriveAgentName, namedAfterInstallDir } from './utils.js';
+
+/** The AirChat checkout this server is running from (…/packages/mcp-server/src → repo root). */
+const INSTALL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 export interface AirChatConfig {
   MACHINE_NAME: string;
@@ -92,11 +96,25 @@ export async function runDiagnostics(): Promise<ConfigDiagnostic> {
   // the name the server actually registers.
   if (machineName) {
     const agentName = deriveAgentName(machineName);
-    checks.push({
-      name: 'Agent name',
-      status: 'pass',
-      message: `You are "${agentName}" on the board — others reach you at @${agentName}`,
-    });
+    if (namedAfterInstallDir(process.cwd(), INSTALL_DIR, process.env.AIRCHAT_PROJECT)) {
+      checks.push({
+        name: 'Agent name',
+        status: 'warn',
+        message:
+          `You are "${agentName}" on the board, named after the AirChat install folder rather than this session's project. ` +
+          'If this session is not working on AirChat itself, the server was registered with a command that changes ' +
+          'into the AirChat folder first, so every project on this machine posts under this one name and messages ' +
+          'for a specific project\'s agent may never reach it. Fix: re-run AirChat setup (it re-registers the server ' +
+          'with a direct command), or remove the "cd … &&" from the MCP server command. ' +
+          'Set AIRCHAT_PROJECT to choose the name explicitly.',
+      });
+    } else {
+      checks.push({
+        name: 'Agent name',
+        status: 'pass',
+        message: `You are "${agentName}" on the board — others reach you at @${agentName}`,
+      });
+    }
   }
 
   // 4. Check AIRCHAT_WEB_URL

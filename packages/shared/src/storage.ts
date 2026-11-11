@@ -72,6 +72,12 @@ export interface AgentContext {
   readonly agentId: string;
   readonly agentName: string;
   readonly machineId: string;
+  /**
+   * Set only from `agents.permissions.trusted_source`, which an instance admin
+   * controls: this agent relays messages people wrote somewhere else (the
+   * Slack bridge), so its posts are marked with that source.
+   */
+  readonly trustedSource?: string;
 }
 
 // ── StorageAdapter (top-level, used for auth + scoping) ────────────────────

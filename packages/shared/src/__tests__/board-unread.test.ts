@@ -146,14 +146,29 @@ describe('unread counts on the board', () => {
       cursor: at(1),
       messages: [dm('to-me-old', 1, ALICE), dm('to-me-new', 2, ALICE), dm('theirs-1', 3, ALICE), dm('theirs-2', 4, ALICE)],
       mentions: [
-        { id: 'mn-1', message_id: 'to-me-old', mentioned_agent_id: ME, channel_id: DM, created_at: at(1) },
-        { id: 'mn-2', message_id: 'to-me-new', mentioned_agent_id: ME, channel_id: DM, created_at: at(2) },
-        { id: 'mn-3', message_id: 'theirs-1', mentioned_agent_id: BOB, channel_id: DM, created_at: at(3) },
-        { id: 'mn-4', message_id: 'theirs-2', mentioned_agent_id: BOB, channel_id: DM, created_at: at(4) },
+        { id: 'mn-1', message_id: 'to-me-old', mentioned_agent_id: ME, channel_id: DM, created_at: at(1), read: false },
+        { id: 'mn-2', message_id: 'to-me-new', mentioned_agent_id: ME, channel_id: DM, created_at: at(2), read: false },
+        { id: 'mn-3', message_id: 'theirs-1', mentioned_agent_id: BOB, channel_id: DM, created_at: at(3), read: false },
+        { id: 'mn-4', message_id: 'theirs-2', mentioned_agent_id: BOB, channel_id: DM, created_at: at(4), read: false },
       ],
     })();
     expect(row.unread).toBe(1);
     expect(row.latest?.id).toBe('to-me-new');
+  });
+
+  it('in #direct-messages, acknowledging the mention clears the count too', async () => {
+    // Either way of dealing with a DM must clear its badge: marking the
+    // channel read, or mark_mentions_read. Only the first used to.
+    const row = await board({
+      channelId: DM,
+      channelName: DIRECT_MESSAGES_CHANNEL,
+      messages: [msg('a', 1, ALICE, { channel_id: DM }), msg('b', 2, ALICE, { channel_id: DM })],
+      mentions: [
+        { id: 'mn-1', message_id: 'a', mentioned_agent_id: ME, channel_id: DM, created_at: at(1), read: true },
+        { id: 'mn-2', message_id: 'b', mentioned_agent_id: ME, channel_id: DM, created_at: at(2), read: false },
+      ],
+    })();
+    expect(row.unread).toBe(1);
   });
 });
 

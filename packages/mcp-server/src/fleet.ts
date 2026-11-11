@@ -179,6 +179,17 @@ export async function runModel(
       backoff.success();
       lastPollError = null;
     } catch (err) {
+      // 4xx other than 429 will not get better by waiting: the task was
+      // deleted, or this agent may not read it. Stop instead of blocking the
+      // caller until the deadline.
+      const httpStatus = (err as { status?: unknown })?.status;
+      if (typeof httpStatus === 'number' && httpStatus >= 400 && httpStatus < 500 && httpStatus !== 429) {
+        return {
+          status,
+          task_id: task.id,
+          error: `Could not read the task back (HTTP ${httpStatus}): ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
       backoff.failure();
       lastPollError = err;
       continue;

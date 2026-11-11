@@ -104,7 +104,7 @@ export async function authenticateConnector(
   // credential guessing — a 256-bit token is unguessable — it is unauthenticated
   // DB-query amplification against an endpoint meant to face the internet.
   // /api/v2 has no IP limit because it is LAN-only; this endpoint is not, so it
-  // follows the v1 pattern instead (see api-v1-auth.ts).
+  // applies an IP limit of its own.
   const ipLimited = checkIpRateLimit(clientIp(request));
   if (!ipLimited.allowed) {
     return rateLimited(ipLimited.retryAfterMs);
