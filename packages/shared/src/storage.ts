@@ -89,6 +89,23 @@ export interface AgentContext {
    * #direct-messages. Never set for an agent.
    */
   readonly includeDirectMessages?: boolean;
+  /**
+   * The agent's capability card (agents.metadata.card) as authentication read
+   * it, or null when it has none. Present so a route that needs the card does
+   * not fetch the agent row a second time. `undefined` means the context was
+   * built without the row's metadata; callers then use getOwnCard(). Comes
+   * from the authentication cache, which is dropped when the card is updated
+   * through the API.
+   */
+  readonly card?: Record<string, unknown> | null;
+}
+
+/** What GET /api/v2/work returns, before the route renames mention fields. */
+export interface AgentWork {
+  mentions: MentionWithContext[];
+  open_matching: Task[];
+  mine_claimed: Task[];
+  completed_for_me: Task[];
 }
 
 // ── StorageAdapter (top-level, used for auth + scoping) ────────────────────
@@ -228,6 +245,12 @@ export interface ScopedStorageAdapter {
   cancelTask(id: string): Promise<Task>;
   /** The bound agent's own capability card, or null when none declared. */
   getOwnCard(): Promise<Record<string, unknown> | null>;
+  /**
+   * Unread mentions (newest 20), open tasks matching `capabilities` or
+   * untagged, tasks claimed by the agent, and its own tasks completed after
+   * `completedSince` (ISO timestamp) — in one database request.
+   */
+  getWork(capabilities: string[], completedSince: string): Promise<AgentWork>;
 
   // Mentions
   /** `limit` defaults to 100, the maximum. */
@@ -284,7 +307,7 @@ export interface ScopedStorageAdapter {
     properties?: Record<string, unknown>;
     updatedSince?: string;
     limit?: number;
-  }): Promise<Array<Pick<Note, 'slug' | 'channel_id' | 'title' | 'is_stub' | 'protected' | 'current_revision' | 'updated_at' | 'properties'> & { channel_name: string | null }>>;
+  }): Promise<Array<Pick<Note, 'slug' | 'channel_id' | 'title' | 'is_stub' | 'protected' | 'current_revision' | 'updated_at' | 'properties'> & { channel_name: string | null; created_by_name: string | null; updated_by_name: string | null }>>;
 
   /** Everything (notes and messages) linking to a given note. */
   getNoteBacklinks(channelName: string | null, slug: string): Promise<NoteBacklink[]>;
@@ -401,8 +424,13 @@ export interface GossipStorageAdapter {
   /** Find or create a channel by name, returning the channel ID. */
   findOrCreateChannelId(name: string, type: string, scope: FederationScope): Promise<string | null>;
 
-  /** Find or create a remote agent placeholder, returning the agent ID. */
-  findOrCreateRemoteAgent(name: string, peerFingerprint: string, originInstance: string | null): Promise<string | null>;
+  /**
+   * Find or create the placeholder agent for an author on another instance,
+   * returning its ID. Returns null when the author name is not acceptable or
+   * when the placeholder's name is already held by an agent that is not the
+   * placeholder for that same origin (for example an agent on this instance).
+   */
+  findOrCreateRemoteAgent(author: string, peerFingerprint: string, originInstance: string | null): Promise<string | null>;
 
   /** Insert a federated message. */
   insertFederatedMessage(msg: {
@@ -432,6 +460,15 @@ export interface GossipStorageAdapter {
 
   /** Quarantine a message by ID (exact match). */
   quarantineMessage(messageId: string): Promise<void>;
+
+  /** Recorded origin (originating instance and delivering peer) of federated messages, by ID. */
+  getMessageOrigins(messageIds: string[]): Promise<Array<{ message_id: string; origin_instance_fingerprint: string; peer_id: string | null }>>;
+
+  /**
+   * Quarantine one message that arrived over federation. Does nothing, and
+   * returns false, for a message written on this instance.
+   */
+  quarantineFederatedMessage(messageId: string): Promise<boolean>;
 
   /** Quarantine messages matching an ID suffix (for namespaced IDs). */
   quarantineMessagesBySuffix(idSuffix: string): Promise<void>;

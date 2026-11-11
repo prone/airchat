@@ -19,7 +19,7 @@ vi.mock('node:http', () => ({ default: { request: vi.fn() } }));
 import { EventEmitter } from 'node:events';
 import dns from 'dns/promises';
 import https from 'node:https';
-import { validatePeerEndpoint, fetchPeerUrl } from '../url-validation';
+import { validatePeerEndpoint, fetchPeerUrl, isPrivateIp, MAX_PEER_RESPONSE_BYTES } from '../url-validation';
 
 const mockDns = (v4: string[], v6: string[] = []) => {
   vi.mocked(dns.resolve4).mockResolvedValue(v4 as never);
@@ -30,6 +30,11 @@ interface StubReply {
   status?: number;
   headers?: Record<string, string>;
   body?: string;
+  /** Send the body as this many chunks of `chunkBytes`, instead of `body`. */
+  chunks?: number;
+  chunkBytes?: number;
+  /** Never finish the response (to exercise the deadline). */
+  hang?: boolean;
 }
 
 /** Captured request options, so tests can assert what address was dialled. */
@@ -52,7 +57,8 @@ const stubHttps = (replies: StubReply | StubReply[]) => {
       (callback as unknown as (r: unknown) => void)(res);
       setImmediate(() => {
         if (reply.body) res.emit('data', Buffer.from(reply.body));
-        res.emit('end');
+        for (let i = 0; i < (reply.chunks ?? 0); i++) res.emit('data', Buffer.alloc(reply.chunkBytes ?? 1));
+        if (!reply.hang) res.emit('end');
       });
     });
     return req;
@@ -148,6 +154,62 @@ describe('validatePeerEndpoint', () => {
     expect(res.error).toMatch(/could not be resolved/);
   });
 
+  // The WHATWG URL parser rewrites an IPv4-mapped literal into hex groups
+  // ([::ffff:169.254.169.254] becomes [::ffff:a9fe:a9fe]), which a check
+  // written against dotted quads never matches.
+  it.each([
+    ['http://[::ffff:169.254.169.254]', 'IPv4-mapped cloud metadata'],
+    ['http://[::ffff:a9fe:a9fe]', 'the same address in hex groups'],
+    ['http://[::ffff:127.0.0.1]', 'IPv4-mapped loopback'],
+    ['http://[::ffff:10.0.0.1]', 'IPv4-mapped RFC1918'],
+    ['http://[::]', 'unspecified address'],
+    ['http://[::1]', 'loopback'],
+    ['http://[::127.0.0.1]', 'IPv4-compatible loopback'],
+    ['http://[64:ff9b::169.254.169.254]', 'NAT64 to cloud metadata'],
+    ['http://[64:ff9b::a00:1]', 'NAT64 to RFC1918'],
+    ['http://[2002:a9fe:a9fe::1]', '6to4 to cloud metadata'],
+    ['http://[2002:7f00:1::]', '6to4 to loopback'],
+    ['http://[fe80::1]', 'link-local'],
+    ['http://[fd12:3456::1]', 'unique local'],
+    ['http://[ff02::1]', 'multicast'],
+    ['http://[2001:db8::1]', 'documentation range'],
+    ['http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]', 'Teredo'],
+    ['http://224.0.0.1', 'IPv4 multicast'],
+    ['http://239.255.255.250', 'IPv4 multicast (upper)'],
+    ['http://240.0.0.1', 'reserved'],
+    ['http://250.1.2.3', 'reserved (upper)'],
+    ['http://255.255.255.255', 'broadcast'],
+    ['http://198.18.0.1', 'benchmarking range'],
+    ['http://198.19.255.254', 'benchmarking range (upper)'],
+    ['http://192.88.99.1', '6to4 relay anycast'],
+  ])('rejects %s (%s)', async (url) => {
+    expect((await validatePeerEndpoint(url)).valid).toBe(false);
+  });
+
+  it.each([
+    'http://[2606:4700:4700::1111]',
+    'http://[::ffff:8.8.8.8]',
+    'http://[64:ff9b::808:808]',
+    'http://[2002:808:808::1]',
+    'http://198.17.255.255',
+    'http://198.20.0.1',
+    'http://223.255.255.254',
+  ])('still accepts the public address %s', async (url) => {
+    expect((await validatePeerEndpoint(url)).valid).toBe(true);
+  });
+
+  it('rejects a hostname whose AAAA record is an IPv4-mapped private address', async () => {
+    mockDns([], ['::ffff:a9fe:a9fe']);
+    expect((await validatePeerEndpoint('https://mapped.example.com')).valid).toBe(false);
+  });
+
+  it('treats anything that is not an IP address as unsafe', () => {
+    expect(isPrivateIp('not-an-ip')).toBe(true);
+    expect(isPrivateIp('fe80::1%eth0')).toBe(true);
+    expect(isPrivateIp('')).toBe(true);
+    expect(isPrivateIp('8.8.8.8')).toBe(false);
+  });
+
   // Pins behaviour rather than fixing a bug: the WHATWG URL parser normalises
   // these to 127.0.0.1, so the dotted-quad check catches them. Worth locking
   // in, since a hand-rolled host check would miss them.
@@ -203,15 +265,16 @@ describe('fetchPeerUrl', () => {
   });
 
   // The redirect bypass: the initial URL is public and passes validation, but
-  // the peer answers 302 pointing at cloud metadata.
-  it('re-validates redirect targets and blocks a redirect to a private address', async () => {
+  // the peer answers 302 pointing at cloud metadata. Redirects are not
+  // followed, so no second request is ever made.
+  it('does not follow a redirect to a private address', async () => {
     vi.mocked(dns.resolve4).mockImplementation(async (host: string) =>
       (host === 'evil.example.com' ? ['93.184.216.34'] : []) as never,
     );
     vi.mocked(dns.resolve6).mockResolvedValue([] as never);
     stubHttps({ status: 302, headers: { location: 'http://169.254.169.254/latest/meta-data' } });
 
-    await expect(fetchPeerUrl('https://evil.example.com')).rejects.toThrow(/Blocked peer request/);
+    await expect(fetchPeerUrl('https://evil.example.com')).rejects.toThrow(/redirect/);
     expect(https.request).toHaveBeenCalledTimes(1);
   });
 
@@ -244,33 +307,54 @@ describe('fetchPeerUrl', () => {
     });
   });
 
-  it('follows a redirect to another public host, re-pinning each hop', async () => {
-    vi.mocked(dns.resolve4).mockImplementation(async (host: string) =>
-      (host === 'first.example.com' ? ['93.184.216.34'] : ['93.184.216.99']) as never,
-    );
+  // A redirect to another public host would carry the request's signed
+  // headers and body to a server the operator never added as a peer.
+  it('does not follow a redirect to another public host', async () => {
+    mockDns(['93.184.216.34']);
     stubHttps([
       { status: 302, headers: { location: 'https://second.example.com/moved' } },
       { status: 200, body: 'landed' },
     ]);
 
-    const res = await fetchPeerUrl('https://first.example.com');
-    expect(res.status).toBe(200);
-    expect(await res.text()).toBe('landed');
-    expect(await dialledAddress(0)).toBe('93.184.216.34');
-    expect(await dialledAddress(1)).toBe('93.184.216.99');
+    await expect(
+      fetchPeerUrl('https://first.example.com/api/v2/gossip/push', {
+        method: 'POST',
+        headers: { 'x-gossip-signature-v2': 'sig' },
+        body: '{"messages":[]}',
+      }),
+    ).rejects.toThrow(/redirects are not followed/);
+    expect(https.request).toHaveBeenCalledTimes(1);
   });
 
-  it('throws when a redirect has no Location header', async () => {
+  it.each([301, 302, 303, 307, 308])('treats HTTP %i as an error even on the same host', async (status) => {
     mockDns(['93.184.216.34']);
-    stubHttps({ status: 302 });
+    stubHttps({ status, headers: { location: '/elsewhere' } });
 
-    await expect(fetchPeerUrl('https://example.com')).rejects.toThrow(/no Location header/);
+    await expect(fetchPeerUrl('https://example.com')).rejects.toThrow(/redirect/);
+    expect(https.request).toHaveBeenCalledTimes(1);
   });
 
-  it('gives up after too many redirects', async () => {
+  it('accepts a response body up to the size cap', async () => {
     mockDns(['93.184.216.34']);
-    stubHttps({ status: 302, headers: { location: 'https://example.com/next' } });
+    stubHttps({ status: 200, chunks: 2, chunkBytes: MAX_PEER_RESPONSE_BYTES / 2 });
 
-    await expect(fetchPeerUrl('https://example.com')).rejects.toThrow(/exceeded \d+ redirects/);
+    const res = await fetchPeerUrl('https://example.com');
+    expect((await res.arrayBuffer()).byteLength).toBe(MAX_PEER_RESPONSE_BYTES);
+  });
+
+  it('abandons a response body larger than the size cap', async () => {
+    mockDns(['93.184.216.34']);
+    stubHttps({ status: 200, chunks: 3, chunkBytes: MAX_PEER_RESPONSE_BYTES / 2 });
+
+    await expect(fetchPeerUrl('https://example.com')).rejects.toThrow(/exceeded \d+ bytes/);
+  });
+
+  // A peer that keeps the connection busy with a trickle of bytes never trips
+  // an idle timeout; the deadline covers the whole request.
+  it('gives up at the deadline even while data keeps arriving', async () => {
+    mockDns(['93.184.216.34']);
+    stubHttps({ status: 200, chunks: 5, hang: true });
+
+    await expect(fetchPeerUrl('https://example.com', { timeoutMs: 20 })).rejects.toThrow(/timed out/);
   });
 });

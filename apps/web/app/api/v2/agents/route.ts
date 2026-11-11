@@ -2,8 +2,9 @@ import { NextRequest } from 'next/server';
 import { authenticateAgent, isAuthError, checkAgentRateLimit } from '@/lib/api-v2-auth';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { createSupabaseAdmin } from '@/lib/supabase-server';
-import { effectiveRatePerMtok, totalTokens } from '@airchat/shared';
-import type { AgentCard, ModelPrice, TokenCounts } from '@airchat/shared';
+import { effectiveRatePerMtok } from '@airchat/shared';
+import type { AgentCard, ModelPrice } from '@airchat/shared';
+import { getModelPrices, getTokensTodayByAgent } from '@/lib/usage-cache';
 
 const CAPABILITY_PATTERN = /^[a-z0-9][a-z0-9-]{0,49}$/;
 
@@ -132,48 +133,23 @@ export async function GET(request: NextRequest) {
 
     // Cost/usage enrichment degrades gracefully: a failed lookup leaves rates
     // null and tokens_today at 0 rather than failing the routing question.
-    const prices = new Map<string, ModelPrice>();
+    //
+    // Both come from a 60-second in-process cache (lib/usage-cache): the price
+    // table, and one aggregate query for today's tokens per agent. This call
+    // used to download every usage row of the day to add them up.
+    let prices = new Map<string, ModelPrice>();
     try {
-      const { data: priceRows, error: priceError } = await admin
-        .from('model_prices')
-        .select('model, input_per_mtok, output_per_mtok, cache_read_per_mtok, cache_write_per_mtok');
-      if (priceError) {
-        console.error('find_agents: model_prices fetch failed:', priceError.message);
-      }
-      for (const p of priceRows ?? []) prices.set(p.model, p as ModelPrice);
+      prices = await getModelPrices(admin);
     } catch (err) {
-      console.error('find_agents: model_prices fetch failed:', err);
+      console.error('find_agents: model_prices fetch failed:', err instanceof Error ? err.message : err);
     }
 
-    const tokensTodayById = new Map<string, number>();
-    const ids = rows.map(a => (a as { id: string }).id).filter(Boolean);
-    if (ids.length > 0) {
+    let tokensTodayById = new Map<string, number>();
+    if (rows.length > 0) {
       try {
-        const todayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
-        // PostgREST caps unbounded selects at 1000 rows — page explicitly so a
-        // busy day doesn't silently undercount.
-        const PAGE_SIZE = 1000;
-        for (let from = 0; ; from += PAGE_SIZE) {
-          const { data: usageRows, error: usageError } = await admin
-            .from('llm_usage')
-            .select('agent_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens')
-            .gte('created_at', todayStart)
-            .in('agent_id', ids)
-            .order('created_at', { ascending: true })
-            .order('id', { ascending: true })
-            .range(from, from + PAGE_SIZE - 1);
-          if (usageError) {
-            console.error('find_agents: llm_usage fetch failed:', usageError.message);
-            break;
-          }
-          for (const u of usageRows ?? []) {
-            const row = u as TokenCounts & { agent_id: string };
-            tokensTodayById.set(row.agent_id, (tokensTodayById.get(row.agent_id) ?? 0) + totalTokens(row));
-          }
-          if (!usageRows || usageRows.length < PAGE_SIZE) break;
-        }
+        tokensTodayById = await getTokensTodayByAgent(admin);
       } catch (err) {
-        console.error('find_agents: llm_usage fetch failed:', err);
+        console.error('find_agents: llm_usage fetch failed:', err instanceof Error ? err.message : err);
       }
     }
 

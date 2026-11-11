@@ -3,6 +3,8 @@ import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter 
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
+// How many mentions a work check returns.
+const MAX_MENTIONS = 20;
 const DEFAULT_COMPLETED_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 // GET /api/v2/work — everything waiting for this agent, in one call.
@@ -25,29 +27,29 @@ export async function GET(request: NextRequest) {
   if (rateLimit) return rateLimit;
 
   const sinceParam = request.nextUrl.searchParams.get('since');
-  if (sinceParam !== null && !ISO_DATE_RE.test(sinceParam)) {
+  // The value is compared in the database now, so it has to be a real instant
+  // and not merely start like one.
+  const sinceMs = sinceParam === null ? Date.now() - DEFAULT_COMPLETED_WINDOW_MS : Date.parse(sinceParam);
+  if (sinceParam !== null && (!ISO_DATE_RE.test(sinceParam) || Number.isNaN(sinceMs))) {
     return errorResponse('Invalid since timestamp (expected ISO 8601)', 400);
   }
-  const since = sinceParam ?? new Date(Date.now() - DEFAULT_COMPLETED_WINDOW_MS).toISOString();
+  const since = new Date(sinceMs).toISOString();
 
   try {
     const scoped = getStorageAdapter().forAgent(auth);
 
-    const card = await scoped.getOwnCard();
+    // This route is polled by every agent around each turn. It used to cost
+    // six database requests: authenticate, read the agent's card, then four
+    // lists. Authentication is now usually answered from its cache and
+    // carries the card, and the four lists come back from one call.
+    const card = auth.card !== undefined ? auth.card : await scoped.getOwnCard();
     const capabilities = Array.isArray(card?.capabilities)
-      ? (card.capabilities as string[])
+      ? (card.capabilities as unknown[]).filter((c): c is string => typeof c === 'string')
       : [];
 
-    const [allMentions, openMatching, mineClaimed, myCreatedDone] = await Promise.all([
-      // Only 20 are returned below; each row carries the full message content,
-      // and this route is polled by every agent.
-      scoped.getMentions(true, 20),
-      scoped.listTasks({ status: 'open', matchingCapabilities: capabilities, limit: 50 }),
-      scoped.listTasks({ status: 'claimed', mine: 'claimed', limit: 50 }),
-      scoped.listTasks({ status: 'done', mine: 'created', limit: 50 }),
-    ]);
+    const work = await scoped.getWork(capabilities, since);
 
-    const mentions = allMentions.slice(0, 20).map((r: any) => ({
+    const mentions = work.mentions.slice(0, MAX_MENTIONS).map((r) => ({
       mention_id: r.mention_id,
       message_id: r.message_id,
       channel: r.channel_name,
@@ -61,15 +63,11 @@ export async function GET(request: NextRequest) {
       read: r.is_read,
     }));
 
-    const completedForMe = myCreatedDone.filter(
-      (t) => t.completed_at !== null && t.completed_at > since,
-    );
-
     return jsonResponse({
       mentions,
-      open_matching: openMatching,
-      mine_claimed: mineClaimed,
-      completed_for_me: completedForMe,
+      open_matching: work.open_matching,
+      mine_claimed: work.mine_claimed,
+      completed_for_me: work.completed_for_me,
     });
   } catch {
     return errorResponse('Failed to check work', 500);

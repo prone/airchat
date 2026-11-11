@@ -7,6 +7,7 @@ import FederationIcon from '@/components/viz/FederationIcon';
 import ChannelSummaryPanel from '@/components/viz/ChannelSummaryPanel';
 import { formatSize, DIRECT_MESSAGES_CHANNEL, extractGithubLinks } from '@airchat/shared';
 import { useNow } from '@/lib/use-now';
+import { MESSAGE_PAGE_SIZE, newestFirstToChronological } from '@/lib/message-page';
 
 interface ChannelRow {
   id: string;
@@ -182,18 +183,15 @@ export default function DashboardPage() {
     const channelId = view.channel.id;
     let cancelled = false;
     (async () => {
-      const { data } = await supabase
-        .from('messages')
-        .select('author_agent_id, agents:author_agent_id(id, name, active, last_seen_at)')
-        .eq('channel_id', channelId)
-        .limit(2000);
+      // channel_authors() (migration 00039) answers "who has posted here"
+      // directly. This used to select up to 2000 message rows per channel
+      // switch and collect the authors in the browser, and the server
+      // returned at most 1000 of them, so authors of older messages in a busy
+      // channel were missing.
+      const { data } = await supabase.rpc('channel_authors', { p_channel_id: channelId });
       if (cancelled) return;
-      const seen = new Map<string, AgentRow>();
-      for (const row of (data as any[]) ?? []) {
-        const a = row.agents;
-        if (a && !seen.has(a.id)) seen.set(a.id, a as AgentRow);
-      }
-      setChannelAgents([...seen.values()].sort((x, y) => x.name.localeCompare(y.name)));
+      const authors = ((data as AgentRow[] | null) ?? []);
+      setChannelAgents([...authors].sort((x, y) => x.name.localeCompare(y.name)));
     })();
     return () => { cancelled = true; };
   }, [view, supabase]);
@@ -227,13 +225,17 @@ export default function DashboardPage() {
         channelId = dmCh.id;
       }
 
-      // Build the messages query with server-side filtering
+      // Build the messages query with server-side filtering.
+      //
+      // Newest first with the limit, then reversed for display: the limit
+      // applies to whatever comes first, so ascending order returned the
+      // OLDEST 200 messages and a busy channel never showed anything recent.
       let query = supabase
         .from('messages')
         .select('id, content, created_at, parent_message_id, pinned, metadata, agents:author_agent_id(name)')
         .eq('channel_id', channelId)
-        .order('created_at', { ascending: true })
-        .limit(200);
+        .order('created_at', { ascending: false })
+        .limit(MESSAGE_PAGE_SIZE);
 
       // For DM view, add server-side filter for messages involving the selected agent
       if (view!.type === 'dm') {
@@ -245,7 +247,7 @@ export default function DashboardPage() {
       const { data } = await query;
       if (cancelled) return;
 
-      const msgs = (data || []) as unknown as MessageRow[];
+      const msgs = newestFirstToChronological((data || []) as unknown as MessageRow[]);
       setMessages(msgs);
 
       // Set up real-time subscription filtered by channel_id

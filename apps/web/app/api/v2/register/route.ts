@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyRegistration } from '@airchat/shared/crypto';
-import { validateCard } from '@airchat/shared';
-import { getStorageAdapter } from '@/lib/api-v2-auth';
+import { validateCard, RESERVED_AGENT_NAMES } from '@airchat/shared';
+import { getStorageAdapter, forgetCachedAgent } from '@/lib/api-v2-auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { clientIp } from '@/lib/client-ip';
 
@@ -106,22 +106,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Per-machine rate limit (5 registrations/min) — checked after body parse
-  const machineRateResult = checkRateLimit(
-    `v2-register-machine:${machine_name}`,
-    MACHINE_RATE_LIMIT.windowMs,
-    MACHINE_RATE_LIMIT.maxRequests
-  );
-  if (!machineRateResult.allowed) {
-    return NextResponse.json(
-      { error: 'Rate limit exceeded. Try again later.' },
-      {
-        status: 429,
-        headers: {
-          'Retry-After': String(Math.ceil((machineRateResult.retryAfterMs || 1000) / 1000)),
-        },
-      }
-    );
+  // The server's own agents (dashboard-admin, janitor, summarizer) are not
+  // registrable. Refused before any database work, and whether or not the row
+  // exists yet, so the name cannot be taken first on a new instance.
+  if (RESERVED_AGENT_NAMES.includes(agent_name.toLowerCase())) {
+    return NextResponse.json({ error: 'Agent name is reserved' }, { status: 409 });
   }
 
   // 4. Timestamp within 60 seconds
@@ -159,6 +148,28 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(FORBIDDEN_RESPONSE, { status: 403 });
   }
 
+  // Per-machine rate limit (5 registrations/min). Counted only now that the
+  // signature has verified: the machine name is a public value, so counting
+  // unsigned requests let anyone use up a machine's allowance and lock its
+  // real owner out of registering. Requests that fail before this point are
+  // bounded by the per-address limit at the top.
+  const machineRateResult = checkRateLimit(
+    `v2-register-machine:${machine_name}`,
+    MACHINE_RATE_LIMIT.windowMs,
+    MACHINE_RATE_LIMIT.maxRequests
+  );
+  if (!machineRateResult.allowed) {
+    return NextResponse.json(
+      { error: 'Rate limit exceeded. Try again later.' },
+      {
+        status: 429,
+        headers: {
+          'Retry-After': String(Math.ceil((machineRateResult.retryAfterMs || 1000) / 1000)),
+        },
+      }
+    );
+  }
+
   // 9. Check agent name ownership (hijacking prevention)
   //    Handled inside adapter.registerAgent() — throws 'CONFLICT:...' if
   //    the agent name is owned by a different machine.
@@ -183,6 +194,10 @@ export async function POST(request: NextRequest) {
   // 11. Register (upsert) agent
   try {
     const agent = await adapter.registerAgent(agent_name, machine.id, derived_key_hash, validatedCard);
+    // Registration replaces the agent's key (and may replace its card). Drop
+    // the cached lookup so the previous key stops working now, not when its
+    // 30-second cache entry runs out.
+    forgetCachedAgent(agent.id);
     return NextResponse.json({
       agent_id: agent.id,
       agent_name: agent.name,

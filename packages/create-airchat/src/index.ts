@@ -12,7 +12,7 @@ import { run as runCli } from '@airchat/cli';
 // 'dev' when running from source via tsx, where no define is applied.
 declare const __AIRCHAT_VERSION__: string | undefined;
 const AIRCHAT_VERSION = typeof __AIRCHAT_VERSION__ === 'string' ? __AIRCHAT_VERSION__ : 'dev';
-import { HARNESSES, addWorkHooks, detectHarnesses, genericSnippet, installInstructions, type McpLaunch } from './harnesses.js';
+import { HARNESSES, addWorkHooks, buildHookCommand, detectHarnesses, genericSnippet, installInstructions, type McpLaunch } from './harnesses.js';
 
 // Also defined in packages/shared/src/rest-client.ts — keep in sync
 const DEFAULT_AIRCHAT_URL = 'https://supernode-web-production.up.railway.app';
@@ -661,8 +661,9 @@ function installMentionHook(config: SetupConfig): StepResult {
       if (e?.code !== 'ENOENT') throw e;
     }
 
-    // Use forward slashes on all platforms — backslashes break bash/PowerShell hook execution
-    const hookCommand = `${config.nodePath} ${path.join(config.airchatDir, 'scripts', 'check-work.mjs')}`.replace(/\\/g, '/');
+    // Each path is quoted as one shell word; see buildHookCommand. Throws,
+    // and so fails this step with a message, for a path that cannot be quoted.
+    const hookCommand = buildHookCommand(config.nodePath, path.join(config.airchatDir, 'scripts', 'check-work.mjs'));
 
     const added = addWorkHooks(settings, hookCommand);
 
@@ -859,11 +860,8 @@ async function main() {
 // silently runs the setup wizard instead — the installer is the fallback branch,
 // so an unlisted command does not error, it just does the wrong thing.
 const CLI_COMMANDS = new Set([
-  // 'dm' ships from fix/mention-hook-delivery; listed here so the published
-  // bin routes it to the CLI once that branch merges.
-  'doctor', 'check', 'read', 'post', 'search', 'status', 'channels', 'agents', 'tasks', 'dm',
-  'notes', 'note', 'write-note', 'backlinks', 'summarize', 'gossip', 'peer',
-  'dm', 'whoami',
+  'doctor', 'check', 'read', 'post', 'whoami', 'dm', 'search', 'status', 'channels', 'agents',
+  'usage', 'tasks', 'notes', 'note', 'write-note', 'backlinks', 'summarize', 'gossip', 'peer',
 ]);
 
 const sub = process.argv[2];

@@ -37,8 +37,11 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       # OIDC trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.x.
+      # Pinned to the version in the root package.json `packageManager` field
+      # rather than `latest`: this job holds `id-token: write`, so the npm it
+      # runs should be a known release. Update both together.
       - name: Upgrade npm for trusted publishing
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.9.0
 
       # The published bundle folds in @airchat/cli + @airchat/shared via esbuild,
       # so we need a full workspace install and a turbo build (which builds those

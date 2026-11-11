@@ -243,7 +243,9 @@ export interface FleetUsage {
  * events and prices however they like (service-role query, RLS query).
  */
 export function summarizeUsage(
-  rows: Array<TokenCounts & { model: string; source: UsageSource }>,
+  // `events` is set when a row is already a sum of that many events (the
+  // database aggregates before sending); a row without it is one event.
+  rows: Array<TokenCounts & { model: string; source: UsageSource; events?: number }>,
   agent: string,
   plan: BillingPlan | null,
   since: Date,
@@ -266,7 +268,7 @@ export function summarizeUsage(
       existing.output_tokens += row.output_tokens;
       existing.cache_read_tokens += row.cache_read_tokens;
       existing.cache_creation_tokens += row.cache_creation_tokens;
-      existing.events += 1;
+      existing.events += row.events ?? 1;
     } else {
       byKey.set(key, {
         model: row.model,
@@ -275,7 +277,7 @@ export function summarizeUsage(
         output_tokens: row.output_tokens,
         cache_read_tokens: row.cache_read_tokens,
         cache_creation_tokens: row.cache_creation_tokens,
-        events: 1,
+        events: row.events ?? 1,
         est_cost_usd: null,
       });
     }

@@ -34,8 +34,8 @@ describe('canonical resource URI', () => {
   });
 
   it('preserves a non-default port', () => {
-    expect(canonicalResourceUri(req('http://100.99.11.124:3003/mcp')))
-      .toBe('http://100.99.11.124:3003/mcp');
+    expect(canonicalResourceUri(req('http://100.64.0.10:3003/mcp')))
+      .toBe('http://100.64.0.10:3003/mcp');
   });
 });
 

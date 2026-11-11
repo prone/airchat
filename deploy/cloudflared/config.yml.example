@@ -1,0 +1,33 @@
+# cloudflared ingress for the AirChat MCP endpoint.
+#
+# Copy this file to config.yml (gitignored) and replace the two placeholders:
+#   <TUNNEL_ID>        the UUID printed by `cloudflared tunnel create`
+#   mcp.example.com    the public hostname routed to the tunnel
+# cloudflared does not expand environment variables in this file, so the values
+# are written in directly.
+#
+# Exposes ONLY the paths the claude.ai connector needs. Everything else returns
+# 404 without reaching the application.
+#
+# Keep the rule narrow. A rule of `service: http://...` with no `path` would
+# also publish /api/v2, whose routes accept an agent's derived key, which has
+# no scope, expiry or audience binding.
+#
+# `path` is a Go (RE2) regular expression. Rules are evaluated in order and the
+# last must be a catch-all.
+
+tunnel: <TUNNEL_ID>
+# Path inside the container; the compose overlay mounts the credentials file here.
+credentials-file: /etc/cloudflared/<TUNNEL_ID>.json
+
+originRequest:
+  connectTimeout: 30s
+  noHappyEyeballs: true
+
+ingress:
+  - hostname: mcp.example.com
+    path: ^/(mcp|api/mcp|api/oauth/.*|\.well-known/.*|oauth/consent|login|_next/.*)$
+    service: http://agentchat-web:3002
+
+  # Anything else on this hostname, and anything on any other hostname.
+  - service: http_status:404

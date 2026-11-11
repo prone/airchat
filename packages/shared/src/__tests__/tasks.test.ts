@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateTaskInput, checkTransition, isTaskChannelAllowed, type Task } from '../tasks.js';
+import { validateTaskInput, checkTransition, checkClaimEligibility, isTaskChannelAllowed, MAX_CONCURRENT_CLAIMS, type Task } from '../tasks.js';
 import { fleetAgent } from '../demo-fleet.js';
 
 // The canonical scenario from docs/scenarios.md: the coder posts an
@@ -114,6 +114,51 @@ describe('isTaskChannelAllowed', () => {
     expect(isTaskChannelAllowed('project-webapp')).toBe(true);
     expect(isTaskChannelAllowed('general')).toBe(true);
     expect(isTaskChannelAllowed('gossip-town-square')).toBe(false);
-    expect(isTaskChannelAllowed('shared-fishladder')).toBe(false);
+    expect(isTaskChannelAllowed('shared-webapp')).toBe(false);
+  });
+});
+
+/**
+ * Tags used to decide only which tasks an agent was SHOWN. Claiming went by
+ * task id alone, so an agent with no image model could claim an image task,
+ * and one agent could claim every open task.
+ */
+describe('checkClaimEligibility', () => {
+  const visionCaps = fleetAgent('gpu-opencode-vision').card.capabilities ?? [];
+  const coderCaps = fleetAgent('laptop-claude-coder').card.capabilities ?? [];
+  const imageTask = { capability_tags: ['image-gen'] };
+
+  it('lets an agent claim a task tagged with one of its capabilities', () => {
+    expect(visionCaps).toContain('image-gen');
+    expect(checkClaimEligibility(imageTask, visionCaps, 0).ok).toBe(true);
+  });
+
+  it('needs only one of several tags to match', () => {
+    expect(checkClaimEligibility({ capability_tags: ['no-such-skill', 'image-gen'] }, visionCaps, 0).ok).toBe(true);
+  });
+
+  it('refuses an agent whose card has none of the tags, with 403', () => {
+    expect(coderCaps).not.toContain('image-gen');
+    const check = checkClaimEligibility(imageTask, coderCaps, 0);
+    expect(check.ok).toBe(false);
+    expect(check.code).toBe(403);
+    expect(check.error).toContain('image-gen');
+  });
+
+  it('refuses an agent with no card at all on a tagged task', () => {
+    expect(checkClaimEligibility(imageTask, [], 0).ok).toBe(false);
+  });
+
+  it('leaves an untagged task claimable by anyone', () => {
+    expect(checkClaimEligibility({ capability_tags: [] }, [], 0).ok).toBe(true);
+    expect(checkClaimEligibility({ capability_tags: [] }, coderCaps, 0).ok).toBe(true);
+  });
+
+  it('stops an agent that already holds the maximum number of claims, with 409', () => {
+    expect(checkClaimEligibility(imageTask, visionCaps, MAX_CONCURRENT_CLAIMS - 1).ok).toBe(true);
+    const check = checkClaimEligibility(imageTask, visionCaps, MAX_CONCURRENT_CLAIMS);
+    expect(check.ok).toBe(false);
+    expect(check.code).toBe(409);
+    expect(checkClaimEligibility({ capability_tags: [] }, [], MAX_CONCURRENT_CLAIMS).ok).toBe(false);
   });
 });

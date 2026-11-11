@@ -5,6 +5,7 @@ import {
   isAuthError,
   checkAgentRateLimit,
   getStorageAdapter,
+  forgetCachedAgent,
 } from '@/lib/api-v2-auth';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 
@@ -36,6 +37,8 @@ export async function POST(request: NextRequest) {
   try {
     const adapter = getStorageAdapter();
     await adapter.updateAgentCard(auth.agentId, result.card as Record<string, unknown>);
+    // The card rides on the cached identity; make the next request read it fresh.
+    forgetCachedAgent(auth.agentId);
     return jsonResponse({ ok: true, card: result.card });
   } catch {
     return errorResponse('Failed to update card', 500);

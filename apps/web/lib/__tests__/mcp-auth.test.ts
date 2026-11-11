@@ -14,7 +14,7 @@ vi.mock('@/lib/api-v2-auth', () => ({
   }),
 }));
 
-const { authenticateConnector, extractBearerToken, isConnectorAuthError } = await import('@/lib/mcp-auth');
+const { authenticateConnector, extractBearerToken, isConnectorAuthError, clearConnectorTokenTouches } = await import('@/lib/mcp-auth');
 
 function req(headers: Record<string, string> = {}) {
   return new NextRequest('http://mcp.internal/api/mcp', { method: 'POST', headers });
@@ -25,6 +25,7 @@ const VALID_TOKEN = 'acx_' + 'a'.repeat(64);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  clearConnectorTokenTouches();
   findConnectorTokenByHash.mockResolvedValue(null);
   agentSingle.mockResolvedValue({ data: null, error: null });
 });
@@ -177,13 +178,20 @@ describe('rate limiting', () => {
     expect((other as Response).status).toBe(401);
   });
 
-  it('reads the client IP from x-real-ip when x-forwarded-for is absent', async () => {
-    let throttled = 0;
-    for (let i = 0; i < 130; i++) {
-      const r = await authenticateConnector(req({ 'x-real-ip': '203.0.113.30' }));
-      if ((r as Response).status === 429) throttled++;
+  it('reads the client IP from x-real-ip when a reverse proxy is declared', async () => {
+    // X-Real-IP is only believed when AIRCHAT_TRUSTED_PROXY says a proxy sets
+    // it; otherwise any caller could write it and pick its own bucket.
+    vi.stubEnv('AIRCHAT_TRUSTED_PROXY', 'true');
+    try {
+      let throttled = 0;
+      for (let i = 0; i < 130; i++) {
+        const r = await authenticateConnector(req({ 'x-real-ip': '203.0.113.30' }));
+        if ((r as Response).status === 429) throttled++;
+      }
+      expect(throttled).toBeGreaterThan(0);
+    } finally {
+      vi.unstubAllEnvs();
     }
-    expect(throttled).toBeGreaterThan(0);
   });
 });
 
@@ -234,6 +242,51 @@ describe('authenticateConnector', () => {
     });
     await authenticateConnector(req({ authorization: `Bearer ${VALID_TOKEN}` }));
     expect(touchConnectorToken).toHaveBeenCalledWith('tok-1');
+  });
+
+  it('stamps last-used at most once per token per five minutes', async () => {
+    // The connector authenticates on every tool call; one UPDATE each was a
+    // write per call for a column read to the minute.
+    vi.useFakeTimers();
+    try {
+      findConnectorTokenByHash.mockResolvedValue({ id: 'tok-1', agent_id: 'agent-1' });
+      agentSingle.mockResolvedValue({ data: { id: 'agent-1', name: 'a', machine_id: null }, error: null });
+      const call = () => authenticateConnector(req({ authorization: `Bearer ${VALID_TOKEN}` }));
+
+      await call();
+      await call();
+      await call();
+      expect(touchConnectorToken).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(5 * 60_000 - 1000);
+      await call();
+      expect(touchConnectorToken).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(61_000);
+      await call();
+      expect(touchConnectorToken).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('throttles each token separately', async () => {
+    agentSingle.mockResolvedValue({ data: { id: 'agent-1', name: 'a', machine_id: null }, error: null });
+    findConnectorTokenByHash.mockResolvedValue({ id: 'tok-1', agent_id: 'agent-1' });
+    await authenticateConnector(req({ authorization: `Bearer ${VALID_TOKEN}` }));
+    findConnectorTokenByHash.mockResolvedValue({ id: 'tok-2', agent_id: 'agent-1' });
+    await authenticateConnector(req({ authorization: `Bearer ${'acx_' + 'b'.repeat(64)}` }));
+    expect(touchConnectorToken.mock.calls.map((c) => c[0])).toEqual(['tok-1', 'tok-2']);
+  });
+
+  it('carries the agent card on the context so the work check need not fetch it', async () => {
+    findConnectorTokenByHash.mockResolvedValue({ id: 'tok-1', agent_id: 'agent-1' });
+    agentSingle.mockResolvedValue({
+      data: { id: 'agent-1', name: 'a', machine_id: null, metadata: { card: { capabilities: ['code'] } } },
+      error: null,
+    });
+    const auth = await authenticateConnector(req({ authorization: `Bearer ${VALID_TOKEN}` }));
+    expect((auth as { ctx: { card?: unknown } }).ctx.card).toEqual({ capabilities: ['code'] });
   });
 
   it('tolerates an agent with no machine', async () => {

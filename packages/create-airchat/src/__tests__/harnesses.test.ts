@@ -219,3 +219,109 @@ describe('addWorkHooks', () => {
     expect(JSON.stringify(settings.hooks.UserPromptSubmit)).not.toContain('check-mentions');
   });
 });
+
+/**
+ * The hook command is one string run by a shell on every prompt. It is built
+ * from install paths, and a path can contain anything a directory name can.
+ */
+describe('buildHookCommand', () => {
+  it('leaves an ordinary install path exactly as it was', async () => {
+    const { buildHookCommand } = await import('../harnesses.js');
+    expect(buildHookCommand('/usr/bin/node', '/opt/airchat/scripts/check-work.mjs', 'darwin'))
+      .toBe('/usr/bin/node /opt/airchat/scripts/check-work.mjs');
+  });
+
+  it('keeps a path with a space together as one word', async () => {
+    const { buildHookCommand } = await import('../harnesses.js');
+    expect(buildHookCommand('/usr/bin/node', '/Users/me/My Projects/airchat/scripts/check-work.mjs', 'darwin'))
+      .toBe("/usr/bin/node '/Users/me/My Projects/airchat/scripts/check-work.mjs'");
+  });
+
+  it('does not let ; or $() in a path run as commands', async () => {
+    const { buildHookCommand } = await import('../harnesses.js');
+    const cmd = buildHookCommand(
+      '/usr/bin/node',
+      '/tmp/a;touch /tmp/pwned;/$(touch /tmp/pwned2)/`id`/scripts/check-work.mjs',
+      'linux',
+    );
+    expect(cmd).toBe("/usr/bin/node '/tmp/a;touch /tmp/pwned;/$(touch /tmp/pwned2)/`id`/scripts/check-work.mjs'");
+  });
+
+  it('escapes a single quote inside a path', async () => {
+    const { quoteForHook } = await import('../harnesses.js');
+    expect(quoteForHook("/home/o'brien/node", 'linux')).toBe("'/home/o'\\''brien/node'");
+  });
+
+  it.runIf(process.platform !== 'win32')('a real shell sees each hostile path as one argument and runs nothing', async () => {
+    const { quoteForHook } = await import('../harnesses.js');
+    const { execFileSync } = await import('node:child_process');
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'airchat-hook-'));
+    const marker = path.join(dir, 'pwned');
+    const hostile = [
+      'a b',
+      `x;touch ${marker}`,
+      `$(touch ${marker})`,
+      `\`touch ${marker}\``,
+      `it's "quoted" & | > < * ? ~ # !`,
+    ];
+    try {
+      for (const word of hostile) {
+        const out = execFileSync('/bin/sh', ['-c', `printf '%s' ${quoteForHook(word, 'linux')}`], { encoding: 'utf-8' });
+        expect(out).toBe(word);
+      }
+      expect(fs.existsSync(marker)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses double quotes and forward slashes on Windows', async () => {
+    const { buildHookCommand } = await import('../harnesses.js');
+    expect(buildHookCommand('C:\\Program Files\\nodejs\\node.exe', 'C:\\Users\\me\\airchat\\scripts\\check-work.mjs', 'win32'))
+      .toBe('"C:/Program Files/nodejs/node.exe" C:/Users/me/airchat/scripts/check-work.mjs');
+    expect(buildHookCommand('C:/node.exe', 'C:/a;b/scripts/check-work.mjs', 'win32'))
+      .toBe('C:/node.exe "C:/a;b/scripts/check-work.mjs"');
+  });
+
+  it('refuses a Windows path that no quoting makes safe in every shell', async () => {
+    const { buildHookCommand } = await import('../harnesses.js');
+    for (const bad of ['C:/a$(calc)/x.mjs', 'C:/a%PATH%/x.mjs', 'C:/a"b/x.mjs', 'C:/a`b/x.mjs']) {
+      expect(() => buildHookCommand('C:/node.exe', bad, 'win32'), bad).toThrow(/cannot be quoted safely/);
+    }
+  });
+
+  it('refuses a path with a control character on any platform', async () => {
+    const { buildHookCommand } = await import('../harnesses.js');
+    expect(() => buildHookCommand('/usr/bin/node', '/tmp/a\nb/x.mjs', 'linux')).toThrow(/control character/);
+  });
+
+  it('is still recognised as the work hook once quoted', async () => {
+    const { addWorkHooks, buildHookCommand } = await import('../harnesses.js');
+    const cmd = buildHookCommand('/usr/bin/node', '/Users/me/My Projects/airchat/scripts/check-work.mjs', 'darwin');
+    const settings: any = {};
+    expect(addWorkHooks(settings, cmd)).toHaveLength(3);
+    expect(addWorkHooks(settings, cmd)).toEqual([]);
+  });
+});
+
+describe('binaryExists', () => {
+  it.runIf(process.platform !== 'win32')('finds a real binary and does not run shell syntax in the name', async () => {
+    const { binaryExists } = await import('../harnesses.js');
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'airchat-bin-'));
+    const marker = path.join(dir, 'pwned');
+    try {
+      expect(binaryExists('sh')).toBe(true);
+      expect(binaryExists(`sh; touch ${marker}`)).toBe(false);
+      expect(binaryExists(`$(touch ${marker})`)).toBe(false);
+      expect(fs.existsSync(marker)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

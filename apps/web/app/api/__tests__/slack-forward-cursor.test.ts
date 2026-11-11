@@ -50,6 +50,8 @@ vi.mock('@airchat/shared/supabase', () => ({
         select: () => builder,
         order: () => builder,
         limit: () => builder,
+        eq: () => builder,
+        is: () => builder,
         gt: (_col: string, value: string) => {
           queriedSince.push(value);
           return builder;

@@ -41,28 +41,72 @@ export const dynamic = 'force-dynamic';
  * trigger, so even a bug here cannot bind a grant to a real Claude Code agent —
  * the database refuses the insert.
  */
-async function resolveConnectorAgent(email: string): Promise<{ id: string; name: string } | null> {
+async function resolveConnectorAgent(email: string, userId: string): Promise<{ id: string; name: string } | null> {
   const db = getSupabaseClient();
-  const name = connectorAgentNameFor(email);
 
-  const { data: existing } = await db
-    .from('agents')
-    .select('id, name, derived_key_hash, api_key_hash')
-    .eq('name', name)
-    .maybeSingle();
+  // The usual name comes from the part of the address before the @, so two
+  // people (alice@one.example, alice@two.example) derive the same one. The
+  // second must not be handed the first person's agent: they would post as
+  // each other and read each other's direct messages. So if the name is
+  // already in use by a different user, this user gets a name of their own.
+  //
+  // Whoever held the plain name before keeps it, and an agent created under
+  // a second name stays findable under it, so no existing connector changes
+  // identity.
+  for (const name of [connectorAgentNameFor(email), connectorAgentNameFor(email, userId)]) {
+    const { data: existing } = await db
+      .from('agents')
+      .select('id, name, derived_key_hash, api_key_hash')
+      .eq('name', name)
+      .maybeSingle();
 
-  if (existing) {
+    if (!existing) {
+      const { data: created } = await db
+        .from('agents')
+        .insert({ name, active: true })
+        .select('id')
+        .single();
+      return created ? { id: created.id, name } : null;
+    }
+
     if (existing.derived_key_hash || existing.api_key_hash) return null;
-    return { id: existing.id, name };
+
+    const owner = await connectorAgentOwnedByAnother(existing.id, userId);
+    if (owner === null) return null;
+    if (!owner) return { id: existing.id, name };
+    // In use by someone else: try the next, user-specific, name.
   }
+  return null;
+}
 
-  const { data: created } = await db
-    .from('agents')
-    .insert({ name, active: true })
-    .select('id')
-    .single();
+/**
+ * Whether a connector agent has been used by other users and never by this
+ * one. Grants record who approved them, both as issued tokens and as
+ * authorization codes not yet exchanged, so those two tables are the record
+ * of who an agent belongs to. An agent with no recorded user (for example one
+ * whose tokens were all issued from the command line) is treated as free to
+ * use, which is how it behaved before.
+ *
+ * Returns null when the database could not answer; the caller then refuses
+ * rather than risk joining two people's identities.
+ */
+async function connectorAgentOwnedByAnother(agentId: string, userId: string): Promise<boolean | null> {
+  const db = getSupabaseClient();
+  const [tokens, codes] = await Promise.all([
+    db.from('connector_tokens').select('granted_by_user_id').eq('agent_id', agentId)
+      .not('granted_by_user_id', 'is', null).limit(1000),
+    db.from('oauth_authorization_codes').select('user_id').eq('agent_id', agentId).limit(1000),
+  ]);
+  if (tokens.error || codes.error) return null;
 
-  return created ? { id: created.id, name } : null;
+  const users = new Set<string>();
+  for (const row of (tokens.data ?? []) as { granted_by_user_id: string | null }[]) {
+    if (row.granted_by_user_id) users.add(row.granted_by_user_id);
+  }
+  for (const row of (codes.data ?? []) as { user_id: string | null }[]) {
+    if (row.user_id) users.add(row.user_id);
+  }
+  return users.size > 0 && !users.has(userId);
 }
 
 export async function POST(request: NextRequest) {
@@ -107,7 +151,7 @@ export async function POST(request: NextRequest) {
     return oauthError('access_denied', 'Admin account required', 403);
   }
 
-  const agent = await resolveConnectorAgent(user.email ?? user.id);
+  const agent = await resolveConnectorAgent(user.email ?? user.id, user.id);
   if (!agent) {
     return oauthError(
       'server_error',

@@ -13,7 +13,7 @@ function model(overrides: Partial<InventoryModelInfo> & { name: string }): Inven
     kind: 'llm',
     backend: 'ollama',
     location: 'local',
-    endpoint: 'http://100.105.10.12:11434/v1',
+    endpoint: 'http://100.64.0.12:11434/v1',
     capability: `llm-${overrides.name.replace(/[^a-z0-9]+/g, '-')}`,
     ...overrides,
   };

@@ -111,7 +111,13 @@ function makeClient(
 
   return {
     from: (table: string) => builder(table),
-    rpc: async () => ({ data: rpcRows, error: null }),
+    // Only search is answered here. Every other function is reported missing,
+    // so the board and friends run their query-by-query fallback, which is
+    // what this stand-in models.
+    rpc: async (fn: string) =>
+      fn === 'search_messages'
+        ? { data: rpcRows, error: null }
+        : { data: null, error: { code: 'PGRST202', message: 'function not found' } },
   } as unknown as SupabaseClient;
 }
 

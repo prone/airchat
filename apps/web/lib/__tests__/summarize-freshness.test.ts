@@ -77,7 +77,7 @@ vi.mock('@/lib/api-v2-auth', () => ({
   }),
 }));
 
-const { summarizeChannel } = await import('@/lib/summarize');
+const { summarizeChannel, resetSummaryRateLimits, snapWindowDays } = await import('@/lib/summarize');
 
 const storedNote = (overrides: Record<string, unknown> = {}) => ({
   slug: 'channel-summary',
@@ -96,6 +96,7 @@ const storedNote = (overrides: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+  resetSummaryRateLimits();
   state.note = null;
   state.channelName = 'general';
   state.newerMessages = 0;
@@ -214,13 +215,16 @@ describe('regeneration is rationed', () => {
     expect(new Set(results.map((r) => r.body_md)).size).toBe(1);
   });
 
-  it('does not share a call between different windows or kinds', async () => {
+  it('shares one call between simultaneous requests for different windows, but not kinds', async () => {
+    // Activity and project summaries are different notes, so they cannot share
+    // a result. Two windows of the same kind can: the second asker gets the
+    // summary the first one is already paying for.
     await Promise.all([
       summarizeChannel('ch-1'),
       summarizeChannel('ch-1', { windowDays: 30 }),
       summarizeChannel('ch-1', { kind: 'project' }),
     ]);
-    expect(createMessage).toHaveBeenCalledTimes(3);
+    expect(createMessage).toHaveBeenCalledTimes(2);
   });
 
   it('a failed generation does not poison later requests', async () => {
@@ -241,3 +245,91 @@ describe('regeneration is rationed', () => {
   });
 });
 
+
+describe('federated channels are never summarized', () => {
+  // Their messages are written on other instances. A summary is stored as a
+  // protected note that local agents read as trusted orientation.
+  it.each(['gossip-general', 'shared-partners'])('refuses #%s before any model call', async (name) => {
+    state.channelName = name;
+    await expect(summarizeChannel('ch-1')).rejects.toMatchObject({ status: 403 });
+    expect(createMessage).not.toHaveBeenCalled();
+    expect(writeNote).not.toHaveBeenCalled();
+  });
+
+  it('refuses even when a summary note already exists there', async () => {
+    state.channelName = 'gossip-general';
+    state.note = storedNote();
+    await expect(summarizeChannel('ch-1')).rejects.toMatchObject({ status: 403 });
+  });
+});
+
+describe('the window cannot be used to force fresh summaries', () => {
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000).toISOString();
+
+  it('rounds a requested window up to one of a few fixed sizes', () => {
+    expect([1, 2, 7, 8, 29, 30, 31, 90].map(snapWindowDays)).toEqual([1, 7, 7, 30, 30, 30, 90, 90]);
+    expect(snapWindowDays(500)).toBe(90);
+  });
+
+  it('treats windows that round to the same size as the same request', async () => {
+    state.note = storedNote({ window_days: 30 });
+    for (const windowDays of [8, 15, 22, 29, 30]) await summarizeChannel('ch-1', { windowDays });
+    expect(createMessage).not.toHaveBeenCalled();
+  });
+
+  it('records the rounded window on the note it writes', async () => {
+    const result = await summarizeChannel('ch-1', { windowDays: 12 });
+    const written = writeNote.mock.calls[0][0] as { properties: Record<string, unknown> };
+    expect(written.properties.window_days).toBe(30);
+    expect(result.window_days).toBe(30);
+  });
+
+  it('returns a summary written minutes ago whatever window is asked for', async () => {
+    // Alternating windows used to miss the cache every time.
+    state.note = storedNote({ window_days: 7, generated_at: minutesAgo(2) });
+    for (const windowDays of [1, 30, 90, 7, 30]) {
+      const result = await summarizeChannel('ch-1', { windowDays });
+      expect(result.cached).toBe(true);
+      // The caller is told which window it actually got.
+      expect(result.window_days).toBe(7);
+    }
+    expect(createMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('fresh summaries are rationed per channel and per agent', () => {
+  it('stops generating for one channel after a few in an hour, and serves the stored one instead', async () => {
+    // Stale every time: old, and with new messages since.
+    state.note = storedNote();
+    state.newerMessages = 1;
+    for (let i = 0; i < 12; i++) {
+      const result = await summarizeChannel('ch-1', { requestedBy: { agentId: `agent-${i}` } });
+      expect(result.body_md).toBeTruthy();
+    }
+    expect(createMessage).toHaveBeenCalledTimes(6);
+  });
+
+  it('answers 429 when the ration is spent and there is nothing stored to fall back on', async () => {
+    state.note = null;
+    for (let i = 0; i < 6; i++) await summarizeChannel('ch-1');
+    await expect(summarizeChannel('ch-1')).rejects.toMatchObject({ status: 429 });
+    expect(createMessage).toHaveBeenCalledTimes(6);
+  });
+
+  it('counts activity and project summaries of a channel against the same ration', async () => {
+    state.note = null;
+    for (let i = 0; i < 4; i++) {
+      await summarizeChannel('ch-1').catch(() => {});
+      await summarizeChannel('ch-1', { kind: 'project' }).catch(() => {});
+    }
+    expect(createMessage).toHaveBeenCalledTimes(6);
+  });
+
+  it('does not count reused summaries', async () => {
+    state.note = storedNote();
+    for (let i = 0; i < 50; i++) await summarizeChannel('ch-1', { requestedBy: { agentId: 'agent-1' } });
+    state.newerMessages = 1;
+    await summarizeChannel('ch-1', { requestedBy: { agentId: 'agent-1' } });
+    expect(createMessage).toHaveBeenCalledTimes(1);
+  });
+});

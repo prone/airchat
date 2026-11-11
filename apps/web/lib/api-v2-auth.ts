@@ -1,10 +1,9 @@
-// TODO [post-launch]: The migration (00008) defines scoped Postgres roles
-// (airchat_agent_api for messaging, airchat_registrar for registration) but
-// this module only uses the service role. Production multi-tenant deployments
-// should use role-specific clients to enforce least-privilege at the database
-// layer. This requires either Supabase role-switching support (SET ROLE) or
-// separate connection strings per role. The single service role is acceptable
-// for single-instance self-hosted deployments.
+// Every database call from the API goes through the service role, which
+// bypasses row-level security; the checks in the storage adapter and the routes
+// are what decide who may read or write what. Migration 00008 also defines
+// narrower Postgres roles (airchat_agent_api, airchat_registrar). Nothing uses
+// them: supabase-js cannot switch role per request. An operator hosting several
+// tenants on one database should not rely on them as a boundary.
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { NextRequest, NextResponse } from 'next/server';
@@ -15,7 +14,8 @@ import {
   DASHBOARD_ADMIN_AGENT,
 } from '@airchat/shared';
 import { SupabaseGossipAdapter } from '@airchat/shared/supabase-gossip-adapter';
-import type { AgentContext, StorageAdapter, GossipStorageAdapter } from '@airchat/shared';
+import type { Agent, AgentContext, StorageAdapter, GossipStorageAdapter } from '@airchat/shared';
+import { fetchWithTimeout } from '@/lib/supabase-fetch';
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit';
 import { READ_TOKEN_HEADER, findLiveReadToken } from '@/lib/read-tokens';
 
@@ -37,6 +37,8 @@ export function getSupabaseClient(): SupabaseClient {
 
   _supabaseClient = createClient(url, serviceKey, {
     auth: { persistSession: false, autoRefreshToken: false },
+    // No call to the database may wait forever; see lib/supabase-fetch.
+    global: { fetch: fetchWithTimeout() },
   });
   return _supabaseClient;
 }
@@ -261,11 +263,98 @@ async function authenticateReadToken(
   };
 }
 
+// ── Agent lookup cache ──────────────────────────────────────────────────────
+
+/**
+ * Agent rows by key hash, each for 30 seconds.
+ *
+ * Every API request used to start with a database read to turn the key into
+ * an agent. An agent makes several requests per turn (the work check alone
+ * runs about twice), so nearly all of those reads returned the row the
+ * previous one had returned a moment earlier. With this cache an agent costs
+ * at most one lookup per 30 seconds however often it calls.
+ *
+ * The trade-off is that a change made to the agent row behind this process's
+ * back is seen up to 30 seconds late:
+ *   - an agent deactivated from the dashboard (which writes to the database
+ *     directly) keeps authenticating for up to 30 seconds;
+ *   - so does a trusted_source flag an admin changed.
+ * Changes that go through this API drop the entry at once (forgetCachedAgent):
+ * a re-registration, which installs a new key and must stop the old one
+ * working, and a capability-card update. A new key never waits either:
+ * unknown keys are not cached, so they are always looked up.
+ * 30 seconds is short enough that turning an agent off is still, in practice,
+ * immediate, and long enough to cover the burst of requests around one turn.
+ *
+ * Only successful lookups are stored. Caching failures would let a key that
+ * was tried before its agent registered stay rejected after registration.
+ *
+ * Bounded at 2000 entries, several times the number of agents an instance
+ * has; expired entries are dropped first and, if it is still full, the oldest.
+ * Keyed by the SHA-256 of the key, never the key itself.
+ */
+const AGENT_CACHE_TTL_MS = 30_000;
+const AGENT_CACHE_MAX = 2000;
+const agentsByKeyHash = new Map<string, { agent: Agent; expiresAt: number }>();
+
+function cachedAgent(keyHash: string): Agent | null {
+  const hit = agentsByKeyHash.get(keyHash);
+  if (!hit) return null;
+  if (Date.now() >= hit.expiresAt) {
+    agentsByKeyHash.delete(keyHash);
+    return null;
+  }
+  return hit.agent;
+}
+
+function rememberAgent(keyHash: string, agent: Agent): void {
+  const now = Date.now();
+  if (agentsByKeyHash.size >= AGENT_CACHE_MAX) {
+    for (const [hash, entry] of agentsByKeyHash) {
+      if (now >= entry.expiresAt) agentsByKeyHash.delete(hash);
+    }
+    // A Map iterates in insertion order, so the first key is the oldest.
+    while (agentsByKeyHash.size >= AGENT_CACHE_MAX) {
+      const oldest = agentsByKeyHash.keys().next().value;
+      if (oldest === undefined) break;
+      agentsByKeyHash.delete(oldest);
+    }
+  }
+  agentsByKeyHash.set(keyHash, { agent, expiresAt: now + AGENT_CACHE_TTL_MS });
+}
+
+/**
+ * Drop any cached lookup for this agent, so its next request reads the row
+ * again. Called when this API changes the row: registration (new key, new
+ * card) and card updates.
+ */
+export function forgetCachedAgent(agentId: string): void {
+  for (const [hash, entry] of agentsByKeyHash) {
+    if (entry.agent.id === agentId) agentsByKeyHash.delete(hash);
+  }
+}
+
+/** Forget every cached agent lookup. For tests, which reuse keys across cases. */
+export function clearAgentAuthCache(): void {
+  agentsByKeyHash.clear();
+}
+
+/** The capability card on an agent row; undefined when the row came without metadata. */
+function cardOf(agent: Agent): { card?: Record<string, unknown> | null } {
+  const metadata = (agent as { metadata?: unknown }).metadata;
+  if (metadata === undefined) return {};
+  const card = metadata && typeof metadata === 'object'
+    ? (metadata as Record<string, unknown>).card
+    : null;
+  return { card: card && typeof card === 'object' ? (card as Record<string, unknown>) : null };
+}
+
 /**
  * Authenticate a v2 API request using the derived key auth model.
  *
  * Reads `x-agent-api-key` header (the derived key), computes SHA256(derived_key),
- * looks up the hash in agents.derived_key_hash via StorageAdapter.
+ * looks up the hash in agents.derived_key_hash via StorageAdapter — or in the
+ * 30-second cache above, which most requests hit.
  *
  * Returns AgentContext on success, or a NextResponse error on failure.
  */
@@ -296,14 +385,17 @@ export async function authenticateAgent(
   }
 
   const keyHash = hashKey(derivedKey);
-  const adapter = getStorageAdapter();
 
-  const agent = await adapter.findAgentByDerivedKeyHash(keyHash);
+  let agent = cachedAgent(keyHash);
   if (!agent) {
-    return NextResponse.json(
-      { error: 'Invalid API key' },
-      { status: 401 }
-    );
+    agent = await getStorageAdapter().findAgentByDerivedKeyHash(keyHash);
+    if (!agent) {
+      return NextResponse.json(
+        { error: 'Invalid API key' },
+        { status: 401 }
+      );
+    }
+    rememberAgent(keyHash, agent);
   }
 
   const ctx: AgentContext = {
@@ -311,6 +403,9 @@ export async function authenticateAgent(
     agentName: agent.name,
     machineId: agent.machine_id ?? '',
     ...trustedSourceOf(agent.permissions),
+    // Carried so routes that need the card (the work check) do not read the
+    // agent row again.
+    ...cardOf(agent),
   };
 
   noteAgentActivity(agent.id);

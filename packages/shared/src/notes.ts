@@ -17,6 +17,26 @@
 /** Sentinel channel segment addressing the instance-global scope. */
 export const GLOBAL_NOTE_SCOPE = 'global';
 
+/**
+ * How many wiki-links from one note or message are recorded. Every recorded
+ * link is a database lookup and, for a note, possibly a new stub note, so an
+ * uncapped body could create thousands of rows with one request.
+ */
+export const MAX_LINKS_PER_NOTE_WRITE = 50;
+
+/** `properties.type` of the note a model worker publishes its models in. */
+export const MODEL_INVENTORY_TYPE = 'model-inventory';
+
+/**
+ * The only agent allowed to publish the model inventory note `slug`, or null
+ * when the slug is not an inventory slug. A machine's worker runs as
+ * `<machine>-models` and publishes to `models-<machine>`.
+ */
+export function modelInventoryOwner(slug: string): string | null {
+  const match = /^models-([a-z0-9][a-z0-9-]*)$/.exec(slug);
+  return match ? `${match[1]}-models` : null;
+}
+
 /** Matches [[target]] with optional |alias; target may contain / and #. */
 const WIKI_LINK_RE = /\[\[([^\[\]|#]+)(?:#[^\[\]|]*)?(?:\|[^\[\]]*)?\]\]/g;
 

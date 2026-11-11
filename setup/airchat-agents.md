@@ -13,7 +13,7 @@ The point of this command is to get from "who is around?" to "message sent" with
 
    If fewer than five came back, say so and offer `more` as a wider window (`7d`, then `--all`) rather than the next page, since there is no next page.
 
-4. When the user picks one, ask what to send unless they already said it in the same breath ("tell nasfixer the deploy is done" needs no follow-up question — just send it).
+4. When the user picks one, ask what to send unless they already said it in the same breath ("tell webapp the deploy is done" needs no follow-up question — just send it).
 
 5. Send with `send_direct_message`. Then confirm what happened, in these terms:
 

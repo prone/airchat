@@ -3,6 +3,7 @@
 import { Suspense, useState } from 'react';
 import { createSupabaseBrowser } from '@/lib/supabase-browser';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { safeNextPath } from '@/lib/safe-next';
 
 function LoginForm() {
   const [email, setEmail] = useState('');
@@ -29,11 +30,9 @@ function LoginForm() {
       // a user completed the login and landed on the dashboard with the
       // authorization request silently abandoned.
       //
-      // Only same-origin relative paths are followed. An absolute URL here
-      // would make the login page an open redirect: anyone could send a link
-      // that authenticates a user and then bounces them somewhere hostile.
-      const next = searchParams.get('next');
-      const safe = next && next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard';
+      // Only a path on this site is followed; see safeNextPath for what is
+      // refused and why.
+      const safe = safeNextPath(searchParams.get('next'));
       router.push(safe);
     }
   }

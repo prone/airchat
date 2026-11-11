@@ -1,6 +1,7 @@
 import { createServerClient } from '@supabase/ssr';
 import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
+import { fetchWithTimeout } from '@/lib/supabase-fetch';
 
 function getRequiredEnv(name: string): string {
   const value = process.env[name];
@@ -39,6 +40,10 @@ export function createSupabaseAdmin() {
   return createClient(
     getRequiredEnv('NEXT_PUBLIC_SUPABASE_URL'),
     getRequiredEnv('SUPABASE_SERVICE_ROLE_KEY'),
-    { auth: { persistSession: false } }
+    {
+      auth: { persistSession: false },
+      // No call to the database may wait forever; see lib/supabase-fetch.
+      global: { fetch: fetchWithTimeout() },
+    }
   );
 }

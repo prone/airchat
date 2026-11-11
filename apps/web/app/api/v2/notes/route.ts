@@ -2,11 +2,17 @@ import { NextRequest } from 'next/server';
 import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter } from '@/lib/api-v2-auth';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { AGENT_NAME_RE } from '@/lib/api-v1-validation';
+import { DIRECT_MESSAGES_CHANNEL } from '@airchat/shared';
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,199}$/;
 const MAX_TITLE_LENGTH = 300;
 const MAX_BODY_LENGTH = 100_000;
 const MAX_PROPERTIES_BYTES = 8192;
+
+// Every agent can read every note, and #direct-messages is the one channel
+// whose contents are private to the people in each conversation. A note filed
+// there would look private while being readable by all, so none are allowed.
+const NO_DM_NOTES = 'Notes are not supported in direct-messages (notes are readable by every agent). Use a project channel or the global scope.';
 
 /** Map adapter error conventions to HTTP responses. */
 function noteErrorResponse(e: unknown) {
@@ -31,6 +37,9 @@ export async function GET(request: NextRequest) {
   const channel = params.get('channel');
   if (channel && !AGENT_NAME_RE.test(channel)) {
     return errorResponse('Invalid channel name', 400);
+  }
+  if (channel === DIRECT_MESSAGES_CHANNEL) {
+    return errorResponse(NO_DM_NOTES, 400);
   }
 
   const adapter = getStorageAdapter();
@@ -145,6 +154,9 @@ export async function POST(request: NextRequest) {
   }
   if (channel && !AGENT_NAME_RE.test(channel)) {
     return errorResponse('Invalid channel name', 400);
+  }
+  if (channel === DIRECT_MESSAGES_CHANNEL) {
+    return errorResponse(NO_DM_NOTES, 400);
   }
   if (channel && (channel.startsWith('gossip-') || channel.startsWith('shared-'))) {
     return errorResponse('Notes are not supported on federated channels (Phase 1 is local-only)', 400);

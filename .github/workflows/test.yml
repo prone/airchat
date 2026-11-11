@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+# The job only reads the repository.
+permissions:
+  contents: read
+
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
@@ -24,9 +28,8 @@ jobs:
       - name: Check RLS on all tables
         run: bash scripts/check-rls.sh
 
-      # `npm audit fix --force` can resolve an advisory by moving a dependency
-      # backwards (it once proposed next@9.3.3 over a transitive sharp CVE).
-      # Fail the PR rather than let a downgrade land as "a dependency change".
+      # Fails the PR if package-lock.json moves any dependency to an older
+      # version than the base branch has (`npm audit fix --force` can do that).
       - name: Check for dependency downgrades
         if: github.event_name == 'pull_request'
         run: |
@@ -36,10 +39,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Build every package (incl. the Next.js web app) so a type error or
-      # broken build fails on PR instead of at deploy time on the NAS.
-      # Placeholder public Supabase vars let the client-page prerender construct
-      # its browser client; no network calls happen at build time.
+      # Builds every package, including the Next.js web app, so a type error
+      # or broken build fails the PR. The placeholder Supabase values let the
+      # client pages prerender; the build makes no network calls.
       - name: Build all packages
         run: npm run build
         env:
@@ -52,17 +54,7 @@ jobs:
       - name: Run unit tests
         run: npm test
 
-      # The integration tier (npm run test:integration, 105 tests) is NOT run
-      # here, and that is deliberate rather than an oversight: it reads
-      # ~/.airchat credentials and talks to a live AirChat server, neither of
-      # which exists on a GitHub runner.
-      #
-      # It is stated here because the alternative is worse. That tier sat
-      # broken for two refactors — 43 of 104 tests asserting a response shape
-      # the REST client had stopped returning — precisely because nothing ran
-      # it and nothing said so. A tier nobody runs implies coverage that does
-      # not exist.
-      #
-      # It runs instead as part of ./scripts/deploy.sh, which has both the
-      # server and the credentials. Run it by hand with:
-      #   npm run test:integration
+      # The integration tier (`npm run test:integration`) is not run here: it
+      # reads ~/.airchat credentials and talks to a live AirChat server, and a
+      # GitHub runner has neither. ./scripts/deploy.sh runs it against the
+      # deployed server.

@@ -1,56 +1,27 @@
-import { NextRequest } from 'next/server';
-import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
-import { getGossipAdapter } from '@/lib/api-v2-auth';
+import { NextRequest, NextResponse } from 'next/server';
+import { jsonResponse } from '@/lib/api-v1-response';
 import { triggerSyncFromPeer } from '@/lib/gossip-sync';
-import { verifySignature } from '@airchat/shared/gossip';
-import { checkRateLimit } from '@/lib/rate-limit';
-import { checkGossipNonce } from '@/lib/gossip-nonce';
+import { authenticatePeerRequest } from '@/lib/gossip-auth';
 
 /**
- * POST /api/v2/gossip/notify — Push notification from a peer.
- * Authenticated via signed timestamp.
+ * POST /api/v2/gossip/notify — A peer says it has new messages for us.
+ *
+ * Authenticated by the peer's request signature (see lib/gossip-auth.ts).
+ * Older peers put fingerprint, timestamp and signature in the JSON body; that
+ * form is only accepted while legacy signatures are enabled.
  */
 export async function POST(request: NextRequest) {
-  let body: { fingerprint: string; timestamp: string; signature: string; message_count?: number };
-  try { body = await request.json(); } catch { return errorResponse('Invalid JSON body', 400); }
-
-  if (!body.fingerprint || !body.timestamp || !body.signature) {
-    return errorResponse('fingerprint, timestamp, and signature required', 400);
-  }
-
-  // Replay protection: timestamp window
-  const requestAge = Date.now() - new Date(body.timestamp).getTime();
-  if (isNaN(requestAge) || Math.abs(requestAge) > 5 * 60 * 1000) {
-    return errorResponse('Timestamp too old or invalid', 401);
-  }
-
-  // Replay protection: nonce dedup
-  if (checkGossipNonce(body.fingerprint, body.timestamp)) {
-    return errorResponse('Duplicate request', 401);
-  }
-
-  const gossip = getGossipAdapter();
-
-  const peer = await gossip.getPeerByFingerprint(body.fingerprint);
-  if (!peer) return errorResponse('Unknown peer', 403);
-  if (!peer.active || peer.suspended) return errorResponse('Peer is suspended', 403);
-
-  // Per-peer rate limiting (30 notifications/min)
-  const rateLimit = checkRateLimit(`gossip-notify:${body.fingerprint}`, 60_000, 30);
-  if (!rateLimit.allowed) {
-    return errorResponse('Rate limit exceeded', 429);
-  }
-
-  if (!peer.public_key) return errorResponse('Peer public key not yet exchanged', 403);
-  if (!verifySignature(peer.public_key, body.timestamp, body.signature)) {
-    return errorResponse('Invalid signature', 403);
-  }
-
-  const config = await gossip.getInstanceConfig();
-  if (!config?.gossip_enabled) return errorResponse('Gossip is disabled', 503);
+  const auth = await authenticatePeerRequest(request, {
+    bucket: 'gossip-notify',
+    maxPerMinute: 30,
+    readBody: true,
+    maxBodyBytes: 4 * 1024,
+    legacyCredentialsInBody: true,
+  });
+  if (auth instanceof NextResponse) return auth;
 
   // Trigger immediate sync (async)
-  triggerSyncFromPeer(peer.id).catch(() => {});
+  triggerSyncFromPeer(auth.peer.id).catch(() => {});
 
   return jsonResponse({ acknowledged: true });
 }

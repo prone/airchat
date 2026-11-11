@@ -362,6 +362,15 @@ async function main(): Promise<void> {
   });
 
   const noteSlug = `models-${config.machineName}`;
+  // The server accepts an inventory for this machine only from the agent
+  // named `<machine>-models`, and list_models ignores any other. A worker
+  // started under a different suffix still claims and runs tasks, but its
+  // models will not be listed, so say so rather than fail silently.
+  if (config.agentSuffix !== 'models') {
+    console.warn(
+      `[model-worker] MODEL_WORKER_SUFFIX is "${config.agentSuffix}": the inventory note "${noteSlug}" can only be published by "${config.machineName}-models", so this worker's models will not appear in list_models.`
+    );
+  }
   // Best-effort by design: a failed publish logs and retries at the hourly
   // refresh instead of killing the worker at startup (a large fleet can trip
   // the notes route's properties byte cap; buildInventoryProperties truncates

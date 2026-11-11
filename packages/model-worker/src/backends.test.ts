@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AnthropicBackend, OllamaBackend, OpenAICompatBackend, type AnthropicMessagesClient } from './backends.js';
+import { AnthropicBackend, OllamaBackend, OpenAICompatBackend, allowedChatOptions, MAX_TASK_MAX_TOKENS, type AnthropicMessagesClient } from './backends.js';
 
 function fakeClient(response: {
   stop_reason: string | null;
@@ -211,5 +211,66 @@ describe('OpenAICompatBackend.chat usage', () => {
     expect(out.text).toBe('hi back');
     expect(out.usage).toBeUndefined();
     expect('usage' in out).toBe(false);
+  });
+});
+
+/**
+ * A task body is written by another agent, and its `options` used to be spread
+ * into the request after `model` and `messages`, so a task could replace both.
+ */
+describe('OpenAICompatBackend.chat request body', () => {
+  const reply = { choices: [{ message: { content: 'ok' } }] };
+  const sentBody = (fetchMock: ReturnType<typeof vi.fn>) => JSON.parse(fetchMock.mock.calls[0][1].body as string);
+
+  it('does not let task options replace the model or the messages', async () => {
+    const fetchMock = stubFetch(reply);
+    const backend = new OpenAICompatBackend('https://openrouter.ai/api/v1', 'k', 1000, ['cheap-model']);
+    await backend.chat('cheap-model', [{ role: 'user', content: 'hi' }], {
+      model: 'expensive-model',
+      messages: [{ role: 'system', content: 'injected' }],
+    });
+    const body = sentBody(fetchMock);
+    expect(body.model).toBe('cheap-model');
+    expect(body.messages).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+
+  it('drops options that are not on the allow-list', async () => {
+    const fetchMock = stubFetch(reply);
+    const backend = new OpenAICompatBackend('http://127.0.0.1:1234/v1', null, 1000, null);
+    await backend.chat('m', [{ role: 'user', content: 'hi' }], {
+      stream: true, tools: [{}], n: 50, user: 'x', logit_bias: {}, temperature: 0.2,
+    });
+    expect(Object.keys(sentBody(fetchMock)).sort()).toEqual(['messages', 'model', 'temperature']);
+  });
+
+  it('sends only model and messages when there are no options', async () => {
+    const fetchMock = stubFetch(reply);
+    const backend = new OpenAICompatBackend('http://127.0.0.1:1234/v1', null, 1000, null);
+    await backend.chat('m', [{ role: 'user', content: 'hi' }]);
+    expect(Object.keys(sentBody(fetchMock)).sort()).toEqual(['messages', 'model']);
+  });
+});
+
+describe('allowedChatOptions', () => {
+  it('passes the allowed options through', () => {
+    expect(allowedChatOptions({ temperature: 0.7, top_p: 0.9, max_tokens: 500, stop: ['\n\n', 'END'], seed: 42 }))
+      .toEqual({ temperature: 0.7, top_p: 0.9, max_tokens: 500, stop: ['\n\n', 'END'], seed: 42 });
+    expect(allowedChatOptions({ stop: 'END' })).toEqual({ stop: 'END' });
+  });
+
+  it('caps max_tokens', () => {
+    expect(allowedChatOptions({ max_tokens: 10_000_000 })).toEqual({ max_tokens: MAX_TASK_MAX_TOKENS });
+  });
+
+  it('drops values of the wrong type or out of range', () => {
+    expect(allowedChatOptions({
+      temperature: '0.7', top_p: 3, max_tokens: -1, seed: 1.5, stop: [1, 2],
+    })).toEqual({});
+    expect(allowedChatOptions({ temperature: NaN, max_tokens: Infinity, stop: ['a', 'b', 'c', 'd', 'e'] })).toEqual({});
+    expect(allowedChatOptions({ stop: [] })).toEqual({});
+  });
+
+  it('returns nothing for missing options', () => {
+    expect(allowedChatOptions(undefined)).toEqual({});
   });
 });

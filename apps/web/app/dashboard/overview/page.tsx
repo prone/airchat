@@ -287,8 +287,8 @@ export default function OverviewPage() {
               <div style={{ marginTop: 8, fontSize: '0.6875rem', color: INK.secondary, display: 'flex', flexWrap: 'wrap', gap: '4px 12px' }}>
                 <span>{r.note_count} note{r.note_count === 1 ? '' : 's'}{r.stub_count > 0 ? ` (+${r.stub_count} stubs)` : ''}</span>
                 <span>{r.digest_count} digest{r.digest_count === 1 ? '' : 's'}</span>
-                <span title="Estimated size of all messages and notes, at ~4 chars/token">content ≈{formatTokens(contentTokens)} tok</span>
-                <span title="Actual Anthropic API tokens spent on this channel (digests)">LLM spend {formatTokens(llmTokens)} tok</span>
+                <span title="Estimated size of all messages and notes, at ~4 bytes/token">content ≈{formatTokens(contentTokens)} tok</span>
+                <span title="Actual Anthropic API tokens spent on this channel (digests) in the last 90 days">LLM spend {formatTokens(llmTokens)} tok</span>
               </div>
 
               {related.length > 0 && (

@@ -29,6 +29,7 @@ import {
   type UsageSource,
 } from '@airchat/shared';
 import { getStorageAdapter, getSupabaseClient } from '@/lib/api-v2-auth';
+import { getModelPrices } from '@/lib/usage-cache';
 
 /** Thrown by getUsageSummary when the named agent does not exist. */
 export class UsageNotFoundError extends Error {}
@@ -177,42 +178,145 @@ export async function recordSelfReport(
   };
 }
 
+// ── Served-token buffer ─────────────────────────────────────────────────────
+//
+// "Served" tokens are AirChat's own chars/4 estimate of the tool-response text
+// it put into an agent's context. Reports arrive often and are small: the
+// claude.ai connector builds a server per request, so it reported after every
+// tool call, and each report was a read of the agent row plus an INSERT.
+//
+// Reports are now added up in memory per (agent, session) and written
+// together: one read of the agents involved and one multi-row INSERT, every
+// 60 seconds, or sooner once 500 (agent, session) pairs are waiting. The
+// totals written are exactly the totals reported — nothing is sampled or
+// dropped while the process runs, and a failed write is kept and retried with
+// the next one. What is in memory when the process stops is lost: a crash or
+// a restart loses at most the last 60 seconds of served estimates. One row
+// now covers up to a minute of reports, so there are fewer 'served' rows (and
+// a lower event count for that source) for the same token total.
+
+const SERVED_FLUSH_MS = 60_000;
+/** Flush early once this many (agent, session) pairs are waiting. */
+const SERVED_FLUSH_PAIRS = 500;
+/** If writes keep failing, stop holding more than this many pairs. */
+const SERVED_BUFFER_MAX_PAIRS = 5000;
+
+interface ServedEntry {
+  agentId: string;
+  sessionId: string | null;
+  tokens: number;
+  // A Map, not an object: tool names come from the caller, and a name such as
+  // "__proto__" must stay an ordinary key.
+  tools: Map<string, number>;
+}
+
+const servedBuffer = new Map<string, ServedEntry>();
+let servedTimer: ReturnType<typeof setTimeout> | null = null;
+
+function addServed(entry: Omit<ServedEntry, 'tools'> & { tools: Record<string, number> | Map<string, number> }): void {
+  const key = `${entry.agentId}\n${entry.sessionId ?? ''}`;
+  let existing = servedBuffer.get(key);
+  if (!existing) {
+    existing = { agentId: entry.agentId, sessionId: entry.sessionId, tokens: 0, tools: new Map() };
+    servedBuffer.set(key, existing);
+  }
+  existing.tokens += entry.tokens;
+  const counts = entry.tools instanceof Map ? entry.tools : new Map(Object.entries(entry.tools));
+  for (const [tool, count] of counts) {
+    existing.tools.set(tool, (existing.tools.get(tool) ?? 0) + count);
+  }
+}
+
 /**
- * Fire-and-forget record of AirChat's own chars/4 estimate of tool-response
- * tokens served into an agent's context. Attributed to the model on the
- * agent's card ('unknown' when undeclared) so served tokens price alongside
- * the agent's other usage.
+ * Record AirChat's estimate of tool-response tokens served into an agent's
+ * context. Returns at once; the write happens with the next flush. Attributed
+ * at flush time to the model on the agent's card ('unknown' when undeclared)
+ * so served tokens price alongside the agent's other usage.
  */
 export function recordServed(
   agentId: string,
   payload: { tokens: number; session_id?: string; tools?: Record<string, number> },
 ): void {
-  void (async () => {
-    try {
-      const client = getSupabaseClient();
-      const { data: agent } = await client
-        .from('agents')
-        .select('metadata')
-        .eq('id', agentId)
-        .maybeSingle();
-      const card = ((agent?.metadata as Record<string, unknown> | null)?.card ?? null) as
-        | { model?: unknown }
-        | null;
-      const model = typeof card?.model === 'string' && card.model ? card.model : 'unknown';
-      const { error } = await client.from('llm_usage').insert({
-        agent_id: agentId,
-        session_id: payload.session_id ?? null,
-        model,
+  addServed({
+    agentId,
+    sessionId: payload.session_id ?? null,
+    tokens: payload.tokens,
+    tools: payload.tools ?? {},
+  });
+  if (servedBuffer.size >= SERVED_FLUSH_PAIRS) {
+    void flushServed();
+  } else if (!servedTimer) {
+    servedTimer = setTimeout(() => { void flushServed(); }, SERVED_FLUSH_MS);
+    // Never keep the process alive just to write an estimate.
+    servedTimer.unref?.();
+  }
+}
+
+/**
+ * Write everything buffered by recordServed. Never throws. On failure the
+ * batch goes back into the buffer and is written with the next flush.
+ */
+export async function flushServed(): Promise<void> {
+  if (servedTimer) {
+    clearTimeout(servedTimer);
+    servedTimer = null;
+  }
+  if (servedBuffer.size === 0) return;
+  const batch = [...servedBuffer.values()];
+  servedBuffer.clear();
+
+  try {
+    const client = getSupabaseClient();
+    const agentIds = [...new Set(batch.map((e) => e.agentId))];
+    const { data: agents, error: agentsError } = await client
+      .from('agents')
+      .select('id, metadata')
+      .in('id', agentIds);
+    if (agentsError) throw new Error(agentsError.message);
+
+    const modelByAgent = new Map<string, string>();
+    for (const agent of (agents ?? []) as Array<{ id: string; metadata: Record<string, unknown> | null }>) {
+      const card = (agent.metadata?.card ?? null) as { model?: unknown } | null;
+      modelByAgent.set(agent.id, typeof card?.model === 'string' && card.model ? card.model : 'unknown');
+    }
+
+    const rows = batch
+      // An agent deleted since it reported has no row to attribute usage to,
+      // and its id would fail the whole insert on the foreign key.
+      .filter((e) => modelByAgent.has(e.agentId))
+      .map((e) => ({
+        agent_id: e.agentId,
+        session_id: e.sessionId,
+        model: modelByAgent.get(e.agentId)!,
         source: 'served',
         purpose: 'mcp-served',
-        input_tokens: payload.tokens,
-        metadata: { tools: payload.tools ?? {} },
-      });
-      if (error) console.error(`[usage] served insert failed: ${error.message}`);
-    } catch (e) {
-      console.error('[usage] served insert failed:', e);
+        input_tokens: e.tokens,
+        metadata: { tools: Object.fromEntries(e.tools) },
+      }));
+    if (rows.length === 0) return;
+    const { error } = await client.from('llm_usage').insert(rows);
+    if (error) throw new Error(error.message);
+  } catch (e) {
+    console.error(`[usage] served flush failed, will retry: ${e instanceof Error ? e.message : e}`);
+    if (servedBuffer.size + batch.length > SERVED_BUFFER_MAX_PAIRS) {
+      console.error(`[usage] served buffer full; dropping ${batch.length} buffered estimates`);
+    } else {
+      for (const entry of batch) addServed(entry);
     }
-  })();
+    if (servedBuffer.size > 0 && !servedTimer) {
+      servedTimer = setTimeout(() => { void flushServed(); }, SERVED_FLUSH_MS);
+      servedTimer.unref?.();
+    }
+  }
+}
+
+/** Empty the served buffer without writing it. For tests. */
+export function resetServedBuffer(): void {
+  if (servedTimer) {
+    clearTimeout(servedTimer);
+    servedTimer = null;
+  }
+  servedBuffer.clear();
 }
 
 // ── Querying ────────────────────────────────────────────────────────────────
@@ -230,10 +334,50 @@ const MAX_USAGE_ROWS = 100_000;
 /** Thrown when a usage query matches more than MAX_USAGE_ROWS events. */
 export class UsageRangeTooLargeError extends Error {}
 
-type UsageRow = TokenCounts & { model: string; source: UsageSource; agent_id: string | null };
+type UsageRow = TokenCounts & {
+  model: string;
+  source: UsageSource;
+  agent_id: string | null;
+  /** How many events this row sums; absent on a raw event row (one). */
+  events?: number;
+};
+
+/**
+ * Usage in [since, until), summed per (agent, model, source) by the database
+ * (llm_usage_totals, migration 00039): one request and at most a few rows per
+ * agent, where this used to download every event row, 1000 per request, and
+ * add them up here. Every figure the summaries report is a sum or a count
+ * over those groups, so the results are the same.
+ *
+ * On a database without the function, falls back to downloading the rows.
+ */
+async function fetchUsageRows(since: Date, until: Date, agentId?: string): Promise<UsageRow[]> {
+  const { data, error } = await getSupabaseClient().rpc('llm_usage_totals', {
+    p_since: since.toISOString(),
+    p_until: until.toISOString(),
+    p_agent_id: agentId ?? null,
+  });
+  if (!error) {
+    return ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+      agent_id: (row.agent_id as string | null) ?? null,
+      model: row.model as string,
+      source: row.source as UsageSource,
+      // Sums are bigint in the database; make sure they are numbers here.
+      input_tokens: Number(row.input_tokens),
+      output_tokens: Number(row.output_tokens),
+      cache_read_tokens: Number(row.cache_read_tokens),
+      cache_creation_tokens: Number(row.cache_creation_tokens),
+      events: Number(row.events),
+    }));
+  }
+  if ((error as { code?: string }).code !== 'PGRST202') {
+    throw new Error(`usage query failed: ${error.message}`);
+  }
+  return fetchUsageEventRows(since, until, agentId);
+}
 
 /** Fetch event rows in [since, until), paged past PostgREST's 1000-row cap. */
-async function fetchUsageRows(since: Date, until: Date, agentId?: string): Promise<UsageRow[]> {
+async function fetchUsageEventRows(since: Date, until: Date, agentId?: string): Promise<UsageRow[]> {
   const client = getSupabaseClient();
   const rows: UsageRow[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
@@ -259,12 +403,9 @@ async function fetchUsageRows(since: Date, until: Date, agentId?: string): Promi
   return rows;
 }
 
-async function fetchPrices(): Promise<Map<string, ModelPrice>> {
-  const { data, error } = await getSupabaseClient()
-    .from('model_prices')
-    .select('model, input_per_mtok, output_per_mtok, cache_read_per_mtok, cache_write_per_mtok');
-  if (error) throw new Error(`model_prices query failed: ${error.message}`);
-  return new Map(((data ?? []) as ModelPrice[]).map((p) => [p.model, p]));
+/** The price table, from the 60-second cache shared with find_agents. */
+function fetchPrices(): Promise<Map<string, ModelPrice>> {
+  return getModelPrices(getSupabaseClient());
 }
 
 function planFromMetadata(metadata: Record<string, unknown> | null): BillingPlan | null {

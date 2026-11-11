@@ -17,6 +17,7 @@ import {
   generateNonce,
 } from './crypto.js';
 import { cardFromEnv, type AgentCard } from './agent-card.js';
+import { warnIfPlaintextPublicUrl } from './insecure-url.js';
 import type {
   AgentUsageSummary,
   FleetUsage,
@@ -114,6 +115,9 @@ export class AirChatRestClient {
     let webUrl = config.webUrl;
     while (webUrl.endsWith('/')) webUrl = webUrl.slice(0, -1);
     this.webUrl = webUrl;
+    // http is allowed (a tailnet or LAN deployment has no certificate), but
+    // over the public internet it exposes the agent key; say so once.
+    warnIfPlaintextPublicUrl(webUrl);
     this.machineName = config.machineName;
     this.privateKeyHex = config.privateKeyHex;
     this.agentName = config.agentName;

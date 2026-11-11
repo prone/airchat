@@ -16,6 +16,12 @@
  *     the failure mode this exists to remove — a poller can't tell "nobody
  *     can serve this" from "not served yet".
  *
+ *
+ *  3. Usage retention — once a day, usage events older than 90 days are
+ *     deleted in small batches (see purgeOldUsage below). It rides on this
+ *     loop because it is the same kind of housekeeping and needs no worker of
+ *     its own.
+ *
  * IO discipline (the disk-budget lesson): one sweep per 5 minutes, reads
  * first, writes only when something needs fixing. A quiet queue costs two
  * SELECTs per sweep and zero writes.
@@ -180,15 +186,85 @@ async function sweep(): Promise<void> {
   warnedThroughMs = toMs;
 }
 
+// ── Usage retention ─────────────────────────────────────────────────────────
+
+/** Usage events are kept this long. Reports cover at most 30 days. */
+export const USAGE_RETENTION_DAYS = 90;
+const USAGE_PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** Rows per DELETE. Each batch is its own short transaction. */
+const USAGE_PURGE_BATCH = 5000;
+/** At most 20 batches (100,000 rows) per daily run; a backlog larger than
+ *  that is worked off over the following days rather than in one burst. */
+const USAGE_PURGE_MAX_BATCHES = 20;
+
+// When the last purge ran, in this process. A restart forgets it, so the
+// first sweep after a restart purges again; with nothing old enough left
+// that is one DELETE that removes no rows.
+let usagePurgedAtMs: number | null = null;
+
+/**
+ * Delete usage events older than the retention period, at most once a day.
+ *
+ * The usage table only ever grew: every self-report, served estimate and
+ * provider call adds a row and nothing removed any. Deleting in batches of
+ * 5000 keeps each transaction, and the log it writes, small on an instance
+ * with a tight IO budget.
+ *
+ * Returns the number of rows deleted (0 when it was not due). A failure is
+ * logged and tried again on the next sweep; it never fails the sweep.
+ */
+export async function purgeOldUsage(now: number = Date.now()): Promise<number> {
+  if (usagePurgedAtMs !== null && now - usagePurgedAtMs < USAGE_PURGE_INTERVAL_MS) return 0;
+  let deleted = 0;
+  try {
+    const client = getSupabaseClient();
+    for (let batch = 0; batch < USAGE_PURGE_MAX_BATCHES; batch++) {
+      const { data, error } = await client.rpc('purge_llm_usage', {
+        p_keep_days: USAGE_RETENTION_DAYS,
+        p_batch: USAGE_PURGE_BATCH,
+      });
+      if (error) {
+        // PGRST202: the function is not in this database yet (migration
+        // 00039). Nothing to do until it is; check again tomorrow.
+        if ((error as { code?: string }).code === 'PGRST202') break;
+        throw new Error(error.message);
+      }
+      const count = Number(data ?? 0);
+      deleted += count;
+      if (count < USAGE_PURGE_BATCH) break;
+    }
+    usagePurgedAtMs = now;
+    if (deleted > 0) console.log(`[task-janitor] deleted ${deleted} usage events older than ${USAGE_RETENTION_DAYS} days`);
+  } catch (err) {
+    console.error(`[task-janitor] usage retention failed: ${err instanceof Error ? err.message : err}`);
+  }
+  return deleted;
+}
+
+/** Forget when usage was last purged. For tests. */
+export function resetUsagePurgeClock(): void {
+  usagePurgedAtMs = null;
+}
+
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 
 let janitorInterval: ReturnType<typeof setInterval> | null = null;
 const backoff = new Backoff({ baseMs: SWEEP_INTERVAL_MS, maxMs: SWEEP_BACKOFF_MAX_MS });
 
+// True while a sweep is in progress. setInterval fires on schedule whether or
+// not the previous run has finished; a sweep that takes longer than the
+// interval (a slow database, a long purge) would otherwise overlap the next
+// one, and both would read the same orphan cursor and post the same
+// "no active worker" warnings twice.
+let sweepRunning = false;
+
 /** One sweep with backoff bookkeeping: skip while a window is open, escalate on
- *  failure, log once per transition, log once on recovery. */
-async function guardedSweep(): Promise<void> {
+ *  failure, log once per transition, log once on recovery. Skips entirely if
+ *  the previous sweep is still running. */
+export async function guardedSweep(): Promise<void> {
+  if (sweepRunning) return;
   if (backoff.shouldSkip()) return;
+  sweepRunning = true;
   try {
     await sweep();
     const recovered = backoff.success();
@@ -196,6 +272,14 @@ async function guardedSweep(): Promise<void> {
   } catch (err) {
     const { delayMs, attempts, changed } = backoff.failure();
     if (changed) console.error(`[task-janitor] sweep failed (${describeFailure(err)}); backing off ${formatDelay(delayMs)} after ${attempts} failure(s)`);
+  } finally {
+    try {
+      // After the queue work, and whether or not it succeeded: retention has
+      // its own daily clock and its own error handling.
+      await purgeOldUsage();
+    } finally {
+      sweepRunning = false;
+    }
   }
 }
 
