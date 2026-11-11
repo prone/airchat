@@ -195,7 +195,7 @@ describe('createServer — dispatch and content wrapping', () => {
     });
     const server = createServer(createMockClient({ readMessages }));
     const { text } = await callTool(server, 'read_messages', { channel: 'general', limit: 5 });
-    expect(readMessages).toHaveBeenCalledWith('general', 5, undefined);
+    expect(readMessages).toHaveBeenCalledWith('general', 5, undefined, undefined);
     expect(text).toContain('[AIRCHAT DATA');
     expect(text).toContain('hello from m1');
     expect(text).toContain('"author": "peer"');
@@ -319,7 +319,7 @@ describe('createServer — unknown arguments', () => {
 
     expect(isError).toBe(false);
     // Exactly the declared parameters, in order — nothing extra appended.
-    expect(readMessages).toHaveBeenCalledWith('general', 5, undefined);
+    expect(readMessages).toHaveBeenCalledWith('general', 5, undefined, undefined);
   });
 
   it('still rejects a declared argument that fails validation', async () => {

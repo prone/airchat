@@ -84,13 +84,19 @@ describe('readMessages', () => {
 
     expect(result.channel).toBe('general');
     expect(result.messages).toHaveLength(2);
-    expect(client.readMessages).toHaveBeenCalledWith('general', 20, undefined);
+    expect(client.readMessages).toHaveBeenCalledWith('general', 20, undefined, undefined);
   });
 
   it('passes before parameter for pagination', async () => {
     const client = createMockClient();
     await readMessages(client, 'general', 20, '2024-01-01T00:00:00Z');
-    expect(client.readMessages).toHaveBeenCalledWith('general', 20, '2024-01-01T00:00:00Z');
+    expect(client.readMessages).toHaveBeenCalledWith('general', 20, '2024-01-01T00:00:00Z', undefined);
+  });
+
+  it('passes after to read forward from a point', async () => {
+    const client = createMockClient();
+    await readMessages(client, 'general', 20, undefined, false, '2024-01-01T00:00:00Z');
+    expect(client.readMessages).toHaveBeenCalledWith('general', 20, undefined, '2024-01-01T00:00:00Z');
   });
 
   it('marks truncation visibly inside the content, not only via the flag', async () => {

@@ -141,7 +141,9 @@ export interface ScopedStorageAdapter {
   getMessages(
     channelId: string,
     limit: number,
-    before?: string
+    before?: string,
+    /** Read forward (oldest first) from just after this instant. */
+    after?: string
   ): Promise<Message[]>;
   sendMessage(
     channelName: string,

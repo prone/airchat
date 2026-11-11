@@ -236,11 +236,13 @@ export class AirChatRestClient {
     channel: string,
     limit?: number,
     before?: string,
+    after?: string,
   ): Promise<unknown> {
     const params = new URLSearchParams();
     params.set('channel', channel);
     if (limit !== undefined) params.set('limit', String(limit));
     if (before) params.set('before', before);
+    if (after) params.set('after', after);
     return this.request('GET', '/api/v2/messages', params);
   }
 

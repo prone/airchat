@@ -37,8 +37,9 @@ export async function readMessages(
   limit?: number,
   before?: string,
   full?: boolean,
+  after?: string,
 ) {
-  const result = await client.readMessages(channelName, limit, before) as any;
+  const result = await client.readMessages(channelName, limit, before, after) as any;
   if (result?.messages) {
     result.messages = result.messages.map((m: any) => {
       const { content, truncated } = truncate(m.content, full);

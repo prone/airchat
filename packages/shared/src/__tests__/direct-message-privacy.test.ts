@@ -27,6 +27,10 @@ interface Recorded {
   table: string;
   filters: Record<string, unknown>;
   inValues?: unknown[];
+  lt?: unknown;
+  gt?: unknown;
+  ascending?: boolean;
+  limit?: number;
 }
 
 /**
@@ -54,15 +58,37 @@ function makeClient(
         const col = table === 'mentions' ? 'message_id' : 'id';
         out = out.filter((r) => allowed.has(r[col]));
       }
+      // Window, order and limit on created_at — the read paths under test
+      // depend on them, so the stand-in has to honour them.
+      const at = (r: Row) => String(r.created_at ?? '');
+      if (record.lt !== undefined) out = out.filter((r) => at(r) < String(record.lt));
+      if (record.gt !== undefined) out = out.filter((r) => at(r) > String(record.gt));
+      if (record.ascending !== undefined) {
+        const dir = record.ascending ? 1 : -1;
+        out = [...out].sort((a, b) => dir * at(a).localeCompare(at(b)));
+      }
+      if (record.limit !== undefined) out = out.slice(0, record.limit);
       return out;
     };
 
     const chain: Record<string, unknown> = {
       select: () => chain,
-      order: () => chain,
-      limit: () => chain,
-      lt: () => chain,
-      gt: () => chain,
+      order: (_col: string, opts?: { ascending?: boolean }) => {
+        record.ascending = opts?.ascending ?? true;
+        return chain;
+      },
+      limit: (n: number) => {
+        record.limit = n;
+        return chain;
+      },
+      lt: (_col: string, val: unknown) => {
+        record.lt = val;
+        return chain;
+      },
+      gt: (_col: string, val: unknown) => {
+        record.gt = val;
+        return chain;
+      },
       eq: (col: string, val: unknown) => {
         record.filters[col] = val;
         return chain;
@@ -111,8 +137,8 @@ const CHANNELS: Row[] = [
 
 /** Only `dm-to-me` was addressed to this agent. */
 const MENTIONS: Row[] = [
-  { message_id: 'dm-to-me', mentioned_agent_id: ME },
-  { message_id: 'dm-theirs', mentioned_agent_id: BOB },
+  { message_id: 'dm-to-me', mentioned_agent_id: ME, channel_id: DM_CHANNEL_ID },
+  { message_id: 'dm-theirs', mentioned_agent_id: BOB, channel_id: DM_CHANNEL_ID },
 ];
 
 describe('direct message privacy', () => {
@@ -213,5 +239,91 @@ describe('direct message privacy', () => {
 
     expect(dm?.latest?.content).not.toBe('@bob private');
     expect(dm?.latest?.content).toBe('@me for me');
+  });
+
+  // ── Reading your own DMs on a busy board ─────────────────────────────────
+  //
+  // The filter used to run AFTER the limit: fetch the newest N rows of the
+  // whole channel, then drop other agents'. With many agents talking, the
+  // caller's own DMs were rarely among everyone's newest N, so reading
+  // #direct-messages returned little or nothing.
+
+  const stamp = (n: number) => `2026-01-01T00:${String(n).padStart(2, '0')}:00Z`;
+
+  /** Two DMs of mine, then 40 newer ones between Alice and Bob. */
+  function busyBoard() {
+    const messages: Row[] = [
+      { id: 'old-mine', channel_id: DM_CHANNEL_ID, author_agent_id: ME, content: '@alice q', quarantined: false, created_at: stamp(1) },
+      { id: 'old-to-me', channel_id: DM_CHANNEL_ID, author_agent_id: ALICE, content: '@me a', quarantined: false, created_at: stamp(2) },
+    ];
+    const mentions: Row[] = [
+      { message_id: 'old-to-me', mentioned_agent_id: ME, channel_id: DM_CHANNEL_ID, created_at: stamp(2) },
+    ];
+    for (let i = 0; i < 40; i++) {
+      messages.push({
+        id: `theirs-${i}`, channel_id: DM_CHANNEL_ID, author_agent_id: ALICE,
+        content: '@bob chatter', quarantined: false, created_at: stamp(10 + i),
+      });
+      mentions.push({ message_id: `theirs-${i}`, mentioned_agent_id: BOB, channel_id: DM_CHANNEL_ID, created_at: stamp(10 + i) });
+    }
+    return { messages, channels: CHANNELS, mentions };
+  }
+
+  it('returns my DMs even when the newest rows all belong to other agents', async () => {
+    const adapter = scopedAdapter(makeClient(busyBoard(), []));
+
+    const got = await adapter.getMessages(DM_CHANNEL_ID, 20);
+
+    expect(got.map((m) => m.id)).toEqual(['old-mine', 'old-to-me']);
+  });
+
+  it('pages backward through my DMs with before', async () => {
+    const adapter = scopedAdapter(makeClient(busyBoard(), []));
+
+    const got = await adapter.getMessages(DM_CHANNEL_ID, 20, stamp(2));
+
+    expect(got.map((m) => m.id)).toEqual(['old-mine']);
+  });
+
+  it('keeps a quarantined DM out', async () => {
+    const board = busyBoard();
+    board.messages[1].quarantined = true;
+    const adapter = scopedAdapter(makeClient(board, []));
+
+    const got = await adapter.getMessages(DM_CHANNEL_ID, 20);
+
+    expect(got.map((m) => m.id)).toEqual(['old-mine']);
+  });
+
+  // ── Reading forward with `after` ─────────────────────────────────────────
+
+  const TIMELINE: Row[] = [1, 2, 3, 4, 5].map((n) => ({
+    id: `m${n}`, channel_id: OPEN_CHANNEL_ID, author_agent_id: ALICE,
+    content: `message ${n}`, quarantined: false, created_at: stamp(n),
+  }));
+
+  it('without after, returns the newest messages in chronological order', async () => {
+    const adapter = scopedAdapter(makeClient({ messages: TIMELINE, channels: CHANNELS }, []));
+
+    const got = await adapter.getMessages(OPEN_CHANNEL_ID, 2);
+
+    expect(got.map((m) => m.id)).toEqual(['m4', 'm5']);
+  });
+
+  it('with after, returns the OLDEST messages past that point, in order', async () => {
+    const adapter = scopedAdapter(makeClient({ messages: TIMELINE, channels: CHANNELS }, []));
+
+    const got = await adapter.getMessages(OPEN_CHANNEL_ID, 2, undefined, stamp(1));
+
+    // Not m4, m5: a reader catching up must not skip m2 and m3.
+    expect(got.map((m) => m.id)).toEqual(['m2', 'm3']);
+  });
+
+  it('reads my DMs forward with after', async () => {
+    const adapter = scopedAdapter(makeClient(busyBoard(), []));
+
+    const got = await adapter.getMessages(DM_CHANNEL_ID, 20, undefined, stamp(1));
+
+    expect(got.map((m) => m.id)).toEqual(['old-to-me']);
   });
 });

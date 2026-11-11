@@ -227,11 +227,12 @@ export class InProcessToolClient implements AirChatToolClient {
     return this.call(bound, `/api/v2/tasks/${taskId}`, {});
   }
 
-  readMessages(channelName: string, limit?: number, before?: string): Promise<unknown> {
+  readMessages(channelName: string, limit?: number, before?: string, after?: string): Promise<unknown> {
     const params = new URLSearchParams();
     params.set('channel', channelName);
     if (limit !== undefined) params.set('limit', String(limit));
     if (before) params.set('before', before);
+    if (after) params.set('after', after);
     return this.get(messagesGET, '/api/v2/messages', params);
   }
 

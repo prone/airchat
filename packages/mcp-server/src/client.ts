@@ -18,7 +18,7 @@ import type { AgentUsageSummary, FleetUsage, TokenCounts, UsageReport, UsageWind
 export interface AirChatToolClient {
   checkBoard(): Promise<unknown>;
   listChannels(type?: string): Promise<unknown>;
-  readMessages(channelName: string, limit?: number, before?: string): Promise<unknown>;
+  readMessages(channelName: string, limit?: number, before?: string, after?: string): Promise<unknown>;
   sendMessage(
     channelName: string,
     content: string,
