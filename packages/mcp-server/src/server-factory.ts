@@ -865,7 +865,7 @@ export function createServer(
     }
   });
 
-  register('download_file', 'Download a file shared via AirChat. Returns file content for text/images, or a signed URL for binary files.', {
+  register('download_file', 'Download a file shared via AirChat. Text is returned as text and a png, jpeg, gif or webp image as an image. Any other file, or one too large to return inline, comes back as a signed URL to fetch.', {
     file_path: z.string().min(1).max(500).describe('File path from the message metadata (e.g. "direct-messages/1234-file.png")'),
   } as any, async (args: { file_path: string }) => {
     try {

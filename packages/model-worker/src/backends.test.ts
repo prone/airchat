@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AnthropicBackend, OllamaBackend, OpenAICompatBackend, allowedChatOptions, MAX_TASK_MAX_TOKENS, type AnthropicMessagesClient } from './backends.js';
+import { AnthropicBackend, OllamaBackend, OpenAICompatBackend, allowedChatOptions, allowedOllamaOptions, MAX_TASK_MAX_TOKENS, type AnthropicMessagesClient } from './backends.js';
 
 function fakeClient(response: {
   stop_reason: string | null;
@@ -286,5 +286,36 @@ describe('allowedChatOptions', () => {
 
   it('returns nothing for missing options', () => {
     expect(allowedChatOptions(undefined)).toEqual({});
+  });
+});
+
+describe('allowedOllamaOptions', () => {
+  it('passes sampling options through in Ollama\'s names', () => {
+    expect(allowedOllamaOptions({ temperature: 0.2, top_p: 0.9, seed: 7, stop: 'END', max_tokens: 500 }))
+      .toEqual({ temperature: 0.2, top_p: 0.9, seed: 7, stop: ['END'], num_predict: 500 });
+    expect(allowedOllamaOptions({ num_predict: 64, stop: ['a', 'b'] })).toEqual({ num_predict: 64, stop: ['a', 'b'] });
+  });
+
+  it('caps the output length', () => {
+    expect(allowedOllamaOptions({ num_predict: 10_000_000 })).toEqual({ num_predict: MAX_TASK_MAX_TOKENS });
+  });
+
+  it('drops runtime settings and anything else a task has no business setting', () => {
+    expect(allowedOllamaOptions({
+      num_ctx: 1_000_000, num_gpu: 99, num_thread: 512, num_batch: 4096, use_mmap: false,
+      model: 'other', messages: [], temperature: 'hot', num_predict: -1,
+    })).toEqual({});
+    expect(allowedOllamaOptions(undefined)).toEqual({});
+  });
+});
+
+describe('OllamaBackend.chat options', () => {
+  it('sends only the allowed options to the runtime', async () => {
+    const fetchMock = stubFetch({ message: { content: 'ok' }, done: true });
+    const backend = new OllamaBackend('http://127.0.0.1:11434', 1000);
+    await backend.chat('qwen2.5:0.5b', [{ role: 'user', content: 'hi' }], { temperature: 0.1, num_ctx: 1_000_000, num_gpu: 99 });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.options).toEqual({ temperature: 0.1 });
+    expect(body.model).toBe('qwen2.5:0.5b');
   });
 });

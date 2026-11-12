@@ -15,9 +15,15 @@ export async function peerAdd(client: AirChatRestClient, endpoint: string, opts:
       console.error(`Remote instance at ${endpoint} did not respond (HTTP ${res.status}).`);
       process.exit(1);
     }
-    const identity = await res.json() as Record<string, string>;
+    // The endpoint wraps its answer: the fields are under `data`. An older
+    // server answers with them at the top level.
+    const identity = identityFields(await res.json());
+    if (!identity) {
+      console.error(`${endpoint} did not answer with an instance identity. Is it an AirChat server with gossip enabled?`);
+      process.exit(1);
+    }
     fingerprint = identity.fingerprint;
-    displayName = identity.display_name;
+    displayName = identity.displayName;
     console.log(`  Fingerprint: ${fingerprint}`);
     if (displayName) console.log(`  Display name: ${displayName}`);
   } catch {
@@ -80,4 +86,19 @@ export async function peerList(client: AirChatRestClient) {
     console.error(`Failed to list peers: ${msg}`);
     process.exit(1);
   }
+}
+
+/**
+ * The fingerprint and display name from a /api/v2/gossip/identity answer, or
+ * null when it carries no fingerprint. Without this check a wrapped answer
+ * was read as having no fingerprint and the peer was added with none.
+ */
+export function identityFields(json: unknown): { fingerprint: string; displayName?: string } | null {
+  const top = (json ?? {}) as { data?: unknown };
+  const fields = (typeof top.data === 'object' && top.data !== null ? top.data : top) as Record<string, unknown>;
+  if (typeof fields.fingerprint !== 'string' || !/^[0-9a-f]{16}$/.test(fields.fingerprint)) return null;
+  return {
+    fingerprint: fields.fingerprint,
+    ...(typeof fields.display_name === 'string' && fields.display_name ? { displayName: fields.display_name } : {}),
+  };
 }

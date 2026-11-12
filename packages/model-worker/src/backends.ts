@@ -67,6 +67,28 @@ export function allowedChatOptions(options: Record<string, unknown> | undefined)
   return out;
 }
 
+/**
+ * The same allow-list for Ollama, in Ollama's names. Its `options` object
+ * cannot change the model or the messages, but it does carry runtime settings
+ * (`num_ctx`, `num_gpu`, `num_thread`, `num_batch`, ...) that decide how much
+ * memory and CPU a request takes on the serving machine, so a task may not
+ * set those either. `max_tokens` is accepted as well as Ollama's own
+ * `num_predict`, since a task is written without knowing which backend runs it.
+ */
+export function allowedOllamaOptions(options: Record<string, unknown> | undefined): Record<string, unknown> {
+  const raw = options && typeof options === 'object' ? options : {};
+  const { max_tokens: maxTokens, ...rest } = allowedChatOptions({
+    ...raw,
+    max_tokens: raw.num_predict ?? raw.max_tokens,
+  });
+  const stop = typeof rest.stop === 'string' ? [rest.stop] : rest.stop;
+  return {
+    ...rest,
+    ...(stop !== undefined ? { stop } : {}),
+    ...(maxTokens !== undefined ? { num_predict: maxTokens } : {}),
+  };
+}
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -170,7 +192,7 @@ export class OllamaBackend implements ModelBackend {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, messages, stream: false, options }),
+        body: JSON.stringify({ model, messages, stream: false, options: allowedOllamaOptions(options) }),
       },
       this.inferenceTimeoutMs
     )) as { message?: { content?: string }; prompt_eval_count?: number; eval_count?: number };
