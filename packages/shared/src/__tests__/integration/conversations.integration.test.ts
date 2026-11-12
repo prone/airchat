@@ -12,6 +12,11 @@ import { rateLimitTolerant } from './rate-limit-tolerant.js';
 
 const TAG = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+const ALICE = 'macbook-test-alice';
+const BOB = 'macbook-test-bob';
+const CAROL = 'macbook-test-task-coder';
+const OUTSIDER = 'macbook-test-task-rival';
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 let alice: any;
 let bob: any;
@@ -29,18 +34,22 @@ const status = async (run: () => Promise<unknown>): Promise<number> => {
 };
 
 beforeAll(async () => {
-  [alice, bob, carol, outsider] = ['alice', 'bob', 'carol', 'dave'].map((n) =>
-    rateLimitTolerant(AirChatRestClient.fromConfig({ agentName: `macbook-test-${n}` }))
+  // The agents the other suites already use. They are marked as test agents
+  // on the server (migration 00034), so they stay out of "who is around".
+  [alice, bob, carol, outsider] = [ALICE, BOB, CAROL, OUTSIDER].map((agentName) =>
+    rateLimitTolerant(AirChatRestClient.fromConfig({ agentName }))
   );
   // The first call registers each agent, so they exist when named below.
   for (const agent of [alice, bob, carol, outsider]) await agent.checkBoard();
-});
+  // Longer than the default: this runs after the other suites, and a call may
+  // have to wait out the server's rate limit window first.
+}, 150_000);
 
 describe('a conversation', () => {
   it('starts with a first message and notifies the other participant', async () => {
-    const started = await alice.startConversation(['macbook-test-bob'], {
+    const started = await alice.startConversation([BOB], {
       title: `Integration ${TAG}`,
-      content: `first-${TAG} cc @macbook-test-dave`,
+      content: `first-${TAG} cc @${OUTSIDER}`,
     });
     id = started.conversation.id;
     expect(started.conversation.participants).toHaveLength(2);
@@ -51,14 +60,14 @@ describe('a conversation', () => {
 
   it('is read by its participants', async () => {
     const read = await bob.readConversation(id);
-    expect(read.messages.map((m: any) => m.content)).toEqual([`first-${TAG} cc @macbook-test-dave`]);
+    expect(read.messages.map((m: any) => m.content)).toEqual([`first-${TAG} cc @${OUTSIDER}`]);
     expect((await bob.listConversations()).conversations.some((c: any) => c.id === id)).toBe(true);
   });
 
   it('is closed to an agent outside it, even one named with @ in the text', async () => {
     expect(await status(() => outsider.readConversation(id))).toBe(404);
     expect(await status(() => outsider.sendConversationMessage(id, 'let me in'))).toBe(404);
-    expect(await status(() => outsider.addToConversation(id, 'macbook-test-dave'))).toBe(404);
+    expect(await status(() => outsider.addToConversation(id, OUTSIDER))).toBe(404);
     expect((await outsider.listConversations()).conversations.some((c: any) => c.id === id)).toBe(false);
 
     const work = await outsider.checkWork();
@@ -73,7 +82,7 @@ describe('a conversation', () => {
     await bob.sendConversationMessage(id, `second-${TAG}`);
     expect(await status(() => carol.readConversation(id))).toBe(404);
 
-    const added = await bob.addToConversation(id, 'macbook-test-carol');
+    const added = await bob.addToConversation(id, CAROL);
     expect(added.conversation.participants).toHaveLength(3);
 
     const read = await carol.readConversation(id);
@@ -95,7 +104,7 @@ describe('a conversation', () => {
   it('shows who has seen a message, to the participants and to the author', async () => {
     const read = await alice.readConversation(id);
     const third = read.messages.find((m: any) => m.content === `third-${TAG}`);
-    expect(third.seen_by.map((s: any) => s.name).sort()).toEqual(['macbook-test-bob', 'macbook-test-carol']);
+    expect(third.seen_by.map((s: any) => s.name).sort()).toEqual([BOB, CAROL]);
 
     const mine = (await alice.messageReceipts([third.id])).receipts;
     expect(mine[0].recipients.every((r: any) => r.read && r.read_at)).toBe(true);
@@ -106,6 +115,6 @@ describe('a conversation', () => {
 
   it('refuses a participant that does not exist, and a conversation with nobody else', async () => {
     expect(await status(() => alice.startConversation([`macbook-test-nobody-${Date.now()}`]))).toBe(404);
-    expect(await status(() => alice.startConversation(['macbook-test-alice']))).toBe(400);
+    expect(await status(() => alice.startConversation([ALICE]))).toBe(400);
   });
 });
