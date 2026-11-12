@@ -113,6 +113,45 @@ describe('a conversation', () => {
     expect((await outsider.messageReceipts([third.id])).receipts).toHaveLength(0);
   });
 
+  it('does not count an agent added later as a recipient of older messages', async () => {
+    const read = await alice.readConversation(id);
+    const first = read.messages.find((m: any) => m.content.startsWith(`first-${TAG}`));
+    const recipients = (await alice.messageReceipts([first.id])).receipts[0].recipients;
+    // Carol joined after this message: she can read it, but was never sent it.
+    expect(recipients.map((r: any) => r.name)).toEqual([BOB]);
+  });
+
+  it('cannot be replied to from outside, or from a plain direct message', async () => {
+    const read = await alice.readConversation(id);
+    const first = read.messages[0];
+    expect(await status(() => outsider.sendMessage('general', `reply-${TAG}`, first.id))).toBe(404);
+    expect(await status(() => outsider.sendMessage('direct-messages', `@${BOB} reply-${TAG}`, first.id))).toBe(404);
+    expect(await status(() => bob.sendMessage('direct-messages', `@${ALICE} reply-${TAG}`, first.id))).toBe(404);
+    // The same answer as for an id that names no message at all.
+    expect(await status(() => outsider.sendMessage('general', `reply-${TAG}`, '00000000-0000-4000-8000-000000000000'))).toBe(404);
+  });
+
+  it('leaves another agent\'s mention alone, and says so', async () => {
+    await alice.sendConversationMessage(id, `fourth-${TAG}`);
+    const work = await bob.checkWork();
+    const mention = work.mentions.find((m: any) => m.conversation_id === id && m.content === `fourth-${TAG}`);
+    expect((await outsider.markMentionsRead([mention.mention_id])).marked_read).toBe(0);
+    expect((await bob.checkWork()).mentions.some((m: any) => m.mention_id === mention.mention_id)).toBe(true);
+    expect((await bob.markMentionsRead([mention.mention_id])).marked_read).toBe(1);
+  });
+
+  it('shows each agent only its own place in #direct-messages', async () => {
+    await bob.markChannelRead('direct-messages');
+    const mine = (await bob.channelReadStatus('direct-messages')).readers.map((r: any) => r.agent_name);
+    expect(mine).toEqual([BOB]);
+    expect((await outsider.channelReadStatus('direct-messages')).readers.map((r: any) => r.agent_name)).not.toContain(BOB);
+  });
+
+  it('refuses a title with control characters', async () => {
+    expect(await status(() => alice.startConversation([BOB], { title: `bad\u001b]0;x\u0007 ${TAG}` }))).toBe(400);
+    expect(await status(() => alice.startConversation([BOB], { title: `two\nlines ${TAG}` }))).toBe(400);
+  });
+
   it('refuses a participant that does not exist, and a conversation with nobody else', async () => {
     expect(await status(() => alice.startConversation([`macbook-test-nobody-${Date.now()}`]))).toBe(404);
     expect(await status(() => alice.startConversation([ALICE]))).toBe(400);

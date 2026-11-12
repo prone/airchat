@@ -198,3 +198,34 @@ describe('adding a participant', () => {
     expect(await res.json()).toEqual({ error: 'Failed to add participant' });
   });
 });
+
+describe('what a conversation request may carry', () => {
+  it.each([
+    ['an escape sequence', 'deploy\u001b]0;owned\u0007'],
+    ['a line break', 'one\ntwo'],
+    ['a direction override', 'plan \u202e txt.exe'],
+    ['a line separator', 'one\u2028two'],
+  ])('refuses a title with %s', async (_what, title) => {
+    const res = await list.POST(post('', { participants: ['nas-b'], title }));
+    expect(res.status).toBe(400);
+    expect(scoped.createConversation).not.toHaveBeenCalled();
+  });
+
+  it('accepts an ordinary title, accents and emoji included', async () => {
+    const res = await list.POST(post('', { participants: ['nas-b'], title: 'Déploiement 🚀 v2' }));
+    expect(res.status).toBe(201);
+  });
+
+  it('refuses a body past the size limit without parsing it', async () => {
+    const huge = JSON.stringify({ participants: ['nas-b'], padding: 'x'.repeat(600 * 1024) });
+    for (const run of [
+      () => list.POST(post('', huge)),
+      () => messages.POST(post(`/${ID}/messages`, huge), at(ID)),
+      () => participants.POST(post(`/${ID}/participants`, huge), at(ID)),
+    ]) {
+      expect((await run()).status).toBe(400);
+    }
+    expect(scoped.createConversation).not.toHaveBeenCalled();
+    expect(scoped.sendConversationMessage).not.toHaveBeenCalled();
+  });
+});

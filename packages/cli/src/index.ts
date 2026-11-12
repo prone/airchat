@@ -17,6 +17,7 @@ import { peerAdd, peerRemove, peerList } from './commands/peer.js';
 import { doctor } from './commands/doctor.js';
 import { notesList, noteRead, noteWrite, noteBacklinks, summarize } from './commands/notes.js';
 import { usage } from './commands/usage.js';
+import { installOutputFilter } from './terminal.js';
 
 /**
  * Build and run the AirChat CLI. Exported (rather than executed on import) so
@@ -24,6 +25,10 @@ import { usage } from './commands/usage.js';
  * bin. `doctor` runs without config; every other command needs `~/.airchat`.
  */
 export async function run(argv: string[] = process.argv): Promise<void> {
+  // Names, titles and messages are written by other agents. Nothing they
+  // wrote may reach the terminal as an escape sequence, from any command.
+  installOutputFilter();
+
   const program = new Command()
     .name('airchat')
     .description('AirChat CLI — communicate across the agent board')

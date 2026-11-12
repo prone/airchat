@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import stat
 import time
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from airchat.config import AirChatConfig, derive_agent_name, load_config
 from airchat.crypto import (
@@ -33,6 +34,47 @@ from airchat.types import (
 
 # Seconds one wait request is held open; the server allows up to 50.
 _WAIT_SECONDS = 25
+# A wait answered sooner than this with nothing to read was not held: an
+# honest server holds it until there is something. See wait_for_work.
+_QUICK_WAIT_SECONDS = 1.0
+_MAX_QUICK_PAUSE_SECONDS = 30.0
+# The longest pause a Retry-After header can ask for, and the shortest.
+_MAX_RETRY_AFTER_SECONDS = 300.0
+# The largest response body read. No API answer comes near it.
+_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+_MAX_ERROR_BYTES = 64 * 1024
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    """Do not follow redirects. urllib would send the agent key along to
+    wherever a redirect pointed; it is meant for the configured server."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        return None
+
+
+urlopen = build_opener(_NoRedirect()).open
+
+
+def _retry_after(value: Any) -> float | None:
+    """Seconds from a Retry-After header, kept between 1 and 300. None when
+    absent, negative, not finite or not a number."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(seconds) or seconds <= 0:
+        return None
+    return min(max(seconds, 1.0), _MAX_RETRY_AFTER_SECONDS)
+
+
+def _read_capped(resp: Any, limit: int) -> bytes:
+    """The body, read no further than ``limit``. A server or proxy that
+    keeps sending must not grow this process without bound."""
+    data = resp.read(limit + 1)
+    if len(data) > limit:
+        raise AirChatError(f"Response is larger than {limit} bytes; not read")
+    return data
 
 
 class AirChatError(Exception):
@@ -210,10 +252,10 @@ class AirChatClient:
 
         try:
             with urlopen(req, timeout=30) as resp:
-                json.loads(resp.read())
+                _read_capped(resp, _MAX_RESPONSE_BYTES)
         except HTTPError as e:
             try:
-                err_body = json.loads(e.read())
+                err_body = json.loads(e.read(_MAX_ERROR_BYTES))
                 msg = err_body.get("error", str(e))
             except Exception:
                 msg = str(e)
@@ -265,12 +307,23 @@ class AirChatClient:
         try:
             with urlopen(req, timeout=timeout) as resp:
                 content_type = resp.headers.get("Content-Type", "")
-                raw_bytes = resp.read()
+                raw_bytes = _read_capped(resp, _MAX_RESPONSE_BYTES)
                 if "application/json" not in content_type:
                     # Non-JSON response (e.g. binary file download)
                     return raw_bytes.decode("utf-8", errors="replace")
-                raw = json.loads(raw_bytes)
+                try:
+                    raw = json.loads(raw_bytes)
+                except ValueError as e:
+                    # A proxy's error page sent as JSON, or a cut-off body.
+                    raise AirChatError(f"The server's answer was not valid JSON: {e}") from e
         except HTTPError as e:
+            if 300 <= e.code < 400:
+                raise AirChatError(
+                    f"{e.code}: the server at {self._base_url} answered with a redirect. "
+                    "Redirects are not followed, so the agent key is not sent to another address. "
+                    "Set AIRCHAT_WEB_URL to the address the server is really at.",
+                    status=e.code,
+                ) from e
             # 401 retry: re-register and retry once
             if e.code == 401 and not _retried:
                 self._invalidate_and_reregister()
@@ -278,15 +331,11 @@ class AirChatClient:
                     method, path, params=params, body=body, timeout=timeout, _retried=True
                 )
             try:
-                err_body = json.loads(e.read())
+                err_body = json.loads(e.read(_MAX_ERROR_BYTES))
                 msg = err_body.get("error", str(e))
             except Exception:
                 msg = str(e)
-            retry_after: float | None = None
-            try:
-                retry_after = float(e.headers.get("Retry-After", ""))
-            except (TypeError, ValueError):
-                pass
+            retry_after = _retry_after(e.headers.get("Retry-After") if e.headers else None)
             raise AirChatError(f"{e.code}: {msg}", status=e.code, retry_after=retry_after) from e
 
         # Unwrap boundary-wrapped responses from the hardened API
@@ -472,14 +521,20 @@ class AirChatClient:
             time.sleep(seconds if left is None else min(seconds, left))
             return True
 
+        def budget() -> float:
+            """Seconds one request may take: no longer than the time left."""
+            left = remaining()
+            return 30.0 if left is None else min(30.0, max(1.0, left))
+
         can_wait = True
         cursor: str | None = None
+        quick = 0  # waits in a row that were answered at once
         while True:
             # The cursor is taken BEFORE the read: a message stored after it
             # ends the next wait at once, so none can fall between the two.
             if can_wait and cursor is None:
                 try:
-                    cursor = self._get("/api/v2/work/wait").get("cursor")
+                    cursor = self._request("GET", "/api/v2/work/wait", timeout=budget()).get("cursor")
                 except AirChatError as e:
                     if e.status == 429:
                         if not pause(e.retry_after or 5):
@@ -488,9 +543,14 @@ class AirChatClient:
                     # No such endpoint, or turned off: poll.
                     can_wait = False
 
-            work = self.check_work()
+            work = self._request("GET", "/api/v2/work", timeout=budget())
             if ready(work):
                 return work
+
+            # A server that answers every wait at once must not turn this into
+            # a tight loop: pause, longer each time, until a wait is held.
+            if quick and not pause(min(_QUICK_WAIT_SECONDS * 2 ** (quick - 1), _MAX_QUICK_PAUSE_SECONDS)):
+                return None
 
             left = remaining()
             if left is not None and left <= 0:
@@ -506,15 +566,18 @@ class AirChatClient:
             if left is not None:
                 hold = min(hold, left)
             hold = max(1, int(hold))
+            asked = time.monotonic()
             try:
                 answer = self._request(
                     "GET",
                     "/api/v2/work/wait",
                     params={"after": cursor, "timeout": hold},
-                    timeout=hold + 15,
+                    timeout=hold + 8,
                 )
                 cursor = answer.get("cursor") or None
+                quick = min(quick + 1, 16) if time.monotonic() - asked < _QUICK_WAIT_SECONDS else 0
             except AirChatError as e:
+                quick = 0
                 cursor = None
                 if e.status == 429:
                     if not pause(e.retry_after or 5):
@@ -526,6 +589,7 @@ class AirChatClient:
             except OSError:
                 # The connection dropped or timed out (a proxy, a restart).
                 # Start again from a new cursor after a short pause.
+                quick = 0
                 cursor = None
                 if not pause(5):
                     return None

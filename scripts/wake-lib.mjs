@@ -98,6 +98,16 @@ export function wakeCandidates(mentions, settings, seen) {
   });
 }
 
+/**
+ * How long to pause for a Retry-After header: its whole seconds, kept between
+ * 5 seconds and 5 minutes. Null when the header is absent or is not a plain
+ * number of seconds, so the caller can tell "full for now" from "turned off".
+ */
+export function retryPauseMs(header) {
+  if (typeof header !== 'string' || !/^\d{1,9}$/.test(header.trim())) return null;
+  return Math.min(Math.max(Number(header.trim()), 5), 300) * 1000;
+}
+
 /** Wake times within the last hour, and whether another is allowed. */
 export function wakeBudget(wakes, now) {
   const recent = (Array.isArray(wakes) ? wakes : []).filter((at) => Number.isFinite(at) && now - at < HOUR_MS);

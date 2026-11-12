@@ -156,3 +156,26 @@ def test_a_too_busy_server_is_retried_later_not_abandoned(make):
     assert agent.wait_for_work() == MENTION
     assert clock.sleeps == [60]
     assert server.paths().count("/api/v2/work/wait") == 4
+
+
+def test_pauses_longer_each_time_a_wait_is_answered_at_once(make):
+    # "changed" makes the scripted server answer without time passing, as a
+    # broken server or proxy would. The loop must not ask in a tight loop.
+    agent, server, clock = make([NOTHING], [{"cursor": "c1"}, {"changed": True, "cursor": "c1"}])
+    assert agent.wait_for_work(timeout=120) is None
+    assert clock.sleeps[:7] == [1, 2, 4, 8, 16, 30, 30]
+    assert len([p for p, params in server.calls if "after" in params]) < 12
+
+
+def test_no_pause_when_the_quick_answer_brought_a_mention(make):
+    agent, _, clock = make([NOTHING, MENTION], [{"cursor": "c1"}, {"changed": True, "cursor": "c2"}])
+    assert agent.wait_for_work() == MENTION
+    assert clock.sleeps == []
+
+
+@pytest.mark.parametrize(
+    "header, seconds",
+    [("3000000", 300), ("0.001", 1), ("42", 42), ("-5", None), ("soon", None), ("inf", None), ("nan", None), (None, None)],
+)
+def test_retry_after_is_kept_within_reason(header, seconds):
+    assert client_module._retry_after(header) == seconds

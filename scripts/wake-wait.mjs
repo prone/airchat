@@ -29,6 +29,7 @@ const WAIT_SECONDS = 50;
 // Stop waiting after this long; the next Stop or SessionStart starts another.
 const MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
 const MAX_BACKOFF_MS = 5 * 60 * 1000;
+const MIN_ASK_INTERVAL_MS = 1000;
 
 let hookInput = {};
 try { hookInput = JSON.parse(readFileSync(0, 'utf-8')) ?? {}; } catch {}
@@ -70,9 +71,15 @@ const wakeFile = join(cacheDir, `wake-state-${client.agentName}.json`);
 async function ask(after) {
   const query = after ? `?after=${encodeURIComponent(after)}&timeout=${WAIT_SECONDS}` : '';
   const res = await client.get(`/api/v2/work/wait${query}`, (WAIT_SECONDS + 15) * 1000);
-  // 503: waiting is turned off on the server, or it is full. 404: a server
-  // from before this endpoint. Either way there is nothing to wait on.
-  if (res.status === 503 || res.status === 404) return { gone: true };
+  // 503 with Retry-After: the server is full for now. That passes, so wait
+  // and ask again: giving up here would leave the session deaf to wakes until
+  // a person next typed, and "full" is something another machine can cause.
+  // 503 without it: waiting is turned off on the server. 404: a server from
+  // before this endpoint. For those two there is nothing to wait on.
+  if (res.status === 503 || res.status === 404) {
+    const pause = retryPauseMs(res.headers.get('retry-after'));
+    return res.status === 503 && pause !== null ? { busyMs: pause } : { gone: true };
+  }
   if (!res.ok) return null;
   return unwrap(await res.json());
 }
@@ -140,10 +147,17 @@ async function onChange() {
 
 let cursor = null;
 let backoff = 2000;
+let lastAsk = 0;
 while (Date.now() - started < MAX_LIFETIME_MS && stillMine()) {
   try {
+    // Never ask more than once a second, whatever the server answers: a
+    // server that answers at once every time must not turn this into a loop.
+    const sinceLast = Date.now() - lastAsk;
+    if (sinceLast < MIN_ASK_INTERVAL_MS) await sleep(MIN_ASK_INTERVAL_MS - sinceLast);
+    lastAsk = Date.now();
     const answer = await ask(cursor);
     if (answer?.gone) process.exit(0);
+    if (answer?.busyMs) { await sleep(answer.busyMs); continue; }
     if (!answer || typeof answer.cursor !== 'string') throw new Error('no answer');
     backoff = 2000;
     const first = cursor === null;

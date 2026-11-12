@@ -101,3 +101,39 @@ describe('waitForWorkLoop', () => {
     expect(h.calls.slice(-2)).toEqual(['cursor', 'work']);
   });
 });
+
+describe('waitForWorkLoop against a server that does not hold the wait', () => {
+  it('pauses longer each time a wait is answered at once with nothing to read', async () => {
+    // `changed: true` makes the harness answer without time passing.
+    const h = harness([NOTHING], [{ cursor: 'c1' }, { cursor: 'c1', changed: true }]);
+    expect(await waitForWorkLoop(h.io, { timeoutMs: 120_000 })).toBeNull();
+    expect(h.sleeps.slice(0, 7)).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000]);
+    // About one request a second at first, then far fewer: never a tight loop.
+    expect(h.calls.filter((c) => c.startsWith('wait:')).length).toBeLessThan(12);
+  });
+
+  it('does not pause when the quick answer brought something to read', async () => {
+    const h = harness([NOTHING, MENTION], [{ cursor: 'c1' }, { cursor: 'c2', changed: true }]);
+    expect(await waitForWorkLoop(h.io)).toBe(MENTION);
+    expect(h.sleeps).toEqual([]);
+  });
+
+  it('forgets the quick answers once a wait is held properly', async () => {
+    const h = harness([NOTHING], [{ cursor: 'c1' }, { cursor: 'c1', changed: true }, { cursor: 'c1', changed: true }, { cursor: 'c1' }, { cursor: 'c1', changed: true }, { cursor: 'c1' }]);
+    expect(await waitForWorkLoop(h.io, { timeoutMs: 60_000 })).toBeNull();
+    expect(h.sleeps.slice(0, 3)).toEqual([1000, 2000, 1000]);
+  });
+
+  it('gives each request no longer than the time that is left', async () => {
+    const budgets: Array<number | undefined> = [];
+    const h = harness([NOTHING], [{ cursor: 'c1' }]);
+    const io = { ...h.io, checkWork: async (budgetMs?: number) => { budgets.push(budgetMs); return NOTHING; } };
+    await waitForWorkLoop(io, { timeoutMs: 25_000 });
+    // The last one is the final look when time is up: it still gets a second.
+    expect(budgets).toEqual([25_000, 5000, 1000]);
+    const unlimited: Array<number | undefined> = [];
+    const h2 = harness([MENTION], [{ cursor: 'c1' }]);
+    await waitForWorkLoop({ ...h2.io, checkWork: async (b?: number) => { unlimited.push(b); return MENTION; } });
+    expect(unlimited).toEqual([undefined]);
+  });
+});

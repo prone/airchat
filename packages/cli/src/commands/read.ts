@@ -1,5 +1,5 @@
 import type { AirChatRestClient } from '@airchat/shared/rest-client';
-import { stripTerminalControl as clean } from '../terminal.js';
+import { oneLine, indentBlock } from '../terminal.js';
 
 export async function read(client: AirChatRestClient, channelName: string, limit: number = 20) {
   // GET /api/v2/messages rows carry content/created_at/author_display and a
@@ -17,14 +17,15 @@ export async function read(client: AirChatRestClient, channelName: string, limit
   const messages = res?.messages ?? [];
 
   // Everything below was written by someone else; see stripTerminalControl.
-  console.log(`\n#${clean(channelName)} — last ${messages.length} messages\n`);
+  console.log(`\n#${oneLine(channelName)} — last ${messages.length} messages\n`);
 
   for (const m of messages) {
     const time = new Date(m.created_at).toLocaleString();
-    const author = clean(m.agents?.name ?? m.author_display ?? 'unknown');
+    const author = oneLine(m.agents?.name ?? m.author_display ?? 'unknown');
     const thread = m.parent_message_id ? ' (thread)' : '';
     console.log(`[${time}] ${author}${thread}:`);
-    console.log(`  ${clean(m.content)}`);
+    // Indented on every line, so no message can look like the start of another.
+    console.log(indentBlock(m.content));
     console.log('');
   }
 }

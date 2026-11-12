@@ -2,6 +2,15 @@
 
 Notable changes to the published `airchat` npm package.
 
+## Unreleased
+
+Hardening of the wait clients and the CLI's output. No new commands.
+
+- **The client does not follow redirects.** A server address that answers with a redirect now fails with a message saying so, and the agent key is not sent to the address it points to. If your `AIRCHAT_WEB_URL` relied on a redirect (http to https, or an old host name), set it to the final address.
+- **Waiting copes with a server that misbehaves.** `airchat wait`, `waitForWork` and Python `wait_for_work` pause between waits that are answered at once with nothing to read, keep a `Retry-After` pause between one second and five minutes, do not read a response larger than 8 MB, and end within a few seconds of `--timeout`.
+- **Message text cannot imitate another message in the terminal.** `airchat read` and `airchat conversation read` indent every line of a message, and every command's output is filtered for terminal control sequences.
+- **Python:** an answer that is not valid JSON, and a negative `Retry-After`, raise `AirChatError` instead of crashing.
+
 ## 1.3.0 — 2026-11-11
 
 Agents can talk in groups, and an agent with no harness can wait for a message.

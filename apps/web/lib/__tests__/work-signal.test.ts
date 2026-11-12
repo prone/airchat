@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   announceMessage, waitForWork, isCursor, openWaitCount, resetWorkSignal,
-  TooManyWaitsError, MAX_WAITS_PER_AGENT, MAX_WAITS_TOTAL,
+  TooManyWaitsError, MAX_WAITS_PER_AGENT, MAX_WAITS_PER_MACHINE, MAX_WAITS_TOTAL,
 } from '@/lib/work-signal';
 
 const dm = (to: string, from = 'sender') =>
@@ -188,5 +188,67 @@ describe('a conversation message', () => {
     const pending = waitForWork('nas-a', a.cursor, 1_000);
     await vi.advanceTimersByTimeAsync(1_000);
     expect((await pending).changed).toBe(false);
+  });
+});
+
+describe('one machine cannot hold every wait', () => {
+  // A machine key can register hundreds of agent names, so the per-agent
+  // limit alone would let one machine fill the server and leave no wait for
+  // anyone else (and an idle session that cannot wait cannot be woken).
+  //
+  // Resolves once the wait is open (or refused); `pending` is the wait itself.
+  const open = async (name: string, machine?: string, signal?: AbortSignal) => {
+    const { cursor } = await waitForWork(name, null, 1);
+    const pending = waitForWork(name, cursor, 50_000, signal, machine);
+    pending.catch(() => {});
+    return { pending };
+  };
+  const refused = async (name: string, machine: string) =>
+    (await open(name, machine)).pending.then(() => null, (e) => e);
+
+  it('refuses a machine past its limit and leaves every other machine alone', async () => {
+    for (let i = 0; i < MAX_WAITS_PER_MACHINE; i++) await open(`greedy-${i}`, 'machine-1');
+    expect(openWaitCount()).toBe(MAX_WAITS_PER_MACHINE);
+
+    const error = await refused('greedy-more', 'machine-1');
+    expect(error).toBeInstanceOf(TooManyWaitsError);
+    expect(error.scope).toBe('machine');
+    expect(openWaitCount()).toBe(MAX_WAITS_PER_MACHINE);
+
+    const other = await open('nas-a', 'machine-2');
+    dm('nas-a');
+    expect((await other.pending).changed).toBe(true);
+  });
+
+  it('cannot reach the server limit however many agent names it uses', async () => {
+    for (let i = 0; i < MAX_WAITS_TOTAL; i++) await open(`greedy-${i}`, 'machine-1');
+    expect(openWaitCount()).toBe(MAX_WAITS_PER_MACHINE);
+    expect(MAX_WAITS_PER_MACHINE * 4).toBeLessThan(MAX_WAITS_TOTAL);
+  });
+
+  it('gives the slot back when a wait ends, by answer, timeout or disconnect', async () => {
+    const abort = new AbortController();
+    const answered = await open('a-1', 'machine-1');
+    const dropped = await open('a-2', 'machine-1', abort.signal);
+    for (let i = 2; i < MAX_WAITS_PER_MACHINE; i++) await open(`fill-${i}`, 'machine-1');
+    expect(await refused('late', 'machine-1')).toBeInstanceOf(TooManyWaitsError);
+
+    dm('a-1');
+    abort.abort();
+    await Promise.all([answered.pending, dropped.pending]);
+    // Two slots are free again, and no more than two.
+    expect(openWaitCount()).toBe(MAX_WAITS_PER_MACHINE - 2);
+    await open('late-1', 'machine-1');
+    await open('late-2', 'machine-1');
+    expect(openWaitCount()).toBe(MAX_WAITS_PER_MACHINE);
+    expect(await refused('late-3', 'machine-1')).toBeInstanceOf(TooManyWaitsError);
+  });
+
+  it('counts down to nothing when every wait times out', async () => {
+    for (let i = 0; i < 5; i++) await open(`t-${i}`, 'machine-1');
+    await vi.advanceTimersByTimeAsync(50_000);
+    expect(openWaitCount()).toBe(0);
+    for (let i = 0; i < MAX_WAITS_PER_MACHINE; i++) await open(`again-${i}`, 'machine-1');
+    expect(openWaitCount()).toBe(MAX_WAITS_PER_MACHINE);
   });
 });

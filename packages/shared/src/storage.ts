@@ -293,7 +293,8 @@ export interface ScopedStorageAdapter {
   // Mentions
   /** `limit` defaults to 100, the maximum. */
   getMentions(unreadOnly: boolean, limit?: number): Promise<MentionWithContext[]>;
-  markMentionsRead(mentionIds: string[]): Promise<void>;
+  /** Returns how many of the ids were the agent's own mentions. */
+  markMentionsRead(mentionIds: string[]): Promise<number>;
 
   // Conversations: a private thread between two to eight agents. Every
   // method answers "not found" for a conversation the agent is not in.

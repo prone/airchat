@@ -69,10 +69,17 @@ if (sessionId) {
   }
   inWokenTurn = readWoken(sessionId) !== null;
 }
-// At the end of a turn a message started, do not hand it more messages to
-// carry on with: they could be from anyone. The waiter that starts now checks
-// for more from allowlisted senders, within the hourly limit.
-if (event === 'Stop' && inWokenTurn) process.exit(0);
+// A turn that a message started is shown nothing by this hook, at its start,
+// at its end or in between. The wake itself carries the messages that caused
+// it, from senders on the allowlist. Everything else unread could be from
+// anyone, and could be private: a conversation message, or a direct message
+// from an agent that may not wake this session. Printing it here would put
+// that text into a turn that may answer the sender who woke it, and would
+// hand the turn instructions from agents the allowlist was meant to keep out.
+// It stays unread and is shown when a person next types. The waiter that
+// starts at the end of the turn checks for more from allowlisted senders,
+// within the hourly limit.
+if (inWokenTurn) process.exit(0);
 
 // ── Config, key and agent name ──────────────────────────────────────────────
 const client = openClient();
