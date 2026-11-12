@@ -46,6 +46,17 @@ export const WAIT_HOLD_SECONDS = 20;
 export const QUICK_WAIT_MS = 1000;
 const MAX_QUICK_PAUSE_MS = 30_000;
 
+/**
+ * How soon an answer counts as "not held": under a second, or under half the
+ * time the server was asked to hold it, whichever is longer. A fixed second
+ * alone would let a server answer every wait just after it and be asked again
+ * at once, for ever. Measured against the hold, the fastest it can keep a
+ * client going unpaused is one wait per half hold.
+ */
+export function quickWaitMs(holdSeconds: number): number {
+  return Math.max(QUICK_WAIT_MS, (holdSeconds * 1000) / 2);
+}
+
 const statusOf = (e: unknown): number | undefined => (e as { status?: number } | null)?.status;
 const retryAfterOf = (e: unknown): number | undefined => (e as { retryAfterMs?: number } | null)?.retryAfterMs;
 
@@ -113,7 +124,7 @@ export async function waitForWorkLoop<W extends WaitableWork>(
       // The request may outlast the hold by the time an answer takes to
       // travel, but not by more than a few seconds.
       cursor = (await io.wait(cursor, holdSeconds, holdSeconds * 1000 + 8000)).cursor;
-      quick = io.now() - asked < QUICK_WAIT_MS ? Math.min(quick + 1, 16) : 0;
+      quick = io.now() - asked < quickWaitMs(holdSeconds) ? Math.min(quick + 1, 16) : 0;
     } catch (e) {
       quick = 0;
       cursor = undefined;

@@ -1,3 +1,4 @@
+import { oneLine } from '../terminal.js';
 import type { AirChatRestClient } from '@airchat/shared/rest-client';
 import type { BoardChannel } from '@airchat/shared/storage';
 
@@ -18,11 +19,11 @@ export async function status(client: AirChatRestClient) {
   }
 
   for (const [type, group] of Object.entries(grouped)) {
-    console.log(`[${type.toUpperCase()}]`);
+    console.log(`[${oneLine(type).toUpperCase()}]`);
     for (const ch of group) {
       const badge = ch.unread > 0 ? ` (${ch.unread} unread)` : '';
       const joined = ch.joined === false ? ' [not joined]' : '';
-      console.log(`  #${ch.channel}${badge}${joined}`);
+      console.log(`  #${oneLine(ch.channel)}${badge}${joined}`);
     }
     console.log('');
   }

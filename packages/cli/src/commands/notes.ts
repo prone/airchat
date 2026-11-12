@@ -1,3 +1,4 @@
+import { oneLine, indentBlock } from '../terminal.js';
 import { readFileSync } from 'node:fs';
 import type { AirChatRestClient } from '@airchat/shared/rest-client';
 
@@ -39,8 +40,10 @@ export async function notesList(
   for (const n of notes) {
     const scope = n.channel_name ? `#${n.channel_name}` : 'global';
     const tags = [n.protected ? 'protected' : '', n.is_stub ? 'stub' : ''].filter(Boolean).join(', ');
-    console.log(`  ${n.title}${tags ? `  [${tags}]` : ''}`);
-    console.log(`    ${scope}/${n.slug}${n.current_revision ? ` · rev ${n.current_revision}` : ''} · updated ${new Date(n.updated_at).toLocaleString()}`);
+    // Titles are written by agents: one line each, so a title cannot look
+    // like another note's entry.
+    console.log(`  ${oneLine(n.title)}${tags ? `  [${tags}]` : ''}`);
+    console.log(`    ${oneLine(scope)}/${oneLine(n.slug)}${n.current_revision ? ` · rev ${n.current_revision}` : ''} · updated ${new Date(n.updated_at).toLocaleString()}`);
   }
   if (notes.length === 0) console.log('  (none)');
   console.log('');
@@ -65,9 +68,11 @@ export async function noteRead(
   const title = res.revision_body?.title ?? res.note.title;
   const body = res.revision_body?.body_md ?? res.note.body_md;
   const rev = res.revision_body?.revision ?? res.note.current_revision;
-  console.log(`\n# ${title}`);
-  console.log(`${scope}/${slug} · rev ${rev}${res.note.protected ? ' · protected' : ''}${res.note.is_stub ? ' · stub' : ''}\n`);
-  console.log(res.note.is_stub && !body ? '(empty stub)' : body);
+  console.log(`\n# ${oneLine(title)}`);
+  console.log(`${oneLine(scope)}/${oneLine(slug)} · rev ${oneLine(rev)}${res.note.protected ? ' · protected' : ''}${res.note.is_stub ? ' · stub' : ''}\n`);
+  // Indented, so no line of the body can pass for the heading above it or
+  // for output of another command.
+  console.log(res.note.is_stub && !body ? '(empty stub)' : indentBlock(body));
   console.log('');
 }
 
@@ -99,7 +104,7 @@ export async function noteBacklinks(client: AirChatRestClient, scope: string, sl
   console.log(`\n🔗 Backlinks to ${scope}/${slug} (${links.length})\n`);
   for (const l of links) {
     const where = l.channel_name ? `#${l.channel_name}` : 'global';
-    console.log(`  [${l.source_type}] ${l.source_label ?? ''} (${where})`);
+    console.log(`  [${oneLine(l.source_type)}] ${oneLine(l.source_label ?? '')} (${oneLine(where)})`);
   }
   if (links.length === 0) console.log('  (nothing links here yet)');
   console.log('');
@@ -117,8 +122,8 @@ export async function summarize(
     summary?: { slug?: string; title?: string; body_md?: string };
   };
   const s = res.summary;
-  if (s?.title) console.log(`\n# ${s.title}${s.slug ? `  (${s.slug})` : ''}\n`);
-  if (s?.body_md) console.log(s.body_md);
+  if (s?.title) console.log(`\n# ${oneLine(s.title)}${s.slug ? `  (${oneLine(s.slug)})` : ''}\n`);
+  if (s?.body_md) console.log(indentBlock(s.body_md));
   else console.log('✅ Summary requested. View it in the channel notes.');
   console.log('');
 }

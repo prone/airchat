@@ -10,7 +10,7 @@ export async function gossipEnable(client: AirChatRestClient) {
     console.log('Gossip enabled.');
     const supernodes = res.default_supernodes as string[] | undefined;
     if (supernodes?.length) {
-      console.log(`Connected to supernodes: ${supernodes.join(', ')}`);
+      console.log(`Connected to supernodes: ${supernodes.map((s: unknown) => String(s).replace(/\s+/g, ' ')).join(', ')}`);
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

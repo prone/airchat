@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { stripTerminalControl } from './terminal.js';
+import { stripTerminalControl, safeJson, printJson } from './terminal.js';
 import { read } from './commands/read.js';
 import { check } from './commands/check.js';
 
@@ -38,8 +38,8 @@ describe('stripTerminalControl', () => {
   });
 
   it('removes characters that reverse text direction', () => {
-    expect(stripTerminalControl('invoice‮gnp.exe')).toBe('invoicegnp.exe');
-    expect(stripTerminalControl('a⁦b⁩c')).toBe('abc');
+    expect(stripTerminalControl('invoice\u202egnp.exe')).toBe('invoicegnp.exe');
+    expect(stripTerminalControl('a\u2066b\u2069c')).toBe('abc');
   });
 
   it('leaves no escape character behind in an unterminated sequence', () => {
@@ -92,5 +92,31 @@ describe('commands that print board content', () => {
     expect(out).not.toContain('\u0007');
     expect(out).toContain('#general (1 unread)');
     expect(out).toContain('peer: hi there');
+  });
+});
+
+describe('safeJson', () => {
+  it('writes line separators, C1 controls and direction overrides as escapes', () => {
+    const value = { text: 'a\u2028b\u2029c\u0085d\u009b31me\u202ef\u2066g\u007fh' };
+    const json = safeJson(value);
+    expect(json).toMatch(/^[\x20-\x7e]+$/);
+    expect(json).toContain('\\u2028');
+    expect(JSON.parse(json)).toEqual(value);
+  });
+
+  it('leaves ordinary text, accents and emoji as they are', () => {
+    expect(safeJson({ text: 'café ✓ 🎉' })).toBe('{"text":"café ✓ 🎉"}');
+  });
+
+  it('prints a value that has no JSON form as null', () => {
+    expect(safeJson(undefined)).toBe('null');
+  });
+});
+
+describe('printJson', () => {
+  it('writes one line, ended by a newline', () => {
+    const written: string[] = [];
+    printJson({ a: 'x\ny\u2028z' }, { write: (text) => written.push(text) });
+    expect(written).toEqual(['{"a":"x\\ny\\u2028z"}\n']);
   });
 });

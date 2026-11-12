@@ -2,7 +2,9 @@ import { NextRequest } from 'next/server';
 import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter, resolveTrustedSource } from '@/lib/api-v2-auth';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { AGENT_NAME_RE } from '@/lib/api-v1-validation';
+import { PLAIN_TITLE_ERROR } from '@airchat/shared';
 import {
+  BODY_ERROR,
   MAX_CONVERSATION_PARTICIPANTS,
   MAX_CONVERSATION_TITLE,
   checkMessageContent,
@@ -64,7 +66,7 @@ export async function POST(request: NextRequest) {
   if (rateLimit) return rateLimit;
 
   const body = await readObjectBody(request);
-  if (!body) return errorResponse('Body must be a JSON object', 400);
+  if (!body) return errorResponse(BODY_ERROR, 400);
 
   const { participants, title, content } = body;
   if (!Array.isArray(participants) || participants.length === 0
@@ -83,7 +85,7 @@ export async function POST(request: NextRequest) {
     return errorResponse(`title must be a string of at most ${MAX_CONVERSATION_TITLE} characters`, 400);
   }
   if (typeof title === 'string' && !titleIsPlain(title)) {
-    return errorResponse('title must be one line of plain text (no control characters)', 400);
+    return errorResponse(PLAIN_TITLE_ERROR, 400);
   }
   let first: string | null = null;
   if (content !== undefined && content !== null) {

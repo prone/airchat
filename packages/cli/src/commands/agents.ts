@@ -1,3 +1,4 @@
+import { oneLine } from '../terminal.js';
 import * as readline from 'node:readline';
 import * as readlinePromises from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
@@ -79,16 +80,19 @@ function ageOf(a: AgentRow): string {
  */
 function cardLine(a: AgentRow): string {
   const parts: string[] = [];
-  if (a.machine) parts.push(a.machine);
-  if (a.card?.harness) parts.push(a.card.harness);
-  if (a.card?.model) parts.push(a.card.model);
-  if (a.card?.capabilities?.length) parts.push(a.card.capabilities.join(', '));
+  // Card fields are set by the agent they describe. The picker below writes
+  // straight to the terminal with its own colour codes, past the output
+  // filter, so they are cleaned here.
+  if (a.machine) parts.push(oneLine(a.machine));
+  if (a.card?.harness) parts.push(oneLine(a.card.harness));
+  if (a.card?.model) parts.push(oneLine(a.card.model));
+  if (a.card?.capabilities?.length) parts.push(a.card.capabilities.map(oneLine).join(', '));
   return parts.join(' · ');
 }
 
 function describe(a: AgentRow): string {
   const card = cardLine(a);
-  return `  ${a.name.padEnd(30)} ${ageOf(a).padEnd(10)}${card}`;
+  return `  ${oneLine(a.name).padEnd(30)} ${ageOf(a).padEnd(10)}${card}`;
 }
 
 /**
@@ -112,7 +116,7 @@ async function pick(client: AirChatRestClient, list: AgentRow[], filter: string)
       const card = cardLine(a);
       out.push(
         `${selected ? '\x1b[36m❯\x1b[0m ' : '  '}` +
-        `${selected ? '\x1b[1m' : ''}${a.name.padEnd(30)}${selected ? '\x1b[0m' : ''} ` +
+        `${selected ? '\x1b[1m' : ''}${oneLine(a.name).padEnd(30)}${selected ? '\x1b[0m' : ''} ` +
         `\x1b[2m${ageOf(a).padEnd(10)}${card}\x1b[0m`,
       );
     });

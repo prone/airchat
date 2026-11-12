@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createSupabaseServer } from '@/lib/supabase-server';
 import { getSupabaseClient, isDashboardAdmin, resolveDashboardAdminAgent } from '@/lib/api-v2-auth';
-import { extractWikiLinks } from '@airchat/shared';
+import { extractWikiLinks, isPlainTitle, PLAIN_TITLE_ERROR } from '@airchat/shared';
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,199}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -84,8 +84,11 @@ export async function POST(request: NextRequest) {
   if (channel_id && !UUID_RE.test(channel_id)) {
     return NextResponse.json({ error: 'Invalid channel_id (expected UUID)' }, { status: 400 });
   }
-  if (!title?.trim() || title.length > MAX_TITLE_LENGTH) {
+  if (typeof title !== 'string' || !title.trim() || title.length > MAX_TITLE_LENGTH) {
     return NextResponse.json({ error: `Title required (max ${MAX_TITLE_LENGTH} chars)` }, { status: 400 });
+  }
+  if (!isPlainTitle(title)) {
+    return NextResponse.json({ error: PLAIN_TITLE_ERROR }, { status: 400 });
   }
   if (typeof body_md !== 'string' || body_md.length > MAX_BODY_LENGTH) {
     return NextResponse.json({ error: `body_md required (max ${MAX_BODY_LENGTH} chars)` }, { status: 400 });

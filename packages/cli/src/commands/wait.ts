@@ -1,5 +1,5 @@
 import type { AirChatRestClient } from '@airchat/shared/rest-client';
-import { stripTerminalControl as clean, oneLine as flatten } from '../terminal.js';
+import { stripTerminalControl as clean, oneLine as flatten, printJson } from '../terminal.js';
 
 interface Mention {
   mention_id: string;
@@ -59,7 +59,7 @@ export async function wait(
     return;
   }
   if (opts.json) {
-    console.log(JSON.stringify(work));
+    printJson(work);
     return;
   }
 

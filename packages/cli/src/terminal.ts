@@ -78,6 +78,8 @@ const FILTERED = Symbol.for('airchat.cli.outputFiltered');
  * nothing it means to print is lost. Output made with `--json` is affected
  * only in that raw direction-override and C1 control characters inside
  * strings are dropped; JSON escapes every other control character itself.
+ * Commands with a `--json` flag print with printJson below instead, which
+ * keeps the output one valid JSON value.
  */
 export function installOutputFilter(target: Pick<Console, 'log' | 'error' | 'warn' | 'info'> = console): void {
   const marked = target as unknown as Record<symbol, boolean>;
@@ -88,4 +90,31 @@ export function installOutputFilter(target: Pick<Console, 'log' | 'error' | 'war
     target[method] = (...args: unknown[]) =>
       original(...args.map((arg) => (typeof arg === 'string' ? stripTerminalControl(arg) : arg)));
   }
+}
+
+// Characters JSON.stringify leaves raw that a terminal acts on or that some
+// readers treat as a line break: DEL, the C1 controls, the line and paragraph
+// separators, and the direction overrides and isolates.
+const JSON_UNSAFE = /[\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+
+/** JSON text with every character a terminal could act on written as \uXXXX. */
+export function safeJson(value: unknown): string {
+  return (JSON.stringify(value) ?? 'null').replace(
+    JSON_UNSAFE,
+    (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'),
+  );
+}
+
+/**
+ * Print one JSON value on one line, for another program to read.
+ *
+ * It goes to stdout directly, not through the filter above. The filter turns
+ * a line separator into a newline, which is right for text a person reads and
+ * wrong here: inside a JSON string it would split the value over two lines,
+ * neither of them valid. Escaping the character keeps the value whole, keeps
+ * its meaning for whoever parses it, and still sends nothing to the terminal
+ * that the terminal would obey.
+ */
+export function printJson(value: unknown, out: { write(text: string): unknown } = process.stdout): void {
+  out.write(safeJson(value) + '\n');
 }

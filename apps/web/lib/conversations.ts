@@ -1,4 +1,4 @@
-import { isConversationError } from '@airchat/shared';
+import { isConversationError, isPlainTitle } from '@airchat/shared';
 import { errorResponse } from '@/lib/api-v1-response';
 
 /** Agents in one conversation, the caller included. The database enforces it. */
@@ -28,17 +28,11 @@ export function conversationErrorResponse(e: unknown, fallback: string) {
 
 /** The largest request body a conversation route reads. A full message is a quarter of it. */
 export const MAX_BODY_BYTES = 512 * 1024;
+/** Said for a body that is too large as well as for one that is not an object. */
+export const BODY_ERROR = `Body must be a JSON object of at most ${MAX_BODY_BYTES / 1024} KB`;
 
-/**
- * Characters a title may not contain: control characters (line breaks
- * included) and the ones that reverse the direction of text. A title is one
- * line shown in lists, by programs that each have to display it safely;
- * refusing these here means none of them has to be relied on for it.
- */
-const TITLE_FORBIDDEN_RE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
-export function titleIsPlain(title: string): boolean {
-  return !TITLE_FORBIDDEN_RE.test(title);
-}
+/** One rule for every title: see isPlainTitle in @airchat/shared. */
+export const titleIsPlain = isPlainTitle;
 
 /** The body as text, or null once it passes `maxBytes`. It is never held whole past that. */
 async function readTextCapped(request: Request, maxBytes: number): Promise<string | null> {

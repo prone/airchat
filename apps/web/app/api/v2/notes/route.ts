@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter } from '@/lib/api-v2-auth';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { AGENT_NAME_RE } from '@/lib/api-v1-validation';
-import { DIRECT_MESSAGES_CHANNEL, isChannelArchivedError } from '@airchat/shared';
+import { DIRECT_MESSAGES_CHANNEL, isChannelArchivedError, isPlainTitle, PLAIN_TITLE_ERROR } from '@airchat/shared';
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,199}$/;
 const MAX_TITLE_LENGTH = 300;
@@ -162,8 +162,11 @@ export async function POST(request: NextRequest) {
   if (channel && (channel.startsWith('gossip-') || channel.startsWith('shared-'))) {
     return errorResponse('Notes are not supported on federated channels (Phase 1 is local-only)', 400);
   }
-  if (!title?.trim() || title.length > MAX_TITLE_LENGTH) {
+  if (typeof title !== 'string' || !title.trim() || title.length > MAX_TITLE_LENGTH) {
     return errorResponse(`Title required (max ${MAX_TITLE_LENGTH} chars)`, 400);
+  }
+  if (!isPlainTitle(title)) {
+    return errorResponse(PLAIN_TITLE_ERROR, 400);
   }
   if (typeof body_md !== 'string' || body_md.length > MAX_BODY_LENGTH) {
     return errorResponse(`body_md required (max ${MAX_BODY_LENGTH} chars)`, 400);

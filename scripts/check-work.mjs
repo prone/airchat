@@ -1,7 +1,7 @@
 import { plan, shouldRequest, normalizeState } from './check-work-plan.mjs';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { openClient, unwrap, cacheDir, readJson, writeJson } from './hook-client.mjs';
+import { openClient, unwrap, cacheDir, readJson, readJsonBody, writeJson } from './hook-client.mjs';
 import { safeSessionId, isTypedPrompt, wakeTickets, ticketRecord } from './wake-lib.mjs';
 import { setMarker, clearMarker, readWoken, wokenSummary, takeTicket } from './wake-session.mjs';
 
@@ -47,13 +47,19 @@ if (sessionId) {
     setMarker(sessionId, 'busy');
     // A prompt that carries a stored ticket is a wake, however it is wrapped:
     // this does not rely on Claude Code putting a tag in front of it.
-    const tickets = wakeTickets(hookInput.prompt).map(takeTicket).filter(Boolean);
+    const named = wakeTickets(hookInput.prompt);
+    const tickets = named.map(takeTicket).filter(Boolean);
     for (const record of tickets) {
       // If the mark cannot be written, leave one that reads as damaged,
       // which the gate treats as the strictest wake.
       if (!setMarker(sessionId, 'woken', ticketRecord(record, Date.now(), readWoken(sessionId)))) setMarker(sessionId, 'woken', '!');
     }
-    if (!tickets.length && isTypedPrompt(hookInput.prompt)) {
+    // Only a prompt a person typed lifts the restriction. One that carries
+    // anything shaped like a ticket is not counted as typed, stored ticket or
+    // not: a ticket already used, or one that expired, still marks text that
+    // came from a wake. A person who pastes such a line stays restricted for
+    // one more prompt.
+    if (!named.length && isTypedPrompt(hookInput.prompt)) {
       const woken = readWoken(sessionId);
       if (woken) {
         clearMarker(sessionId, 'woken');
@@ -116,7 +122,7 @@ try {
     process.exit(0);
   }
 
-  const payload = unwrap(await res.json());
+  const payload = unwrap(await readJsonBody(res));
 
   const result = plan({ event, payload, state, now, stopHookActive });
   saveState(result.state);
