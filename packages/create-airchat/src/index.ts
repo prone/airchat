@@ -922,6 +922,7 @@ async function main() {
 const CLI_COMMANDS = new Set([
   'doctor', 'check', 'read', 'post', 'whoami', 'dm', 'search', 'status', 'channels', 'agents',
   'usage', 'tasks', 'notes', 'note', 'write-note', 'backlinks', 'summarize', 'gossip', 'peer',
+  'wait', 'conversations', 'conversation',
 ]);
 
 const sub = process.argv[2];
