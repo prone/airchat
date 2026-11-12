@@ -44,6 +44,24 @@ export class ChannelArchivedError extends Error {
 }
 
 /**
+ * Thrown when a message names a parent it may not be a reply to: one that
+ * does not exist, is in another channel, or is a direct or conversation
+ * message the sender cannot read. One error for all of them, so the answer
+ * does not tell the sender which, or whether a private message exists.
+ * Routes answer 404.
+ */
+export class ParentMessageError extends Error {
+  constructor() {
+    super('parent_message_id does not name a message in this channel');
+    this.name = 'ParentMessageError';
+  }
+}
+
+export function isParentMessageError(e: unknown): e is ParentMessageError {
+  return e instanceof Error && e.name === 'ParentMessageError';
+}
+
+/**
  * A conversation request that cannot be carried out. `code` is what a route
  * turns into a status: not_found (also for a conversation the caller is not
  * in, so its existence is not revealed), unknown_agent, too_few, too_many.
@@ -1073,6 +1091,35 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
    * nothing a caller passes to sendMessage can put a message into a
    * conversation.
    */
+  /** Throws ParentMessageError unless `parentId` is a message this one may reply to. */
+  private async checkParent(parentId: string, channelId: string, conversationId: string | null): Promise<void> {
+    const read = (columns: string) => this.client
+      .from('messages')
+      .select(columns)
+      .eq('id', parentId)
+      .eq('channel_id', channelId)
+      .eq('quarantined', false)
+      .maybeSingle();
+    let { data, error } = await read('id, author_agent_id, conversation_id');
+    // A database without migration 00040 has no conversations.
+    if (error?.code === '42703') ({ data, error } = await read('id, author_agent_id'));
+    if (error) throw new Error(`Failed to send message: ${error.message}`);
+    const parent = data as unknown as { id: string; author_agent_id: string | null; conversation_id?: string | null } | null;
+    if (!parent) throw new ParentMessageError();
+    // A reply stays in the conversation its parent is in, or outside all of them.
+    if ((parent.conversation_id ?? null) !== conversationId) throw new ParentMessageError();
+    if (!(await this.isDirectMessagesChannel(channelId)) || parent.author_agent_id === this.ctx.agentId) return;
+    // A direct message: only its author and the agents it was addressed to.
+    const { data: mention, error: mentionError } = await this.client
+      .from('mentions')
+      .select('id')
+      .eq('message_id', parentId)
+      .eq('mentioned_agent_id', this.ctx.agentId)
+      .limit(1);
+    if (mentionError) throw new Error(`Failed to send message: ${mentionError.message}`);
+    if (((mention as unknown[] | null) ?? []).length === 0) throw new ParentMessageError();
+  }
+
   private async storeMessage(
     channelName: string,
     content: string,
@@ -1089,6 +1136,11 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     // 1. Find or create channel by name (with its federation scope)
     const channel = await this.findOrCreateChannelWithScope(channelName);
     const channelId = channel.id;
+
+    // A reply must be to a message the sender could have read, in the same
+    // channel. Otherwise anyone holding a message id could attach a public
+    // reply to a private message, and learn from the answer that it exists.
+    if (parentMessageId) await this.checkParent(parentMessageId, channelId, conversation?.id ?? null);
 
     // 2. Classify if channel is federated (shared or gossip)
     let safetyLabels: string[] = [];
@@ -1474,14 +1526,19 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     if (ids.length === 0) return [];
 
     // Only the author is told who has read a message.
-    const { data: mine, error } = await this.client
+    const ownMessages = (columns: string) => this.client
       .from('messages')
-      .select('id')
+      .select(columns)
       .in('id', ids)
       .eq('author_agent_id', this.ctx.agentId);
+    let { data: mine, error } = await ownMessages('id, conversation_id');
+    // A database without migration 00040 has no conversations.
+    if (error?.code === '42703') ({ data: mine, error } = await ownMessages('id'));
     if (error) throw new Error(`Failed to read receipts: ${error.message}`);
-    const own = ((mine as { id: string }[] | null) ?? []).map((m) => m.id);
+    const ownRows = (mine as unknown as Array<{ id: string; conversation_id?: string | null }> | null) ?? [];
+    const own = ownRows.map((m) => m.id);
     if (own.length === 0) return [];
+    const inConversation = new Set(ownRows.filter((m) => m.conversation_id).map((m) => m.id));
 
     const { data: rows, error: rowsError } = await this.client
       .from('mentions')
@@ -1491,6 +1548,11 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
 
     const byMessage = new Map<string, MessageReceipt['recipients']>(own.map((id) => [id, []]));
     for (const r of (rows as unknown as Array<{ message_id: string; read: boolean; read_at: string | null; agents: { name: string } | null }>) ?? []) {
+      // Someone added to a conversation later gets a row for each older
+      // message, already read and with no read time, so that the history is
+      // visible to it. It was never notified of the message and has not
+      // acknowledged it, so it is not a recipient here.
+      if (inConversation.has(r.message_id) && r.read === true && !r.read_at) continue;
       byMessage.get(r.message_id)?.push({
         name: r.agents?.name ?? 'unknown',
         read: r.read === true,
@@ -1533,15 +1595,19 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     return this.conversationForParticipant(id);
   }
 
-  async markMentionsRead(mentionIds: string[]): Promise<void> {
+  async markMentionsRead(mentionIds: string[]): Promise<number> {
     // Direct update with explicit agent_id check instead of mark_mentions_read RPC
-    const { error } = await this.client
+    const { data, error } = await this.client
       .from('mentions')
       .update({ read: true })
       .in('id', mentionIds)
-      .eq('mentioned_agent_id', this.ctx.agentId);
+      .eq('mentioned_agent_id', this.ctx.agentId)
+      .select('id');
 
     if (error) throw new Error(`Failed to mark mentions read: ${error.message}`);
+    // How many of the ids were this agent's to mark. Another agent's mention
+    // is left alone and not counted.
+    return ((data as unknown[] | null) ?? []).length;
   }
 
   async markChannelRead(channelId: string, readThrough: string): Promise<void> {
@@ -1563,11 +1629,15 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
   }
 
   async getChannelReadStatus(channelId: string): Promise<ChannelReadCursor[]> {
-    const { data, error } = await this.client
+    let query = this.client
       .from('channel_read_cursors')
       .select('read_through, updated_at, agents(name)')
       .eq('channel_id', channelId)
       .order('read_through', { ascending: false });
+    // In #direct-messages a cursor says when an agent was dealing with its
+    // private messages. That is its own business: each agent sees only its own.
+    if (await this.isDirectMessagesChannel(channelId)) query = query.eq('agent_id', this.ctx.agentId);
+    const { data, error } = await query;
 
     if (error) throw new Error(`Failed to get channel read status: ${error.message}`);
     return (data ?? []).map((row: any) => ({

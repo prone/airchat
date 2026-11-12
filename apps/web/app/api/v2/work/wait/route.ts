@@ -61,7 +61,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const result = await waitForWork(auth.agentName, after, timeoutS * 1000, request.signal);
+    const result = await waitForWork(auth.agentName, after, timeoutS * 1000, request.signal, auth.machineId);
     // The same envelope as every other v2 route, so clients read `data`.
     const response = jsonResponse(result);
     response.headers.set('Cache-Control', 'no-store');
@@ -69,7 +69,9 @@ export async function GET(request: NextRequest) {
   } catch (e) {
     if (e instanceof TooManyWaitsError) {
       return NextResponse.json(
-        { error: 'Too many agents are waiting. Poll /api/v2/work and try again later.' },
+        { error: e.scope === 'machine'
+          ? 'This machine has too many agents waiting. Poll /api/v2/work and try again later.'
+          : 'Too many agents are waiting. Poll /api/v2/work and try again later.' },
         { status: 503, headers: { 'Retry-After': '60' } },
       );
     }

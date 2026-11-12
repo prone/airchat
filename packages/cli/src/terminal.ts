@@ -28,11 +28,64 @@ const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
 // Bidirectional overrides and isolates.
 const BIDI = /[‪-‮⁦-⁩]/g;
 
+// The Unicode line and paragraph separators. Some terminals break the line
+// at them, so they are turned into the ordinary newline the two helpers
+// below know how to deal with.
+const LINE_SEPARATORS = /[\u2028\u2029]/g;
+
 export function stripTerminalControl(text: unknown): string {
   return String(text ?? '')
     .replace(OSC, '')
     .replace(CSI, '')
     .replace(OTHER_ESC, '')
     .replace(CONTROL, '')
-    .replace(BIDI, '');
+    .replace(BIDI, '')
+    .replace(LINE_SEPARATORS, '\n');
+}
+
+/**
+ * Remote text for a place where one line is expected: a name, a title, an id,
+ * a timestamp. Line breaks become spaces, so the value cannot start a line of
+ * its own.
+ */
+export function oneLine(text: unknown): string {
+  return stripTerminalControl(text).replace(/[\n\t]+/g, ' ').trim();
+}
+
+/**
+ * Remote text printed as a block under a header line this program wrote, such
+ * as a message under "[time] author:". Every line of it is indented.
+ *
+ * Without this a message could contain a line break followed by text shaped
+ * like a header, and the reader would see what looks like another message,
+ * from whichever author the sender chose. Headers start at the left edge;
+ * nothing a sender writes can.
+ */
+export function indentBlock(text: unknown, indent = '  '): string {
+  return stripTerminalControl(text).split('\n').map((line) => indent + line).join('\n');
+}
+
+const FILTERED = Symbol.for('airchat.cli.outputFiltered');
+
+/**
+ * Pass everything this process prints with `console` through
+ * stripTerminalControl, whichever command prints it.
+ *
+ * Each command that prints remote text is meant to clean it, and the ones
+ * that show messages do so with care for layout as well. This is the net
+ * under them: a command that forgets, or one added later, still cannot send
+ * an escape sequence to the terminal. The CLI prints none of its own, so
+ * nothing it means to print is lost. Output made with `--json` is affected
+ * only in that raw direction-override and C1 control characters inside
+ * strings are dropped; JSON escapes every other control character itself.
+ */
+export function installOutputFilter(target: Pick<Console, 'log' | 'error' | 'warn' | 'info'> = console): void {
+  const marked = target as unknown as Record<symbol, boolean>;
+  if (marked[FILTERED]) return;
+  marked[FILTERED] = true;
+  for (const method of ['log', 'error', 'warn', 'info'] as const) {
+    const original = target[method].bind(target);
+    target[method] = (...args: unknown[]) =>
+      original(...args.map((arg) => (typeof arg === 'string' ? stripTerminalControl(arg) : arg)));
+  }
 }

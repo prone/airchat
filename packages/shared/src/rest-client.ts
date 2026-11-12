@@ -30,6 +30,9 @@ import type {
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
+/** How long one request may take. */
+const REQUEST_TIMEOUT_MS = 30_000;
+
 // Also defined in packages/create-airchat/src/index.ts — keep in sync
 export const DEFAULT_AIRCHAT_URL = 'https://supernode-web-production.up.railway.app';
 
@@ -87,11 +90,62 @@ export class AirChatHttpError extends Error {
     this.name = 'AirChatHttpError';
     this.status = status;
 
+    // Kept between one second and five minutes. The header is the server's
+    // word, and a caller that sleeps for it must not be told to sleep for a
+    // month, or for so long that the timer overflows and fires at once.
     const seconds = Number(headers?.get('retry-after'));
     if (Number.isFinite(seconds) && seconds > 0) {
-      this.retryAfterMs = seconds * 1000;
+      this.retryAfterMs = Math.min(Math.max(seconds, 1), MAX_RETRY_AFTER_SECONDS) * 1000;
     }
   }
+}
+
+/** The longest pause a Retry-After header can ask of a caller. */
+export const MAX_RETRY_AFTER_SECONDS = 300;
+/** The largest response body the client reads. No API answer comes near it. */
+export const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+/** How much of an error body is kept for the error message. */
+const MAX_ERROR_BYTES = 64 * 1024;
+
+/**
+ * The response body as text, read no further than `maxBytes`.
+ *
+ * `res.json()` and `res.text()` buffer whatever the other end sends. A server
+ * or proxy that keeps sending would grow this process until the machine ran
+ * out of memory, so the body is read in pieces and dropped past the limit.
+ */
+export async function readBytesCapped(res: Response, maxBytes: number): Promise<{ bytes: Uint8Array; overflow: boolean }> {
+  const reader = res.body?.getReader();
+  if (!reader) return { bytes: new Uint8Array(0), overflow: false };
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  let overflow = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (size + value.byteLength > maxBytes) {
+      overflow = true;
+      chunks.push(value.subarray(0, maxBytes - size));
+      await reader.cancel().catch(() => {});
+      break;
+    }
+    chunks.push(value);
+    size += value.byteLength;
+  }
+  return { bytes: Buffer.concat(chunks), overflow };
+}
+
+/** The body as text. Past `maxBytes` it is cut short, or the read fails. */
+export async function readBodyCapped(res: Response, maxBytes: number, onOverflow: 'throw' | 'truncate'): Promise<string> {
+  const { bytes, overflow } = await readBytesCapped(res, maxBytes);
+  if (overflow && onOverflow === 'throw') {
+    throw new AirChatHttpError(`AirChat API response is larger than ${maxBytes} bytes; not read`, res.status);
+  }
+  return Buffer.from(bytes).toString('utf-8');
+}
+
+async function readJsonCapped(res: Response): Promise<unknown> {
+  return JSON.parse(await readBodyCapped(res, MAX_RESPONSE_BYTES, 'throw'));
 }
 
 export class AirChatRestClient {
@@ -186,12 +240,13 @@ export class AirChatRestClient {
    */
   async waitForWork(opts: WaitForWorkOptions = {}): Promise<WaitableWork | null> {
     return waitForWorkLoop<WaitableWork>({
-      checkWork: () => this.checkWork() as Promise<WaitableWork>,
-      wait: (after, timeoutSeconds) => {
+      checkWork: (budgetMs) =>
+        this.request('GET', '/api/v2/work', undefined, undefined, budgetMs) as Promise<WaitableWork>,
+      wait: (after, timeoutSeconds, budgetMs) => {
         const params = new URLSearchParams();
         if (after !== undefined) params.set('after', after);
         if (timeoutSeconds !== undefined) params.set('timeout', String(timeoutSeconds));
-        return this.request('GET', '/api/v2/work/wait', params) as Promise<{ cursor?: string }>;
+        return this.request('GET', '/api/v2/work/wait', params, undefined, budgetMs) as Promise<{ cursor?: string }>;
       },
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       now: () => Date.now(),
@@ -437,7 +492,10 @@ export class AirChatRestClient {
       await dl.body?.cancel().catch(() => {});
       return linkOnly(filePath, contentType, signedUrl, Number.isFinite(declared) && declared > 0 ? declared : undefined);
     }
-    return inlineDownload(filePath, contentType, new Uint8Array(await dl.arrayBuffer()), signedUrl);
+    // The declared length is the other end's word; the read is capped too.
+    const { bytes, overflow } = await readBytesCapped(dl, limit);
+    if (overflow) return linkOnly(filePath, contentType, signedUrl);
+    return inlineDownload(filePath, contentType, bytes, signedUrl);
   }
 
   async uploadFile(
@@ -676,18 +734,19 @@ export class AirChatRestClient {
     pathname: string,
     params?: URLSearchParams,
     body?: unknown,
+    timeoutMs?: number,
   ): Promise<unknown> {
     await this.ensureRegistered();
 
-    const result = await this.doFetch(method, pathname, params, body);
+    const result = await this.doFetch(method, pathname, params, body, timeoutMs);
 
     // On 401, re-register and retry once (derived key may have been invalidated)
     if (result.status === 401) {
       this.derivedKey = null;
       await this.register(true);
-      const retry = await this.doFetch(method, pathname, params, body);
+      const retry = await this.doFetch(method, pathname, params, body, timeoutMs);
       if (!retry.ok) {
-        const text = await retry.text().catch(() => '');
+        const text = await readBodyCapped(retry, MAX_ERROR_BYTES, 'truncate').catch(() => '');
         throw new AirChatHttpError(
           `AirChat API ${method} ${pathname} failed after re-registration: ` +
           `HTTP ${retry.status} — ${text}`,
@@ -695,11 +754,11 @@ export class AirChatRestClient {
           retry.headers,
         );
       }
-      return unwrapEnvelope(await retry.json());
+      return unwrapEnvelope(await readJsonCapped(retry));
     }
 
     if (!result.ok) {
-      const text = await result.text().catch(() => '');
+      const text = await readBodyCapped(result, MAX_ERROR_BYTES, 'truncate').catch(() => '');
       throw new AirChatHttpError(
         `AirChat API ${method} ${pathname} failed: HTTP ${result.status} — ${text}`,
         result.status,
@@ -707,7 +766,7 @@ export class AirChatRestClient {
       );
     }
 
-    return unwrapEnvelope(await result.json());
+    return unwrapEnvelope(await readJsonCapped(result));
   }
 
   private async doFetch(
@@ -715,6 +774,7 @@ export class AirChatRestClient {
     pathname: string,
     params?: URLSearchParams,
     body?: unknown,
+    timeoutMs?: number,
   ): Promise<Response> {
     let url = `${this.webUrl}${pathname}`;
     if (params && params.toString()) {
@@ -734,14 +794,28 @@ export class AirChatRestClient {
       headers['x-admin-secret'] = adminSecret;
     }
 
-    const init: RequestInit = { method, headers, signal: AbortSignal.timeout(30000) };
+    const timeout = Math.max(1000, Math.min(timeoutMs ?? REQUEST_TIMEOUT_MS, REQUEST_TIMEOUT_MS));
+    // Redirects are not followed. fetch would send the agent key (and the
+    // admin secret) along to wherever a redirect pointed, and it is the
+    // configured server they are meant for.
+    const init: RequestInit = { method, headers, redirect: 'manual', signal: AbortSignal.timeout(timeout) };
 
     if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
       init.body = JSON.stringify(body);
     }
 
-    return fetch(url, init);
+    const res = await fetch(url, init);
+    if (res.status >= 300 && res.status < 400) {
+      await res.body?.cancel().catch(() => {});
+      throw new AirChatHttpError(
+        `AirChat API ${method} ${pathname}: the server at ${this.webUrl} answered with a redirect (HTTP ${res.status}). ` +
+        'Redirects are not followed, so the agent key is not sent to another address. ' +
+        'Set AIRCHAT_WEB_URL to the address the server is really at.',
+        res.status,
+      );
+    }
+    return res;
   }
 
   // ── Internal: registration ──────────────────────────────────────────────
@@ -803,11 +877,12 @@ export class AirChatRestClient {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...payload, signature, ...(this.card ? { card: this.card } : {}) }),
+      redirect: 'error',
       signal: AbortSignal.timeout(15000),
     });
 
     if (res.status === 409) {
-      const body = await res.text().catch(() => '');
+      const body = await readBodyCapped(res, MAX_ERROR_BYTES, 'truncate').catch(() => '');
       throw new Error(
         `Registration failed: agent "${this.agentName}" is owned by a different machine. ` +
         `HTTP 409 — ${body}`,
@@ -815,7 +890,7 @@ export class AirChatRestClient {
     }
 
     if (!res.ok) {
-      const body = await res.text().catch(() => '');
+      const body = await readBodyCapped(res, MAX_ERROR_BYTES, 'truncate').catch(() => '');
       throw new AirChatHttpError(
         `Registration failed: HTTP ${res.status} — ${body}`,
         res.status,

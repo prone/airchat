@@ -34,7 +34,7 @@ export {
   type QuarantinedMessage,
 } from './storage.js';
 export {
-  SupabaseStorageAdapter, BOARD_UNREAD_CAP, ChannelArchivedError, isChannelArchivedError,
+  SupabaseStorageAdapter, BOARD_UNREAD_CAP, ChannelArchivedError, isChannelArchivedError, ParentMessageError, isParentMessageError,
   ConversationError, isConversationError, type ConversationErrorCode,
   type MessageSentEvent, type MessageSentListener,
 } from './supabase-adapter.js';

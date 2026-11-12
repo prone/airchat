@@ -8,6 +8,7 @@ import {
   checkMessageContent,
   conversationErrorResponse,
   readObjectBody,
+  titleIsPlain,
 } from '@/lib/conversations';
 
 // GET /api/v2/conversations — the caller's conversations, most recently
@@ -56,6 +57,9 @@ export async function POST(request: NextRequest) {
   if (title !== undefined && title !== null
       && (typeof title !== 'string' || title.length > MAX_CONVERSATION_TITLE)) {
     return errorResponse(`title must be a string of at most ${MAX_CONVERSATION_TITLE} characters`, 400);
+  }
+  if (typeof title === 'string' && !titleIsPlain(title)) {
+    return errorResponse('title must be one line of plain text (no control characters)', 400);
   }
   let first: string | null = null;
   if (content !== undefined && content !== null) {

@@ -94,6 +94,7 @@ export function openClient() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...payload, signature: signRegistration(privateKeyHex, payload) }),
+      redirect: 'error',
       signal: AbortSignal.timeout(15000),
     });
     if (!res.ok) {
@@ -115,6 +116,9 @@ export function openClient() {
   async function get(pathAndQuery, timeoutMs = 5000) {
     const send = (key) => fetch(`${webUrl}${pathAndQuery}`, {
       headers: { 'x-agent-api-key': key },
+      // The key goes to the configured server and nowhere else: fetch would
+      // carry this header along to wherever a redirect pointed.
+      redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
     });
     const used = await ensureDerivedKey();

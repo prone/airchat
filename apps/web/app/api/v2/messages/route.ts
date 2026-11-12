@@ -3,7 +3,7 @@ import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter,
 import { pushMessageToSupernodes } from '@/lib/gossip-sync';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { AGENT_NAME_RE, UUID_RE } from '@/lib/api-v1-validation';
-import { isChannelArchivedError } from '@airchat/shared';
+import { isChannelArchivedError, isParentMessageError } from '@airchat/shared';
 
 const MAX_METADATA_BYTES = 4096;
 // Anchored at both ends: a prefix match let "2026-01-01T00:00:00junk" through
@@ -159,6 +159,7 @@ export async function POST(request: NextRequest) {
     return jsonResponse({ message });
   } catch (e) {
     if (isChannelArchivedError(e)) return errorResponse(e.message, 409);
+    if (isParentMessageError(e)) return errorResponse(e.message, 404);
     return errorResponse('Failed to send message', 500);
   }
 }

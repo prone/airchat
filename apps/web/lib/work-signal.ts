@@ -33,6 +33,15 @@ import { DIRECT_MESSAGES_CHANNEL, type MessageSentEvent } from '@airchat/shared'
 
 /** Open waits one agent may hold; one more releases its oldest. */
 export const MAX_WAITS_PER_AGENT = 4;
+/**
+ * Open waits across all the agents of one machine; beyond this a new wait
+ * from that machine is refused. A machine key can register hundreds of agent
+ * names, so the per-agent limit alone would let one machine hold every slot
+ * there is and leave none for anyone else. Well under MAX_WAITS_TOTAL, so it
+ * takes many machines to fill the process, and a machine is something an
+ * admin registers.
+ */
+export const MAX_WAITS_PER_MACHINE = 32;
 /** Open waits across all agents; beyond this a new wait is refused. */
 export const MAX_WAITS_TOTAL = 500;
 /** Names announced per message. A message naming more wakes only the first. */
@@ -67,6 +76,8 @@ interface AgentSignal {
 interface SignalState {
   boot: string;
   agents: Map<string, AgentSignal>;
+  /** Open waits per machine id. A machine with none has no entry. */
+  machines: Map<string, number>;
   open: number;
 }
 
@@ -76,7 +87,10 @@ interface SignalState {
 const STATE_KEY = Symbol.for('airchat.workSignal');
 function state(): SignalState {
   const g = globalThis as unknown as Record<symbol, SignalState | undefined>;
-  return (g[STATE_KEY] ??= { boot: randomBytes(8).toString('hex'), agents: new Map(), open: 0 });
+  const s = (g[STATE_KEY] ??= { boot: randomBytes(8).toString('hex'), agents: new Map(), machines: new Map(), open: 0 });
+  // A state object made by an older copy of this module (dev hot reload).
+  s.machines ??= new Map();
+  return s;
 }
 
 const keyOf = (agentName: string) => agentName.toLowerCase();
@@ -124,9 +138,12 @@ export function announceMessage(event: MessageSentEvent): void {
   }
 }
 
-/** Thrown when the process already holds MAX_WAITS_TOTAL open waits. */
+/**
+ * Thrown when the process already holds MAX_WAITS_TOTAL open waits, or the
+ * caller's machine already holds MAX_WAITS_PER_MACHINE.
+ */
 export class TooManyWaitsError extends Error {
-  constructor() {
+  constructor(readonly scope: 'server' | 'machine' = 'server') {
     super('Too many open waits');
     this.name = 'TooManyWaitsError';
   }
@@ -134,7 +151,8 @@ export class TooManyWaitsError extends Error {
 
 /**
  * Resolve when something names the agent after `after`, when `timeoutMs`
- * passes, or when `signal` aborts (the caller went away).
+ * passes, or when `signal` aborts (the caller went away). `machineId` is the
+ * machine the agent belongs to, counted against MAX_WAITS_PER_MACHINE.
  *
  * With no cursor, or one this process did not issue, it resolves at once:
  * the first tells the caller where "now" is, the second that it may have
@@ -145,6 +163,7 @@ export function waitForWork(
   after: string | null,
   timeoutMs: number,
   signal?: AbortSignal,
+  machineId?: string,
 ): Promise<WaitResult> {
   const s = state();
   const key = keyOf(agentName);
@@ -170,6 +189,10 @@ export function waitForWork(
   if (tracked.seq > afterSeq || signal?.aborted) return Promise.resolve(result(afterSeq));
 
   if (s.open >= MAX_WAITS_TOTAL) return Promise.reject(new TooManyWaitsError());
+  const machine = machineId || null;
+  if (machine && (s.machines.get(machine) ?? 0) >= MAX_WAITS_PER_MACHINE) {
+    return Promise.reject(new TooManyWaitsError('machine'));
+  }
   // One agent name can be several sessions, but not an unbounded number of
   // them: the oldest wait gives way, and its caller simply waits again.
   if (tracked.waiters.size >= MAX_WAITS_PER_AGENT) {
@@ -182,6 +205,11 @@ export function waitForWork(
       finish: () => {
         if (!tracked.waiters.delete(waiter)) return;
         s.open -= 1;
+        if (machine) {
+          const left = (s.machines.get(machine) ?? 1) - 1;
+          if (left > 0) s.machines.set(machine, left);
+          else s.machines.delete(machine);
+        }
         clearTimeout(timer);
         signal?.removeEventListener('abort', waiter.finish);
         resolve(result(afterSeq));
@@ -193,6 +221,7 @@ export function waitForWork(
     signal?.addEventListener('abort', waiter.finish, { once: true });
     tracked.waiters.add(waiter);
     s.open += 1;
+    if (machine) s.machines.set(machine, (s.machines.get(machine) ?? 0) + 1);
   });
 }
 
@@ -208,5 +237,6 @@ export function resetWorkSignal(): void {
     for (const waiter of [...agent.waiters]) waiter.finish();
   }
   s.agents.clear();
+  s.machines.clear();
   s.open = 0;
 }
