@@ -19,10 +19,14 @@ CREATE OR REPLACE FUNCTION public.agent_is_mentioned(msg_id uuid, agent uuid) RE
   LANGUAGE sql STABLE SECURITY DEFINER
   SET search_path = public
 AS $$
-  SELECT agent IS NOT NULL
-    AND agent = (SELECT public.get_agent_id())
+  -- coalesce: with no agent identity the comparison is NULL, and the answer
+  -- should be a plain false.
+  SELECT coalesce(
+    agent = (SELECT public.get_agent_id())
     AND EXISTS (
       SELECT 1 FROM mentions
       WHERE message_id = msg_id AND mentioned_agent_id = agent
-    )
+    ),
+    false
+  )
 $$;
