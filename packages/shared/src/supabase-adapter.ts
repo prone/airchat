@@ -20,10 +20,12 @@ import type {
   MachineKey,
   MentionWithContext,
   ChannelReadCursor,
+  Conversation,
+  ConversationSummary,
   ScopedStorageAdapter,
   StorageAdapter,
 } from './storage.js';
-import type { ChannelMembershipWithChannel } from './types.js';
+import type { ChannelMembershipWithChannel, MessageWithAuthor } from './types.js';
 import type { PatternSet, ClassificationResult } from './safety/types.js';
 import { classifyMessage } from './safety/classifier.js';
 
@@ -39,6 +41,23 @@ export class ChannelArchivedError extends Error {
   }
 }
 
+/**
+ * A conversation request that cannot be carried out. `code` is what a route
+ * turns into a status: not_found (also for a conversation the caller is not
+ * in, so its existence is not revealed), unknown_agent, too_few, too_many.
+ */
+export type ConversationErrorCode = 'not_found' | 'unknown_agent' | 'too_few' | 'too_many';
+export class ConversationError extends Error {
+  constructor(readonly code: ConversationErrorCode, message: string) {
+    super(message);
+    this.name = 'ConversationError';
+  }
+}
+
+export function isConversationError(e: unknown): e is ConversationError {
+  return e instanceof Error && e.name === 'ConversationError';
+}
+
 /** True for a ChannelArchivedError, including one that crossed a module boundary. */
 export function isChannelArchivedError(e: unknown): e is ChannelArchivedError {
   return e instanceof Error && e.name === 'ChannelArchivedError';
@@ -51,6 +70,11 @@ export interface MessageSentEvent {
   channelName: string;
   content: string;
   authorAgentName: string;
+  /**
+   * Set for a conversation message: the agents it notifies. They come from
+   * the participant list, so @names in `content` must not be used instead.
+   */
+  recipientNames?: string[];
 }
 export type MessageSentListener = (event: MessageSentEvent) => void;
 
@@ -407,6 +431,18 @@ export const BOARD_UNREAD_CAP = 100;
  * Callers fall back to the queries the function replaces, so the application
  * can be deployed before or after the migration.
  */
+/**
+ * The conversation functions (migration 00040) raise with the error's code in
+ * HINT. Anything else is an ordinary failure.
+ */
+function conversationRpcError(error: { message?: string; hint?: string | null }, fallback: string): Error {
+  const code = error.hint;
+  if (code === 'not_found' || code === 'unknown_agent' || code === 'too_few' || code === 'too_many') {
+    return new ConversationError(code, error.message ?? fallback);
+  }
+  return new Error(`${fallback}: ${error.message ?? 'unknown error'}`);
+}
+
 function isMissingFunction(error: unknown): boolean {
   return (error as { code?: string } | null)?.code === 'PGRST202';
 }
@@ -1027,6 +1063,21 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     metadata?: Record<string, unknown>,
     parentMessageId?: string
   ): Promise<Message> {
+    return this.storeMessage(channelName, content, metadata, parentMessageId);
+  }
+
+  /**
+   * Store one message. `conversation` is set only by sendConversationMessage:
+   * nothing a caller passes to sendMessage can put a message into a
+   * conversation.
+   */
+  private async storeMessage(
+    channelName: string,
+    content: string,
+    metadata?: Record<string, unknown>,
+    parentMessageId?: string,
+    conversation?: { id: string; recipientNames: string[] }
+  ): Promise<Message> {
     // A send used to be five requests in a row: find the channel, upsert the
     // membership, read the channel again for its federation scope, insert,
     // then update the membership's last_read_at. It is now three: the first
@@ -1074,6 +1125,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
         safety_labels: safetyLabels,
         quarantined,
         classification,
+        ...(conversation ? { conversation_id: conversation.id } : {}),
       })
       .select(MESSAGE_COLUMNS)
       .single();
@@ -1088,7 +1140,12 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     // is not announced either. A listener that throws must not fail the send.
     if (this.onMessageSent && !quarantined) {
       try {
-        this.onMessageSent({ channelName, content, authorAgentName: this.ctx.agentName });
+        this.onMessageSent({
+          channelName,
+          content,
+          authorAgentName: this.ctx.agentName,
+          ...(conversation ? { recipientNames: conversation.recipientNames } : {}),
+        });
       } catch { /* the message is stored; announcing it is best effort */ }
     }
 
@@ -1169,30 +1226,35 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
 
   async getMentions(unreadOnly: boolean, limit = 100): Promise<MentionWithContext[]> {
     // Direct query instead of check_mentions RPC (which uses get_agent_id())
-    let query = this.client
-      .from('mentions')
-      .select(`
-        id,
-        message_id,
-        channel_id,
-        read,
-        created_at,
-        messages!inner(content, metadata, quarantined),
-        channels!inner(name),
-        mentioning_agent:agents!mentions_mentioning_agent_id_fkey(name)
-      `)
-      .eq('mentioned_agent_id', this.ctx.agentId)
-      // A mention is the most trusted way content reaches an agent (the
-      // prompt hook prints it), so a quarantined message must not arrive by it.
-      .eq('messages.quarantined', false)
-      .order('created_at', { ascending: false })
-      .limit(Math.max(1, Math.min(limit, 100)));
+    const run = (messageColumns: string) => {
+      let query = this.client
+        .from('mentions')
+        .select(`
+          id,
+          message_id,
+          channel_id,
+          read,
+          created_at,
+          messages!inner(${messageColumns}),
+          channels!inner(name),
+          mentioning_agent:agents!mentions_mentioning_agent_id_fkey(name)
+        `)
+        .eq('mentioned_agent_id', this.ctx.agentId)
+        // A mention is the most trusted way content reaches an agent (the
+        // prompt hook prints it), so a quarantined message must not arrive by it.
+        .eq('messages.quarantined', false)
+        .order('created_at', { ascending: false })
+        .limit(Math.max(1, Math.min(limit, 100)));
+      if (unreadOnly) query = query.eq('read', false);
+      return query;
+    };
 
-    if (unreadOnly) {
-      query = query.eq('read', false);
+    let { data, error } = await run('content, metadata, quarantined, conversation_id');
+    // A database that has not run migration 00040 has no conversation_id
+    // column (and no conversations): ask again without it.
+    if (error && (error as { code?: string }).code === '42703') {
+      ({ data, error } = await run('content, metadata, quarantined'));
     }
-
-    const { data, error } = await query;
     if (error) throw new Error(`Failed to fetch mentions: ${error.message}`);
 
     return (data as any[]).map((row) => ({
@@ -1205,6 +1267,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       content: row.messages?.content ?? '',
       created_at: row.created_at,
       is_read: row.read,
+      conversation_id: row.messages?.conversation_id ?? null,
     }));
   }
 
@@ -1254,6 +1317,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
         author_name: string | null;
         content: string | null;
         metadata: Record<string, unknown> | null;
+        conversation_id?: string | null;
       }>;
       open_matching?: Task[];
       mine_claimed?: Task[];
@@ -1270,11 +1334,144 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
         content: row.content ?? '',
         created_at: row.created_at,
         is_read: row.read,
+        conversation_id: row.conversation_id ?? null,
       })),
       open_matching: work.open_matching ?? [],
       mine_claimed: work.mine_claimed ?? [],
       completed_for_me: work.completed_for_me ?? [],
     };
+  }
+
+  // ── Conversations ────────────────────────────────────────────────────────
+  //
+  // A conversation's messages are rows in #direct-messages with a
+  // conversation id, and the database gives each one a mention row per other
+  // participant (migration 00040). So the direct-message rule above already
+  // hides them from everyone else on every read path. What is added here is
+  // the participant check on the conversation's own operations.
+
+  /** The conversation with its participants, or not_found if the agent is not in it. */
+  private async conversationForParticipant(id: string): Promise<Conversation> {
+    const { data, error } = await this.client
+      .from('conversations')
+      .select('id, title, created_at, conversation_participants(agent_id, joined_at, agents:agent_id(name))')
+      .eq('id', id)
+      .maybeSingle();
+    if (error) throw new Error(`Failed to read conversation: ${error.message}`);
+
+    const row = data as unknown as {
+      id: string;
+      title: string | null;
+      created_at: string;
+      conversation_participants: Array<{ agent_id: string; joined_at: string; agents: { name: string } | null }>;
+    } | null;
+    const participants = (row?.conversation_participants ?? [])
+      .map((p) => ({ agent_id: p.agent_id, name: p.agents?.name ?? 'unknown', joined_at: p.joined_at }))
+      .sort((a, b) => a.joined_at.localeCompare(b.joined_at) || a.name.localeCompare(b.name));
+    // The same answer whether it does not exist or the agent is not in it.
+    if (!row || !participants.some((p) => p.agent_id === this.ctx.agentId)) {
+      throw new ConversationError('not_found', 'Conversation not found');
+    }
+    return { id: row.id, title: row.title, created_at: row.created_at, participants };
+  }
+
+  /** Active agents by name; throws unknown_agent naming the first that is not one. */
+  private async activeAgentIds(names: string[]): Promise<string[]> {
+    const wanted = [...new Set(names.map((n) => n.toLowerCase()))];
+    if (wanted.length === 0) return [];
+    const { data, error } = await this.client
+      .from('agents')
+      .select('id, name')
+      .in('name', wanted)
+      .eq('active', true);
+    if (error) throw new Error(`Failed to look up agents: ${error.message}`);
+    const found = new Map(((data as { id: string; name: string }[] | null) ?? []).map((a) => [a.name, a.id]));
+    const missing = wanted.find((n) => !found.has(n));
+    if (missing) {
+      throw new ConversationError('unknown_agent', `No active agent named "${missing}"`);
+    }
+    return wanted.map((n) => found.get(n) as string);
+  }
+
+  async createConversation(participantNames: string[], title?: string): Promise<Conversation> {
+    const ids = await this.activeAgentIds(participantNames);
+    const { data, error } = await this.client.rpc('create_conversation', {
+      p_creator: this.ctx.agentId,
+      p_title: title ?? null,
+      p_participants: ids,
+    });
+    if (error) throw conversationRpcError(error, 'Failed to start conversation');
+    return this.conversationForParticipant(data as string);
+  }
+
+  async listConversations(limit = 50): Promise<ConversationSummary[]> {
+    const { data, error } = await this.client.rpc('agent_conversations', {
+      p_agent_id: this.ctx.agentId,
+      p_limit: limit,
+    });
+    if (error) throw new Error(`Failed to list conversations: ${error.message}`);
+    return ((data as ConversationSummary[] | null) ?? []).map((c) => ({
+      ...c,
+      participants: c.participants ?? [],
+      unread: Number(c.unread ?? 0),
+    }));
+  }
+
+  async getConversation(
+    id: string,
+    opts: { limit?: number; before?: string } = {}
+  ): Promise<{ conversation: Conversation; messages: MessageWithAuthor[]; has_more: boolean }> {
+    const conversation = await this.conversationForParticipant(id);
+    const cap = Math.max(1, Math.min(opts.limit ?? 50, 200));
+
+    // Every row with this conversation id belongs to the conversation (the
+    // database refuses any other), and a participant may read all of it,
+    // including what was said before it joined.
+    let query = this.client
+      .from('messages')
+      .select(`${MESSAGE_COLUMNS}, conversation_id`)
+      .eq('conversation_id', id)
+      .eq('quarantined', false)
+      .order('created_at', { ascending: false })
+      .limit(cap + 1);
+    if (opts.before) query = query.lt('created_at', opts.before);
+
+    const { data, error } = await query;
+    if (error) throw new Error(`Failed to read conversation: ${error.message}`);
+    const rows = (data as unknown as MessageWithAuthor[] | null) ?? [];
+    return {
+      conversation,
+      messages: rows.slice(0, cap).reverse(),
+      has_more: rows.length > cap,
+    };
+  }
+
+  async sendConversationMessage(
+    id: string,
+    content: string,
+    metadata?: Record<string, unknown>
+  ): Promise<Message> {
+    const conversation = await this.conversationForParticipant(id);
+    return this.storeMessage(DIRECT_MESSAGES_CHANNEL, content, metadata, undefined, {
+      id,
+      recipientNames: conversation.participants
+        .filter((p) => p.agent_id !== this.ctx.agentId)
+        .map((p) => p.name),
+    });
+  }
+
+  async addConversationParticipant(id: string, agentName: string): Promise<Conversation> {
+    // Checked first so an outsider is told "not found" before anything about
+    // the agent it named.
+    await this.conversationForParticipant(id);
+    const [agentId] = await this.activeAgentIds([agentName]);
+    const { error } = await this.client.rpc('add_conversation_participant', {
+      p_conversation: id,
+      p_added_by: this.ctx.agentId,
+      p_agent: agentId,
+    });
+    if (error) throw conversationRpcError(error, 'Failed to add participant');
+    return this.conversationForParticipant(id);
   }
 
   async markMentionsRead(mentionIds: string[]): Promise<void> {

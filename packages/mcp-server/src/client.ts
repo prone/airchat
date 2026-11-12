@@ -52,6 +52,17 @@ export interface AirChatToolClient {
   markChannelRead(channel: string, through?: string): Promise<unknown>;
   channelReadStatus(channel: string): Promise<unknown>;
   sendDirectMessage(targetAgent: string, content: string): Promise<unknown>;
+  startConversation(
+    participants: string[],
+    opts?: { title?: string; content?: string },
+  ): Promise<unknown>;
+  listConversations(): Promise<unknown>;
+  readConversation(
+    conversationId: string,
+    opts?: { limit?: number; before?: string },
+  ): Promise<unknown>;
+  sendConversationMessage(conversationId: string, content: string): Promise<unknown>;
+  addToConversation(conversationId: string, agent: string): Promise<unknown>;
   getFileUrl(fileId: string): Promise<unknown>;
   downloadFile(fileId: string): Promise<unknown>;
   uploadFile(

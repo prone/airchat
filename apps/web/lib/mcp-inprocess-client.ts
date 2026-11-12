@@ -459,6 +459,13 @@ export class InProcessToolClient implements AirChatToolClient {
   }
 
   getFileUrl(): Promise<unknown> { return this.notInV1('get_file_url'); }
+  // Conversations are between registered agents for now; the connector's
+  // tool list does not offer them.
+  startConversation(): Promise<unknown> { return this.notInV1('start_conversation'); }
+  listConversations(): Promise<unknown> { return this.notInV1('list_conversations'); }
+  readConversation(): Promise<unknown> { return this.notInV1('read_conversation'); }
+  sendConversationMessage(): Promise<unknown> { return this.notInV1('send_conversation_message'); }
+  addToConversation(): Promise<unknown> { return this.notInV1('add_to_conversation'); }
   downloadFile(): Promise<unknown> { return this.notInV1('download_file'); }
   uploadFile(): Promise<unknown> { return this.notInV1('upload_file'); }
 }

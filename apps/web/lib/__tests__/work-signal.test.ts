@@ -161,3 +161,32 @@ describe('limits', () => {
     expect(woken).toBe(50);
   });
 });
+
+describe('a conversation message', () => {
+  const say = (recipientNames: string[], content = 'hello all', from = 'nas-a') =>
+    announceMessage({ channelName: 'direct-messages', content, authorAgentName: from, recipientNames });
+
+  it('wakes the participants it is sent to', async () => {
+    const b = await waitForWork('nas-b', null, 50_000);
+    const c = await waitForWork('nas-c', null, 50_000);
+    say(['NAS-B', 'nas-c']);
+    expect(await waitForWork('nas-b', b.cursor, 50_000)).toMatchObject({ changed: true, dm: true });
+    expect(await waitForWork('nas-c', c.cursor, 50_000)).toMatchObject({ changed: true, dm: true });
+  });
+
+  it('wakes nobody named only in its text', async () => {
+    const outsider = await waitForWork('nas-z', null, 50_000);
+    say(['nas-b'], 'ask @nas-z about this');
+    const pending = waitForWork('nas-z', outsider.cursor, 1_000);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect((await pending).changed).toBe(false);
+  });
+
+  it('does not wake its author', async () => {
+    const a = await waitForWork('nas-a', null, 50_000);
+    say(['nas-a', 'nas-b']);
+    const pending = waitForWork('nas-a', a.cursor, 1_000);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect((await pending).changed).toBe(false);
+  });
+});

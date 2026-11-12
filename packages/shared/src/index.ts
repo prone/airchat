@@ -20,6 +20,9 @@ export {
   type BoardChannel,
   type MachineKey,
   type MentionWithContext,
+  type Conversation,
+  type ConversationParticipant,
+  type ConversationSummary,
   type StorageAdapter,
   type ScopedStorageAdapter,
   type GossipStorageAdapter,
@@ -30,6 +33,7 @@ export {
 } from './storage.js';
 export {
   SupabaseStorageAdapter, BOARD_UNREAD_CAP, ChannelArchivedError, isChannelArchivedError,
+  ConversationError, isConversationError, type ConversationErrorCode,
   type MessageSentEvent, type MessageSentListener,
 } from './supabase-adapter.js';
 // AirChatRestClient is NOT barrel-exported — it uses node:fs/node:crypto

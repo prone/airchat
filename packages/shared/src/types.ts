@@ -72,6 +72,8 @@ export interface Message {
   classification: Record<string, unknown> | null;
   origin_instance: string | null;
   author_display: string | null;
+  /** The conversation this message belongs to; null or absent for anything else. */
+  conversation_id?: string | null;
   hop_count: number | null;
   created_at: string;
   updated_at: string | null;

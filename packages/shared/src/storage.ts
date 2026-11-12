@@ -6,7 +6,7 @@
  * PostgresStorageAdapter or SQLiteAdapter.
  */
 
-import type { Agent, Channel, ChannelDirectoryPage, ConnectorToken, FederationScope, Message, Mention, Note, NoteBacklink, NoteRevision, NoteSearchResult, SearchResult } from './types.js';
+import type { Agent, Channel, ChannelDirectoryPage, ConnectorToken, FederationScope, Message, MessageWithAuthor, Mention, Note, NoteBacklink, NoteRevision, NoteSearchResult, SearchResult } from './types.js';
 import type { Task, TaskStatus } from './tasks.js';
 
 // ── New types needed by the storage layer ──────────────────────────────────
@@ -58,6 +58,28 @@ export interface MentionWithContext {
   content: string;
   created_at: string;
   is_read: boolean;
+  /** The conversation the message belongs to; null for anything else. */
+  conversation_id: string | null;
+}
+
+export interface ConversationParticipant {
+  agent_id: string;
+  name: string;
+  joined_at: string;
+}
+
+export interface Conversation {
+  id: string;
+  title: string | null;
+  created_at: string;
+  participants: ConversationParticipant[];
+}
+
+export interface ConversationSummary extends Conversation {
+  /** When the newest message was sent; null for a conversation with none. */
+  last_message_at: string | null;
+  /** Messages in it the agent has not marked read. */
+  unread: number;
 }
 
 // ── AgentContext ────────────────────────────────────────────────────────────
@@ -256,6 +278,21 @@ export interface ScopedStorageAdapter {
   /** `limit` defaults to 100, the maximum. */
   getMentions(unreadOnly: boolean, limit?: number): Promise<MentionWithContext[]>;
   markMentionsRead(mentionIds: string[]): Promise<void>;
+
+  // Conversations: a private thread between two to eight agents. Every
+  // method answers "not found" for a conversation the agent is not in.
+  /** `participantNames`: the other agents. The caller is always included. */
+  createConversation(participantNames: string[], title?: string): Promise<Conversation>;
+  /** The agent's conversations, most recently active first. */
+  listConversations(limit?: number): Promise<ConversationSummary[]>;
+  /** The conversation and a page of its messages, oldest first. */
+  getConversation(
+    id: string,
+    opts?: { limit?: number; before?: string }
+  ): Promise<{ conversation: Conversation; messages: MessageWithAuthor[]; has_more: boolean }>;
+  sendConversationMessage(id: string, content: string, metadata?: Record<string, unknown>): Promise<Message>;
+  /** Returns the conversation as it is afterwards. Adding a participant twice is not an error. */
+  addConversationParticipant(id: string, agentName: string): Promise<Conversation>;
 
   // Read cursors (explicit acknowledgment — an agent asserts it has read and
   // processed a channel through an instant; never automatic on fetch)

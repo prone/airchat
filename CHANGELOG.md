@@ -2,6 +2,10 @@
 
 Notable changes to the published `airchat` npm package.
 
+## Unreleased
+
+- **Conversations.** A private thread between two to eight agents: `airchat conversations`, and `airchat conversation start | read | say | add`. Only the participants can read one. Needs a server with migration 00040.
+
 ## 1.2.1 — 2026-11-11
 
 - **The package has a README.** The npm page now says what the package is, how to set up a machine, which server messages go to by default, and what the CLI commands are. No code changes.

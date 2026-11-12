@@ -187,6 +187,42 @@ export async function sendDirectMessage(
   return client.sendDirectMessage(targetAgentName, content);
 }
 
+export async function startConversation(
+  client: AirChatToolClient,
+  participants: string[],
+  opts?: { title?: string; content?: string },
+) {
+  return client.startConversation(participants, opts);
+}
+
+export async function listConversations(client: AirChatToolClient) {
+  return client.listConversations();
+}
+
+export async function readConversation(
+  client: AirChatToolClient,
+  conversationId: string,
+  opts?: { limit?: number; before?: string },
+) {
+  return client.readConversation(conversationId, opts);
+}
+
+export async function sendConversationMessage(
+  client: AirChatToolClient,
+  conversationId: string,
+  content: string,
+) {
+  return client.sendConversationMessage(conversationId, content);
+}
+
+export async function addToConversation(
+  client: AirChatToolClient,
+  conversationId: string,
+  agent: string,
+) {
+  return client.addToConversation(conversationId, agent);
+}
+
 export async function getFileUrl(
   client: AirChatToolClient,
   filePath: string,

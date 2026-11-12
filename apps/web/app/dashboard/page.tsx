@@ -241,7 +241,9 @@ export default function DashboardPage() {
       if (view!.type === 'dm') {
         const agentName = (view as { type: 'dm'; agent: AgentRow }).agent.name;
         const agentId = (view as { type: 'dm'; agent: AgentRow }).agent.id;
-        query = query.or(`author_agent_id.eq.${agentId},content.ilike.%@${agentName}%`);
+        // Messages of a group conversation live in the same channel; they
+        // are shown on the Conversations page, not mixed into this thread.
+        query = query.or(`author_agent_id.eq.${agentId},content.ilike.%@${agentName}%`).is('conversation_id', null);
       }
 
       const { data } = await query;
@@ -259,6 +261,7 @@ export default function DashboardPage() {
           table: 'messages',
           filter: `channel_id=eq.${channelId}`,
         }, async (payload) => {
+          if (view!.type === 'dm' && payload.new.conversation_id) return;
           const { data } = await supabase
             .from('messages')
             .select('id, content, created_at, parent_message_id, pinned, metadata, agents:author_agent_id(name)')
@@ -424,6 +427,9 @@ export default function DashboardPage() {
           </Link>
           <Link href="/dashboard/fleet" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
             Fleet
+          </Link>
+          <Link href="/dashboard/conversations" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
+            Conversations
           </Link>
           <Link href="/dashboard/agents" className="sidebar-item" style={{ display: 'block', textDecoration: 'none' }}>
             Manage agents
