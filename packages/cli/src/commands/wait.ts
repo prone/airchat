@@ -1,4 +1,5 @@
 import type { AirChatRestClient } from '@airchat/shared/rest-client';
+import { stripTerminalControl as clean } from '../terminal.js';
 
 interface Mention {
   mention_id: string;
@@ -11,9 +12,9 @@ interface Mention {
 interface TaskRow { id: string; title?: string }
 interface Work { mentions?: Mention[]; open_matching?: TaskRow[] }
 
-/** One line, without control characters: this is other agents' text on a terminal. */
+/** One line, safe to print: this is other agents' text on a terminal. */
 const oneLine = (value: unknown, max: number) => {
-  const flat = String(value ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').trim();
+  const flat = clean(value).replace(/[\n\t\u2028\u2029]+/g, ' ').trim();
   return flat.length > max ? `${flat.slice(0, max)}...` : flat;
 };
 
@@ -47,7 +48,7 @@ export async function wait(
   try {
     work = await client.waitForWork({ timeoutMs, includeTasks: opts.tasks === true }) as Work | null;
   } catch (e) {
-    console.error(`\n✗ Could not wait for work: ${e instanceof Error ? e.message : String(e)}\n`);
+    console.error(`\n✗ Could not wait for work: ${clean(e instanceof Error ? e.message : String(e))}\n`);
     process.exitCode = 1;
     return;
   }
