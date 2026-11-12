@@ -576,7 +576,7 @@ function writeAirchatConfig(config: SetupConfig): StepResult {
     if (config.slackWebhookUrl) lines.push(`SLACK_WEBHOOK_URL=${config.slackWebhookUrl}`);
     // An existing tier is kept (someone may have set `act` by hand); a new
     // one starts at `reply`. Declining turns waking off.
-    const managed = [...MANAGED_CONFIG_KEYS];
+    const managed: string[] = [...MANAGED_CONFIG_KEYS];
     if (config.harnesses.includes('claude')) {
       managed.push('AIRCHAT_WAKE', 'AIRCHAT_WAKE_FROM');
       if (config.wakeFrom) {
