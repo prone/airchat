@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   wakeSettings, isTypedPrompt, wakeCandidates, wakeBudget, gateDecision, readablePath, safeSessionId,
-  wokenRecord, wakeTickets, ticketRecord, wakePreface, hasGateHook, projectFolder,
+  wokenRecord, wakeTickets, ticketRecord, wakePreface, waiterCurrent, hasGateHook, projectFolder,
   MAX_WAKES_PER_HOUR, MAX_TOOLS_PER_WAKE,
 } from '../wake-lib.mjs';
 
@@ -268,6 +268,22 @@ describe('wake tickets', () => {
     expect(ticketRecord({ tier: 'act', senders: ['nas-a'] }, 5)).toMatchObject({ tier: 'act' });
     expect(ticketRecord({ tier: 'act', senders: ['nas-b'] }, 5, { tier: 'reply', senders: ['nas-a'] })).toEqual({ tier: 'reply', senders: ['nas-a', 'nas-b'], at: 5 });
     expect(ticketRecord({ tier: 'odd', senders: 'x' }, 5)).toEqual({ tier: 'reply', senders: [], at: 5 });
+  });
+});
+
+describe('waiterCurrent', () => {
+  const ok = { holder: '41', pid: 41, parent: 7, startedUnder: 7, current: 'sess-a', sessionId: 'sess-a' };
+  it('is true only for the waiter of the session on screen', () => {
+    expect(waiterCurrent(ok)).toBe(true);
+    // After /clear, Claude Code is on another session id.
+    expect(waiterCurrent({ ...ok, current: 'sess-b' })).toBe(false);
+    // The note of the current session is missing or unreadable.
+    expect(waiterCurrent({ ...ok, current: null })).toBe(false);
+    // Claude Code has exited and the waiter was handed to another parent.
+    expect(waiterCurrent({ ...ok, parent: 1 })).toBe(false);
+    // Another waiter has taken the session over, or the marker is gone.
+    expect(waiterCurrent({ ...ok, holder: '42' })).toBe(false);
+    expect(waiterCurrent({ ...ok, holder: null })).toBe(false);
   });
 });
 

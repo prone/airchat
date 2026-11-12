@@ -130,6 +130,16 @@ export function ticketRecord(ticket, now, earlier = null) {
   return wokenRecord(tier, Array.isArray(ticket?.senders) ? ticket.senders : [], now, earlier);
 }
 
+/**
+ * Whether a waiter should carry on: it still holds its session's waiter
+ * marker, the Claude Code process that started it is still its parent, and
+ * that process is still on the session the waiter was started for. After
+ * /clear the last one stops being true, and the waiter must not wake anyone.
+ */
+export function waiterCurrent({ holder, pid, parent, startedUnder, current, sessionId }) {
+  return Number(holder) === pid && parent === startedUnder && typeof current === 'string' && current === sessionId;
+}
+
 /** What a woken session is told, above the message itself. */
 export function wakePreface(tier, ticket = '') {
   const limits = tier === 'act'

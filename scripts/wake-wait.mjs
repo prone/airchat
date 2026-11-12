@@ -17,7 +17,9 @@ import { openClient, unwrap, cacheDir, readJson, writeJson } from './hook-client
 import { normalizeState } from './check-work-plan.mjs';
 import { formatWork } from './check-work-format.mjs';
 import { homedir } from 'os';
-import { wakeSettings, wakeCandidates, wakeBudget, wakePreface, wokenRecord, projectFolder, safeSessionId } from './wake-lib.mjs';
+import {
+  wakeSettings, wakeCandidates, wakeBudget, wakePreface, wokenRecord, projectFolder, safeSessionId, waiterCurrent,
+} from './wake-lib.mjs';
 import {
   setMarker, clearMarker, hasMarker, readWoken, claimWaiter, claimMention, gateInstalled, audit, pruneStale, readMarker,
   writeTicket, dropTicket, setCurrentSession, currentSession,
@@ -52,10 +54,15 @@ pruneStale();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const started = Date.now();
-const stillMine = () => Number(readMarker(sessionId, 'waiter')) === process.pid
-  // Claude Code has gone, or has moved to another session: nothing to wake.
-  && process.ppid === claudePid
-  && currentSession(claudePid) === sessionId;
+// False once Claude Code has gone or has moved to another session.
+const stillMine = () => waiterCurrent({
+  holder: readMarker(sessionId, 'waiter'),
+  pid: process.pid,
+  parent: process.ppid,
+  startedUnder: claudePid,
+  current: currentSession(claudePid),
+  sessionId,
+});
 const stateFile = join(cacheDir, `work-state-${client.agentName}.json`);
 const wakeFile = join(cacheDir, `wake-state-${client.agentName}.json`);
 

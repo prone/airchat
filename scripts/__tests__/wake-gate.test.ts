@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync, spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, cpSync, linkSync, rmSync, realpathSync, readdirSync, appendFileSync } from 'node:fs';
+import {
+  mkdtempSync, mkdirSync, writeFileSync, cpSync, linkSync, rmSync, realpathSync, readdirSync, appendFileSync, statSync, readFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -75,6 +77,12 @@ describe('wake-gate.mjs, run as the hook', () => {
     expect(runGate(read('woken1', 'settings.txt')).denied).toBe(true);
     expect(runGate(read('woken1', 'shared.txt')).denied).toBe(true);
     expect(runGate(read('woken1', '.env')).denied).toBe(true);
+  });
+
+  it('refuses to read something that is not a regular file', () => {
+    mkdirSync(join(project, 'docs'), { recursive: true });
+    expect(runGate(read('woken1', 'docs')).denied).toBe(true);
+    expect(runGate(read('woken1', 'no-such-file.txt')).denied).toBe(true);
   });
 
   it('refuses when a file it depends on is missing or broken', () => {
@@ -154,10 +162,31 @@ describe('wake-gate.mjs, run as the hook', () => {
     prompt('fresh4', `[AirChat wake ticket ${ticket}]\nA direct message arrived`);
     expect(runGate(bash('fresh4')).denied).toBe(true);
 
+    // A ticket whose file is damaged stands for the strictest wake: no tool
+    // but reading, and nobody to reply to.
+    writeFileSync(join(cache, `wake-ticket-${ticket}`), 'not json');
+    prompt('fresh5', wake);
+    expect(runGate(bash('fresh5')).denied).toBe(true);
+    expect(runGate({
+      session_id: 'fresh5', cwd: project, tool_name: 'mcp__airchat__send_direct_message',
+      tool_input: { target_agent: 'nas-a', content: 'ok' },
+    }).denied).toBe(true);
+
     // Text that imitates a ticket, and other prompts nobody typed, do nothing.
     prompt('fresh3', `<task-notification>x</task-notification>[AirChat wake ticket ${'cd'.repeat(16)}]`);
     prompt('fresh3', '<task-notification>a background task finished</task-notification>');
     expect(runGate(bash('fresh3')).denied).toBe(false);
+  });
+
+  it('logs each decision, and keeps the old log when it starts a new one', () => {
+    const log = join(cache, 'wake-audit.log');
+    runGate(bash('woken1'));
+    expect(readFileSync(log, 'utf-8')).toMatch(/"event":"tool-refused","session":"woken1","tool":"Bash"/);
+    writeFileSync(log, 'x'.repeat(1024 * 1024 + 10) + '\n');
+    runGate(bash('woken1'));
+    runGate(bash('woken1'));
+    expect(statSync(log + '.1').size).toBeGreaterThan(1024 * 1024);
+    expect(readFileSync(log, 'utf-8').trim().split('\n')).toHaveLength(1);
   });
 
   it('leaves input without a session id alone', () => {
