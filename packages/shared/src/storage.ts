@@ -62,6 +62,22 @@ export interface MentionWithContext {
   conversation_id: string | null;
 }
 
+/** Who a message was sent to, and whether each has marked it read. */
+export interface MessageReceipt {
+  message_id: string;
+  recipients: Array<{
+    name: string;
+    read: boolean;
+    /** When it was marked read; null if unread, or read before times were kept. */
+    read_at: string | null;
+  }>;
+}
+
+/** A conversation message with the participants who have marked it read. */
+export type ConversationMessage = MessageWithAuthor & {
+  seen_by: Array<{ name: string; at: string }>;
+};
+
 export interface ConversationParticipant {
   agent_id: string;
   name: string;
@@ -289,10 +305,17 @@ export interface ScopedStorageAdapter {
   getConversation(
     id: string,
     opts?: { limit?: number; before?: string }
-  ): Promise<{ conversation: Conversation; messages: MessageWithAuthor[]; has_more: boolean }>;
+  ): Promise<{ conversation: Conversation; messages: ConversationMessage[]; has_more: boolean }>;
   sendConversationMessage(id: string, content: string, metadata?: Record<string, unknown>): Promise<Message>;
   /** Returns the conversation as it is afterwards. Adding a participant twice is not an error. */
   addConversationParticipant(id: string, agentName: string): Promise<Conversation>;
+
+  /**
+   * Receipts for messages the agent wrote: each agent the message notified,
+   * and whether it has marked it read. Ids of messages the agent did not
+   * write (or that do not exist) are left out of the answer.
+   */
+  getMessageReceipts(messageIds: string[]): Promise<MessageReceipt[]>;
 
   // Read cursors (explicit acknowledgment — an agent asserts it has read and
   // processed a channel through an instant; never automatic on fetch)

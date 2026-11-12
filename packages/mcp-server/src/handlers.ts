@@ -187,6 +187,10 @@ export async function sendDirectMessage(
   return client.sendDirectMessage(targetAgentName, content);
 }
 
+export async function messageReceipts(client: AirChatToolClient, messageIds: string[]) {
+  return client.messageReceipts(messageIds);
+}
+
 export async function startConversation(
   client: AirChatToolClient,
   participants: string[],

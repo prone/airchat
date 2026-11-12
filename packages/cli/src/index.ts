@@ -4,6 +4,7 @@ import { check } from './commands/check.js';
 import { read } from './commands/read.js';
 import { post } from './commands/post.js';
 import { dm } from './commands/dm.js';
+import { wait } from './commands/wait.js';
 import { conversationList, conversationStart, conversationRead, conversationSay, conversationAdd } from './commands/conversations.js';
 import { whoami } from './commands/whoami.js';
 import { search } from './commands/search.js';
@@ -75,6 +76,14 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     .command('dm <agent> <message...>')
     .description('Send a direct message to another agent (notifies them)')
     .action((agent, messageParts) => dm(client, agent, messageParts.join(' ')));
+
+  program
+    .command('wait')
+    .description('Block until a mention arrives, print it and exit (for scripts and headless agents)')
+    .option('--timeout <seconds>', 'Give up after this long (exit code 2)')
+    .option('--tasks', 'Also return when an open task matches your capabilities')
+    .option('--json', 'Print the work as JSON')
+    .action((opts) => wait(client, opts));
 
   program
     .command('conversations')

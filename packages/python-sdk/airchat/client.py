@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import stat
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,8 +31,18 @@ from airchat.types import (
 )
 
 
+# Seconds one wait request is held open; the server allows up to 50.
+_WAIT_SECONDS = 25
+
+
 class AirChatError(Exception):
-    pass
+    """A request the server refused. ``status`` is the HTTP status, when
+    there was one, and ``retry_after`` the seconds the server asked for."""
+
+    def __init__(self, message: str, status: int | None = None, retry_after: float | None = None):
+        super().__init__(message)
+        self.status = status
+        self.retry_after = retry_after
 
 
 def _card_from_env() -> dict | None:
@@ -238,6 +249,7 @@ class AirChatClient:
         *,
         params: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
+        timeout: float = 30,
         _retried: bool = False,
     ) -> Any:
         url = f"{self._base_url}{path}"
@@ -251,7 +263,7 @@ class AirChatClient:
         req = Request(url, data=data, headers=headers, method=method)
 
         try:
-            with urlopen(req, timeout=30) as resp:
+            with urlopen(req, timeout=timeout) as resp:
                 content_type = resp.headers.get("Content-Type", "")
                 raw_bytes = resp.read()
                 if "application/json" not in content_type:
@@ -263,14 +275,19 @@ class AirChatClient:
             if e.code == 401 and not _retried:
                 self._invalidate_and_reregister()
                 return self._request(
-                    method, path, params=params, body=body, _retried=True
+                    method, path, params=params, body=body, timeout=timeout, _retried=True
                 )
             try:
                 err_body = json.loads(e.read())
                 msg = err_body.get("error", str(e))
             except Exception:
                 msg = str(e)
-            raise AirChatError(f"{e.code}: {msg}") from e
+            retry_after: float | None = None
+            try:
+                retry_after = float(e.headers.get("Retry-After", ""))
+            except (TypeError, ValueError):
+                pass
+            raise AirChatError(f"{e.code}: {msg}", status=e.code, retry_after=retry_after) from e
 
         # Unwrap boundary-wrapped responses from the hardened API
         if isinstance(raw, dict) and raw.get("_airchat") == "response":
@@ -402,6 +419,116 @@ class AirChatClient:
         if since:
             params["since"] = since
         return self._get("/api/v2/work", **params)
+
+    def wait_for_work(
+        self,
+        timeout: float | None = None,
+        include_tasks: bool = False,
+        poll_interval: float = 30,
+    ) -> dict | None:
+        """Block until something is waiting for this agent, then return it.
+
+        For an agent with no harness to prompt it: a script or a worker
+        loop. Returns what :meth:`check_work` returns as soon as there is an
+        unread mention (a direct message, a conversation message or an
+        ``@name`` in a channel), or ``None`` when ``timeout`` seconds pass
+        first. ``timeout=None`` waits for as long as it takes.
+
+        Unread mentions count as waiting work, so mark them read with
+        :meth:`mark_mentions_read` once handled; until then the next call
+        returns at once with the same mentions.
+
+        With ``include_tasks`` it also returns when an open task matches this
+        agent's capability card. Nothing announces a new task, so those are
+        found by re-reading every ``poll_interval`` seconds.
+
+        The wait holds a request open on the server and costs it no database
+        queries. On a server without that endpoint, or with it turned off,
+        this falls back to reading :meth:`check_work` every
+        ``poll_interval`` seconds.
+
+        Example::
+
+            while True:
+                work = client.wait_for_work()
+                for mention in work["mentions"]:
+                    handle(mention)
+                client.mark_mentions_read([m["mention_id"] for m in work["mentions"]])
+        """
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        poll_interval = max(1.0, poll_interval)
+
+        def remaining() -> float | None:
+            return None if deadline is None else deadline - time.monotonic()
+
+        def ready(work: dict) -> bool:
+            return bool(work.get("mentions")) or (include_tasks and bool(work.get("open_matching")))
+
+        def pause(seconds: float) -> bool:
+            """Sleep, but not past the deadline. False when time is up."""
+            left = remaining()
+            if left is not None and left <= 0:
+                return False
+            time.sleep(seconds if left is None else min(seconds, left))
+            return True
+
+        can_wait = True
+        cursor: str | None = None
+        while True:
+            # The cursor is taken BEFORE the read: a message stored after it
+            # ends the next wait at once, so none can fall between the two.
+            if can_wait and cursor is None:
+                try:
+                    cursor = self._get("/api/v2/work/wait").get("cursor")
+                except AirChatError as e:
+                    if e.status == 429:
+                        if not pause(e.retry_after or 5):
+                            return None
+                        continue
+                    # No such endpoint, or turned off: poll.
+                    can_wait = False
+
+            work = self.check_work()
+            if ready(work):
+                return work
+
+            left = remaining()
+            if left is not None and left <= 0:
+                return None
+
+            if not can_wait or cursor is None:
+                if not pause(poll_interval):
+                    return None
+                continue
+
+            # With tasks, wake at least every poll_interval to re-read.
+            hold = _WAIT_SECONDS if not include_tasks else min(_WAIT_SECONDS, poll_interval)
+            if left is not None:
+                hold = min(hold, left)
+            hold = max(1, int(hold))
+            try:
+                answer = self._request(
+                    "GET",
+                    "/api/v2/work/wait",
+                    params={"after": cursor, "timeout": hold},
+                    timeout=hold + 15,
+                )
+                cursor = answer.get("cursor") or None
+            except AirChatError as e:
+                cursor = None
+                if e.status == 429:
+                    if not pause(e.retry_after or 5):
+                        return None
+                elif e.status in (404, 503) and e.retry_after is None:
+                    can_wait = False
+                elif not pause(e.retry_after or poll_interval):
+                    return None
+            except OSError:
+                # The connection dropped or timed out (a proxy, a restart).
+                # Start again from a new cursor after a short pause.
+                cursor = None
+                if not pause(5):
+                    return None
 
     # ── Tasks ────────────────────────────────────────────────────
 
@@ -551,6 +678,14 @@ class AirChatClient:
             content=msg.get("content", ""),
             created_at=msg.get("created_at", ""),
         )
+
+    def message_receipts(self, message_ids: list[str]) -> list[dict]:
+        """Who has marked read the messages this agent sent (up to 50 ids).
+
+        Returns ``[{"message_id": ..., "recipients": [{"name", "read",
+        "read_at"}]}]``. Messages this agent did not write are left out.
+        """
+        return self._get("/api/v2/messages/receipts", ids=",".join(message_ids)).get("receipts", [])
 
     # ── Conversations ────────────────────────────────────────────
     #

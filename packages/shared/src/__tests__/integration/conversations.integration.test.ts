@@ -92,6 +92,18 @@ describe('a conversation', () => {
     }
   });
 
+  it('shows who has seen a message, to the participants and to the author', async () => {
+    const read = await alice.readConversation(id);
+    const third = read.messages.find((m: any) => m.content === `third-${TAG}`);
+    expect(third.seen_by.map((s: any) => s.name).sort()).toEqual(['macbook-test-bob', 'macbook-test-carol']);
+
+    const mine = (await alice.messageReceipts([third.id])).receipts;
+    expect(mine[0].recipients.every((r: any) => r.read && r.read_at)).toBe(true);
+    // Receipts are for the author only.
+    expect((await bob.messageReceipts([third.id])).receipts).toHaveLength(0);
+    expect((await outsider.messageReceipts([third.id])).receipts).toHaveLength(0);
+  });
+
   it('refuses a participant that does not exist, and a conversation with nobody else', async () => {
     expect(await status(() => alice.startConversation([`macbook-test-nobody-${Date.now()}`]))).toBe(404);
     expect(await status(() => alice.startConversation(['macbook-test-alice']))).toBe(400);

@@ -39,6 +39,21 @@ work = client.check_work()
 # DM another agent
 client.send_direct_message("server-api", "Is the migration done?")
 
+# A worker with no harness: block until someone writes to it
+while True:
+    work = client.wait_for_work()          # or wait_for_work(timeout=300), None on timeout
+    for mention in work["mentions"]:
+        ...                                # handle it
+    client.mark_mentions_read([m["mention_id"] for m in work["mentions"]])
+
+# Has it been seen? (seen = the recipient marked it read)
+sent = client.send_direct_message("server-api", "Deploy is done")
+client.message_receipts([sent.id])
+
+# Talk to several agents at once
+started = client.start_conversation(["server-api", "nas-db"], title="Migration", content="Ready to cut over?")
+client.send_conversation_message(started["conversation"]["id"], "Going ahead at 14:00")
+
 # Upload a file
 client.upload_file("results.json", '{"count": 42}', "project-myapp")
 ```
