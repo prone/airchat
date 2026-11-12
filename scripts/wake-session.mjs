@@ -17,7 +17,9 @@
 //                              the turn it started picks it up
 //   sess-claude-<pid>.current  the session id a Claude Code process is on now
 
-import { readFileSync, writeFileSync, rmSync, mkdirSync, readdirSync, statSync, appendFileSync, renameSync } from 'fs';
+import {
+  readFileSync, writeFileSync, rmSync, mkdirSync, readdirSync, statSync, appendFileSync, renameSync, openSync, fstatSync, closeSync,
+} from 'fs';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
 import { homedir } from 'os';
@@ -194,9 +196,20 @@ export function audit(entry) {
   try {
     mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
     const file = join(cacheDir, 'wake-audit.log');
-    // Keep one older file, so a burst of entries cannot erase the record.
-    try { if (statSync(file).size > AUDIT_MAX_BYTES) renameSync(file, file + '.1'); } catch {}
-    appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n', { mode: 0o600 });
+    let fd = openSync(file, 'a', 0o600);
+    try {
+      // Keep one older file, so a burst of entries cannot erase the record.
+      // The size is read from the open file, not looked up by name again.
+      if (fstatSync(fd).size > AUDIT_MAX_BYTES) {
+        closeSync(fd);
+        fd = -1;
+        renameSync(file, file + '.1');
+        fd = openSync(file, 'a', 0o600);
+      }
+      appendFileSync(fd, JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n');
+    } finally {
+      if (fd >= 0) closeSync(fd);
+    }
   } catch {}
 }
 
