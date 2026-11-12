@@ -8,7 +8,7 @@
 
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { openClient, unwrap, cacheDir, readJson, writeJson } from './hook-client.mjs';
+import { openClient, unwrap, cacheDir, readJson, readJsonBody, writeJson } from './hook-client.mjs';
 import { normalizeState } from './check-work-plan.mjs';
 import { formatWork } from './check-work-format.mjs';
 import { safeSessionId } from './wake-lib.mjs';
@@ -31,7 +31,7 @@ try {
   if (!client) process.exit(0);
   const res = await client.get('/api/v2/work');
   if (!res.ok) process.exit(0);
-  const payload = unwrap(await res.json());
+  const payload = unwrap(await readJsonBody(res));
 
   const stateFile = join(cacheDir, `work-state-${client.agentName}.json`);
   const state = normalizeState(readJson(stateFile));

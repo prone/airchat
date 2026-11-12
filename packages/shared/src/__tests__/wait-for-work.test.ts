@@ -13,7 +13,8 @@ const TASK: WaitableWork = { mentions: [], open_matching: [{ id: 't1' }] };
 
 const httpError = (status: number, retryAfterMs?: number) => Object.assign(new Error(`HTTP ${status}`), { status, retryAfterMs });
 
-type WaitAnswer = { cursor?: string; changed?: boolean } | Error;
+/** `tookMs`: the answer comes back after this long, whatever hold was asked for. */
+type WaitAnswer = { cursor?: string; changed?: boolean; tookMs?: number } | Error;
 
 function harness(work: WaitableWork[], waits: WaitAnswer[]) {
   let now = 0;
@@ -28,7 +29,8 @@ function harness(work: WaitableWork[], waits: WaitAnswer[]) {
       calls.push(after === undefined ? 'cursor' : `wait:${after}:${seconds}`);
       const answer = next(waits);
       if (answer instanceof Error) throw answer;
-      if (after !== undefined && !answer.changed) now += (seconds ?? 0) * 1000;
+      if (after !== undefined && answer.tookMs !== undefined) now += answer.tookMs;
+      else if (after !== undefined && !answer.changed) now += (seconds ?? 0) * 1000;
       return answer;
     },
   };
@@ -110,6 +112,22 @@ describe('waitForWorkLoop against a server that does not hold the wait', () => {
     expect(h.sleeps.slice(0, 7)).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000]);
     // About one request a second at first, then far fewer: never a tight loop.
     expect(h.calls.filter((c) => c.startsWith('wait:')).length).toBeLessThan(12);
+  });
+
+  it('is not kept busy by a server that answers every wait just past a second', async () => {
+    // A fixed one-second line between "held" and "not held" would count each
+    // of these as held, and the loop would ask again at once, for ever.
+    const h = harness([NOTHING], [{ cursor: 'c1' }, { cursor: 'c1', tookMs: 1100 }]);
+    expect(await waitForWorkLoop(h.io, { timeoutMs: 600_000 })).toBeNull();
+    expect(h.sleeps.slice(0, 6)).toEqual([1000, 2000, 4000, 8000, 16000, 30000]);
+    // Ten minutes: about twenty waits, not five hundred.
+    expect(h.calls.filter((c) => c.startsWith('wait:')).length).toBeLessThan(30);
+  });
+
+  it('counts a wait held for most of its time as held', async () => {
+    const h = harness([NOTHING], [{ cursor: 'c1' }, { cursor: 'c1', tookMs: 12_000 }]);
+    expect(await waitForWorkLoop(h.io, { timeoutMs: 60_000 })).toBeNull();
+    expect(h.sleeps).toEqual([]);
   });
 
   it('does not pause when the quick answer brought something to read', async () => {

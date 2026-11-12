@@ -52,6 +52,23 @@ export interface TaskInputValidation {
   input?: { title: string; body: string | null; capability_tags: string[] };
 }
 
+/**
+ * Characters a title may not contain: control characters (line breaks
+ * included), the Unicode line and paragraph separators, and the characters
+ * that reverse the direction of text.
+ *
+ * A title is one line shown in lists, by programs that each have to display
+ * it safely: the dashboard, the CLI, a hook that prints into a session.
+ * Refusing these when the title is written means none of them has to be
+ * relied on for it. It applies to the titles of tasks, notes and
+ * conversations alike.
+ */
+const TITLE_FORBIDDEN_RE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+export function isPlainTitle(title: string): boolean {
+  return !TITLE_FORBIDDEN_RE.test(title);
+}
+export const PLAIN_TITLE_ERROR = 'title must be one line of plain text (no line breaks or control characters)';
+
 export function validateTaskInput(raw: {
   title?: unknown;
   body?: unknown;
@@ -63,6 +80,9 @@ export function validateTaskInput(raw: {
   const title = raw.title.trim();
   if (title.length > MAX_TITLE) {
     return { ok: false, error: `title must be at most ${MAX_TITLE} characters` };
+  }
+  if (!isPlainTitle(title)) {
+    return { ok: false, error: PLAIN_TITLE_ERROR };
   }
 
   let body: string | null = null;

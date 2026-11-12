@@ -27,6 +27,53 @@ export function readConfig() {
   return config;
 }
 
+// ── Reading a response ──────────────────────────────────────────────────────
+
+/** The most a hook reads from one answer. A page of work is a few kilobytes. */
+export const MAX_HOOK_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_HOOK_ERROR_BYTES = 16 * 1024;
+
+/**
+ * Read a response body, stopping at `maxBytes`.
+ *
+ * `res.json()` and `res.text()` hold the whole body in memory before they
+ * return, however large it is, and a hook runs on every prompt of every
+ * session. A server that answers with an endless body would otherwise fill
+ * the machine's memory from a hook nobody is watching. Here the read stops
+ * and the connection is dropped as soon as the limit is passed.
+ *
+ * Returns the text, or null when the body was larger than the limit.
+ */
+export async function readCapped(res, maxBytes = MAX_HOOK_RESPONSE_BYTES) {
+  const declared = Number(res.headers?.get?.('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await res.body?.cancel().catch(() => {});
+    return null;
+  }
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf-8');
+}
+
+/** The body as JSON. Throws when it is too large or is not JSON. */
+export async function readJsonBody(res, maxBytes = MAX_HOOK_RESPONSE_BYTES) {
+  const text = await readCapped(res, maxBytes);
+  if (text === null) throw new Error(`Response larger than ${maxBytes} bytes`);
+  return JSON.parse(text);
+}
+
 // ── Crypto helpers (mirror packages/shared/src/crypto.ts) ───────────────────
 
 function signRegistration(privKeyHex, payload) {
@@ -98,7 +145,7 @@ export function openClient() {
       signal: AbortSignal.timeout(15000),
     });
     if (!res.ok) {
-      const body = await res.text().catch(() => '');
+      const body = (await readCapped(res, MAX_HOOK_ERROR_BYTES).catch(() => '')) ?? '(body too large to show)';
       throw new Error(`Registration failed: HTTP ${res.status} — ${body}`);
     }
     try {

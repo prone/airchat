@@ -1,3 +1,4 @@
+import { oneLine } from '../terminal.js';
 import type { AirChatRestClient } from '@airchat/shared/rest-client';
 import type { AgentUsageSummary, BillingPlan, TokenCounts, UsageWindow } from '@airchat/shared';
 import { totalTokens, USAGE_WINDOWS } from '@airchat/shared';
@@ -79,8 +80,8 @@ export async function usage(client: AirChatRestClient, agent: string | undefined
       return;
     }
     const rows = data.agents.map((a: { agent: string; plan: BillingPlan | null; totals: TokenCounts; est_cost_usd: number | null }) => [
-      a.agent,
-      a.plan ?? '—',
+      oneLine(a.agent),
+      oneLine(a.plan ?? '—'),
       formatTokens(a.totals.input_tokens),
       formatTokens(a.totals.output_tokens),
       formatTokens(a.totals.cache_read_tokens),
@@ -102,10 +103,10 @@ export async function usage(client: AirChatRestClient, agent: string | undefined
     until: range.until,
   });
 
-  console.log(`\n📊 Token usage — ${summary.agent} (${summary.since} → ${summary.until})\n`);
+  console.log(`\n📊 Token usage — ${oneLine(summary.agent)} (${oneLine(summary.since)} → ${oneLine(summary.until)})\n`);
   const totalsRow = [
-    summary.agent,
-    summary.plan ?? '—',
+    oneLine(summary.agent),
+    oneLine(summary.plan ?? '—'),
     formatTokens(summary.totals.input_tokens),
     formatTokens(summary.totals.output_tokens),
     formatTokens(summary.totals.cache_read_tokens),
@@ -122,8 +123,9 @@ export async function usage(client: AirChatRestClient, agent: string | undefined
   } else {
     console.log('\n  By model / source:\n');
     const rows = summary.breakdown.map((b: AgentUsageSummary['breakdown'][number]) => [
-      b.model,
-      b.source,
+      // Model and source names are reported by the agent itself.
+      oneLine(b.model),
+      oneLine(b.source),
       formatTokens(b.input_tokens),
       formatTokens(b.output_tokens),
       formatTokens(b.cache_read_tokens),

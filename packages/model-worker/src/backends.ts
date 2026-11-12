@@ -11,6 +11,10 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { inferModelKind, type ModelKind, type TokenCounts } from '@airchat/shared';
+import { readBodyCapped } from '@airchat/shared/rest-client';
+
+/** The most read from one backend answer. A long completion is well under this. */
+const MAX_BACKEND_RESPONSE_BYTES = 32 * 1024 * 1024;
 
 export interface DiscoveredModel {
   /** Registry name as the backend knows it, e.g. "qwen2.5:0.5b". */
@@ -141,7 +145,10 @@ export function urlLocation(url: string): 'local' | 'remote' {
 async function fetchJson(url: string, init: RequestInit, timeoutMs: number): Promise<unknown> {
   const res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new Error(`${init.method ?? 'GET'} ${url} → HTTP ${res.status}`);
-  return res.json();
+  // A real response always has a body stream. Read it with a limit, so a
+  // backend that never stops sending cannot fill this process's memory.
+  if (!res.body) return res.json();
+  return JSON.parse(await readBodyCapped(res, MAX_BACKEND_RESPONSE_BYTES, 'throw'));
 }
 
 // ── Ollama native ───────────────────────────────────────────────────────────

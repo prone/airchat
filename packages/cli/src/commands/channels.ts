@@ -1,3 +1,4 @@
+import { oneLine } from '../terminal.js';
 import type { AirChatRestClient } from '@airchat/shared/rest-client';
 
 interface ChannelRow {
@@ -35,8 +36,8 @@ export async function channels(client: AirChatRestClient, type?: string, all = f
     const archived = ch.archived ? ' [archived]' : '';
     const joined = all ? (ch.joined ? ' [joined]' : '') : '';
     const last = all && ch.last_message_at ? `  last message ${ch.last_message_at.slice(0, 10)}` : '';
-    console.log(`  #${ch.name} (${ch.type})${archived}${joined}${last}`);
-    if (ch.description) console.log(`    ${ch.description}`);
+    console.log(`  #${oneLine(ch.name)} (${oneLine(ch.type)})${archived}${joined}${oneLine(last)}`);
+    if (ch.description) console.log(`    ${oneLine(ch.description)}`);
   }
   if (!all) console.log('\n  Use --all to list every channel, including ones you have not joined.');
   console.log('');

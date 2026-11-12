@@ -47,6 +47,17 @@ describe('validateTaskInput', () => {
     ).toBe(false);
   });
 
+  it('refuses a title that is more than one line of plain text', () => {
+    // A title is shown in lists. One with a line break in it could add what
+    // looks like another entry to whatever lists it.
+    for (const ch of ['\n', '\r', '\t', '\u2028', '\u2029', '\u0085', '\u001b', '\u202e', '\u2066']) {
+      const result = validateTaskInput({ title: `Fix it${ch}[done] another task` });
+      expect(result.ok, JSON.stringify(ch)).toBe(false);
+      expect(result.error).toMatch(/one line/);
+    }
+    expect(validateTaskInput({ title: 'Café — fix ✓ (v2)' }).ok).toBe(true);
+  });
+
   it('untagged tasks are valid (any agent may claim)', () => {
     const result = validateTaskInput({ title: 'T' });
     expect(result.ok).toBe(true);

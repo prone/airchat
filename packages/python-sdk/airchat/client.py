@@ -575,7 +575,11 @@ class AirChatClient:
                     timeout=hold + 8,
                 )
                 cursor = answer.get("cursor") or None
-                quick = min(quick + 1, 16) if time.monotonic() - asked < _QUICK_WAIT_SECONDS else 0
+                # Not held: back in under a second, or in under half the hold
+                # asked for. A fixed second alone would let a server answer
+                # just after it every time and be asked again at once.
+                not_held = time.monotonic() - asked < max(_QUICK_WAIT_SECONDS, hold / 2)
+                quick = min(quick + 1, 16) if not_held else 0
             except AirChatError as e:
                 quick = 0
                 cursor = None

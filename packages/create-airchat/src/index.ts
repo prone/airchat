@@ -539,7 +539,7 @@ async function generateAndRegisterKeypair(config: SetupConfig, reconfigure: bool
         return { name, ok: true, message: `Keypair generated and registered via ${config.webUrl}` };
       }
 
-      const body = await res.text().catch(() => '');
+      const body = (await res.text().catch(() => '')).slice(0, 2000);
       if (res.status === 501) {
         // Server doesn't have ADMIN_REGISTRATION_SECRET set — fall through to manual
       } else if (res.status === 403) {

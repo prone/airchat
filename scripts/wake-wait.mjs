@@ -13,7 +13,7 @@
 
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { openClient, unwrap, cacheDir, readJson, writeJson } from './hook-client.mjs';
+import { openClient, unwrap, cacheDir, readJson, readJsonBody, writeJson } from './hook-client.mjs';
 import { normalizeState } from './check-work-plan.mjs';
 import { formatWork } from './check-work-format.mjs';
 import { homedir } from 'os';
@@ -81,7 +81,7 @@ async function ask(after) {
     return res.status === 503 && pause !== null ? { busyMs: pause } : { gone: true };
   }
   if (!res.ok) return null;
-  return unwrap(await res.json());
+  return unwrap(await readJsonBody(res));
 }
 
 /**
@@ -99,7 +99,7 @@ async function onChange() {
 
   const res = await client.get('/api/v2/work');
   if (!res.ok) return;
-  const payload = unwrap(await res.json());
+  const payload = unwrap(await readJsonBody(res));
   const state = normalizeState(readJson(stateFile));
   const candidates = wakeCandidates(payload?.mentions, settings, state.seen)
     .filter((m) => claimMention(m.mention_id, sessionId));

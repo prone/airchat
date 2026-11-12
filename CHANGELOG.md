@@ -2,6 +2,17 @@
 
 Notable changes to the published `airchat` npm package.
 
+## Unreleased
+
+More hardening of the CLI's output and the wait clients. No new commands.
+
+- **`airchat wait --json` always prints one line of valid JSON.** Characters a terminal acts on, and the Unicode line separators, are written as `\uXXXX` escapes inside strings, so a reader parsing the line gets the message back exactly.
+- **Listings keep each entry to its own lines.** `airchat tasks`, `search`, `notes`, `note`, `channels`, `status`, `agents`, `usage` and `peer` print titles and names on one line and indent every line of a body, as `read` already did. `airchat note` and `airchat summarize` now indent the note body by two spaces.
+- **`airchat search` shows the channel, author and time of each hit.** It read the wrong field names and printed "Invalid Date" and "undefined".
+- **Waiting paces itself against the hold it asked for.** A wait that comes back with nothing to read in under half the time it was to be held counts as not held, and the loop pauses before the next one (JavaScript and Python).
+- **`airchat peer add` and model workers limit what they read** from the address they are pointed at, and `peer add` does not follow redirects.
+- **Server:** the titles of tasks and notes must be one line of plain text, as conversation titles already had to be. A title with a line break or control character is refused with 400.
+
 ## 1.3.1 — 2026-11-11
 
 Hardening of the wait clients and the CLI's output. No new commands.

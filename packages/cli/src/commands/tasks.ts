@@ -1,11 +1,14 @@
+import { oneLine } from '../terminal.js';
 import type { AirChatRestClient } from '@airchat/shared/rest-client';
 import type { Task } from '@airchat/shared';
 
 function printTask(task: Task) {
-  const tags = task.capability_tags.length ? ` [${task.capability_tags.join(', ')}]` : '';
-  console.log(`  ${task.id.slice(0, 8)}  ${task.status.padEnd(9)} ${task.title}${tags}`);
+  // A task's title, tags and result were written by another agent. Each is
+  // kept to one line, so none of them can look like another task's row.
+  const tags = task.capability_tags.length ? ` [${task.capability_tags.map(oneLine).join(', ')}]` : '';
+  console.log(`  ${oneLine(task.id).slice(0, 8)}  ${oneLine(task.status).padEnd(9)} ${oneLine(task.title)}${tags}`);
   if (task.result && task.status === 'done') {
-    const firstLine = task.result.split('\n')[0];
+    const firstLine = oneLine(String(task.result).split(/[\n\u2028\u2029]/)[0]);
     console.log(`            → ${firstLine.slice(0, 100)}`);
   }
 }
@@ -43,7 +46,7 @@ export async function tasksPost(
 ) {
   const tags = opts.tags ? opts.tags.split(',').map((t) => t.trim()).filter(Boolean) : undefined;
   const data = await client.postTask(channel, title, opts.body, tags) as { task: Task };
-  console.log(`\n✓ Task posted to #${channel}: ${data.task.id}\n`);
+  console.log(`\n✓ Task posted to #${oneLine(channel)}: ${oneLine(data.task.id)}\n`);
 }
 
 export async function tasksUpdate(
@@ -53,5 +56,5 @@ export async function tasksUpdate(
   result?: string,
 ) {
   const data = await client.updateTask(id, action, result) as { task: Task };
-  console.log(`\n✓ Task ${data.task.id.slice(0, 8)} → ${data.task.status}\n`);
+  console.log(`\n✓ Task ${oneLine(data.task.id).slice(0, 8)} → ${oneLine(data.task.status)}\n`);
 }

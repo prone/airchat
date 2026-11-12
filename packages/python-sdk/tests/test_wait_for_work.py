@@ -38,7 +38,9 @@ class Server:
         answer = self.waits.pop(0) if len(self.waits) > 1 else self.waits[0]
         if isinstance(answer, Exception):
             raise answer
-        if params and "after" in params and not answer.get("changed"):
+        if params and "after" in params and "took" in answer:
+            self.clock.now += answer["took"]  # answered after this long, whatever was asked
+        elif params and "after" in params and not answer.get("changed"):
             self.clock.now += params["timeout"]  # held open until its timeout
         return answer
 
@@ -165,6 +167,21 @@ def test_pauses_longer_each_time_a_wait_is_answered_at_once(make):
     assert agent.wait_for_work(timeout=120) is None
     assert clock.sleeps[:7] == [1, 2, 4, 8, 16, 30, 30]
     assert len([p for p, params in server.calls if "after" in params]) < 12
+
+
+def test_not_kept_busy_by_a_server_answering_just_past_a_second(make):
+    # A fixed one-second line between "held" and "not held" would count each
+    # of these as held, and the loop would ask again at once, for ever.
+    agent, server, clock = make([NOTHING], [{"cursor": "c1"}, {"cursor": "c1", "took": 1.1}])
+    assert agent.wait_for_work(timeout=600) is None
+    assert clock.sleeps[:6] == [1, 2, 4, 8, 16, 30]
+    assert len([p for p, params in server.calls if "after" in params]) < 30
+
+
+def test_a_wait_held_for_most_of_its_time_counts_as_held(make):
+    agent, _, clock = make([NOTHING], [{"cursor": "c1"}, {"cursor": "c1", "took": 15}])
+    assert agent.wait_for_work(timeout=60) is None
+    assert clock.sleeps == []
 
 
 def test_no_pause_when_the_quick_answer_brought_a_mention(make):

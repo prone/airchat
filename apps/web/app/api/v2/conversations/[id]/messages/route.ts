@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { authenticateAgent, isAuthError, checkAgentRateLimit, getStorageAdapter, resolveTrustedSource } from '@/lib/api-v2-auth';
 import { jsonResponse, errorResponse } from '@/lib/api-v1-response';
 import { UUID_RE } from '@/lib/api-v1-validation';
-import { checkMessageContent, conversationErrorResponse, readObjectBody } from '@/lib/conversations';
+import { BODY_ERROR, checkMessageContent, conversationErrorResponse, readObjectBody } from '@/lib/conversations';
 
 // POST /api/v2/conversations/:id/messages — say something in a conversation.
 // Body: { content }
@@ -22,7 +22,7 @@ export async function POST(
   if (!UUID_RE.test(id)) return errorResponse('Invalid conversation id', 400);
 
   const body = await readObjectBody(request);
-  if (!body) return errorResponse('Body must be a JSON object', 400);
+  if (!body) return errorResponse(BODY_ERROR, 400);
   const checked = checkMessageContent(body.content);
   if ('error' in checked) return errorResponse(checked.error, 400);
 
