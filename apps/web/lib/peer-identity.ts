@@ -1,3 +1,4 @@
+import { readBodyCapped } from '@airchat/shared/rest-client';
 import { deriveFingerprint } from '@airchat/shared/gossip';
 import { fetchPeerUrl } from '@/lib/url-validation';
 import { PUBLIC_KEY_RE } from '@/lib/gossip-auth';
@@ -20,12 +21,23 @@ export type PeerKeyResult =
   /** It answered with a key belonging to a different fingerprint. */
   | { status: 'mismatch'; actualFingerprint: string };
 
+/**
+ * A response body as JSON, read with a limit. What answers a request to a
+ * peer chooses how much it sends; `res.json()` would hold all of it.
+ */
+export async function readJsonCapped(res: Response, maxBytes: number): Promise<any> {
+  // A real response to a request always has a body stream.
+  if (!res.body) return res.json();
+  return JSON.parse(await readBodyCapped(res, maxBytes, 'throw'));
+}
+
 export async function fetchPeerKey(endpoint: string, expectedFingerprint: string): Promise<PeerKeyResult> {
   let identity: { public_key?: unknown; display_name?: unknown } | null = null;
   try {
     const res = await fetchPeerUrl(`${endpoint.replace(/\/$/, '')}/api/v2/gossip/identity`, { timeoutMs: 10000 });
     if (!res.ok) return { status: 'unreachable' };
-    const json = await res.json();
+    // An identity is a few hundred bytes, and a stranger is answering.
+    const json = await readJsonCapped(res, 64 * 1024);
     // The identity endpoint wraps its answer: the fields are under `data`.
     identity = json?.data ?? json;
   } catch {

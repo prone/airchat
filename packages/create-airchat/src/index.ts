@@ -12,7 +12,7 @@ import { run as runCli } from '@airchat/cli';
 // 'dev' when running from source via tsx, where no define is applied.
 declare const __AIRCHAT_VERSION__: string | undefined;
 const AIRCHAT_VERSION = typeof __AIRCHAT_VERSION__ === 'string' ? __AIRCHAT_VERSION__ : 'dev';
-import { isPostgresUrl, supabaseProjectRef, mergeEnv, unmanagedConfigLines, parseAgentList } from './setup-helpers.js';
+import { isPostgresUrl, supabaseProjectRef, mergeEnv, unmanagedConfigLines, parseAgentList, readErrorText } from './setup-helpers.js';
 import { HARNESSES, addWorkHooks, addWakeHooks, buildHookCommand, detectHarnesses, genericSnippet, installInstructions, type McpLaunch } from './harnesses.js';
 
 // Also defined in packages/shared/src/rest-client.ts — keep in sync
@@ -539,7 +539,7 @@ async function generateAndRegisterKeypair(config: SetupConfig, reconfigure: bool
         return { name, ok: true, message: `Keypair generated and registered via ${config.webUrl}` };
       }
 
-      const body = (await res.text().catch(() => '')).slice(0, 2000);
+      const body = await readErrorText(res);
       if (res.status === 501) {
         // Server doesn't have ADMIN_REGISTRATION_SECRET set — fall through to manual
       } else if (res.status === 403) {

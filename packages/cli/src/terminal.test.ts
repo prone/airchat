@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { stripTerminalControl, safeJson, printJson } from './terminal.js';
+import { stripTerminalControl, safeJson, printJson, oneLine } from './terminal.js';
 import { read } from './commands/read.js';
 import { check } from './commands/check.js';
 
@@ -120,3 +120,32 @@ describe('printJson', () => {
     expect(written).toEqual(['{"a":"x\\ny\\u2028z"}\n']);
   });
 });
+
+describe('oneLine', () => {
+  it('turns every run of blank space into one space', () => {
+    expect(oneLine('a   b\t\tc\n\nd')).toBe('a b c d');
+  });
+
+  it('cannot be padded out so that its tail wraps onto a row of its own', () => {
+    // Padding with spaces to the width of the terminal puts what follows at
+    // the left edge of the next row, where it reads as another entry.
+    for (const pad of [' ', '\u00a0', '\u2003', '\u3000', '\u2800', '\u3164']) {
+      const out = oneLine(`real title${pad.repeat(200)}abcdef01  open  forged task`);
+      expect(out, JSON.stringify(pad)).toBe('real title abcdef01 open forged task');
+    }
+  });
+
+  it('keeps ordinary text as it is', () => {
+    expect(oneLine('  Café — fix ✓ (v2) ')).toBe('Café — fix ✓ (v2)');
+  });
+});
+
+describe('safeJson and marks that change how a line displays', () => {
+  it('escapes direction marks and the byte-order mark', () => {
+    const value = { text: 'a\u200eb\u200fc\u061cd\ufeffe' };
+    const json = safeJson(value);
+    expect(json).toMatch(/^[\x20-\x7e]+$/);
+    expect(JSON.parse(json)).toEqual(value);
+  });
+});
+

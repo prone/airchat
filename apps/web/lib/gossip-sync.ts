@@ -6,7 +6,7 @@
 
 import { getGossipAdapter } from '@/lib/api-v2-auth';
 import { fetchPeerUrl } from '@/lib/url-validation';
-import { fetchPeerKey } from '@/lib/peer-identity';
+import { fetchPeerKey, readJsonCapped } from '@/lib/peer-identity';
 import { stripHtmlTags, sanitizeForLog } from '@/lib/sanitize';
 import { signPeerRequest, FINGERPRINT_RE, PUBLIC_KEY_RE } from '@/lib/gossip-auth';
 import { classifyMessage } from '@airchat/shared/safety';
@@ -17,6 +17,9 @@ import { remoteAgentName, stripReservedFederatedMetadata } from '@airchat/shared
 import type { PatternSet } from '@airchat/shared/safety';
 import type { GossipStorageAdapter, GossipPeer, GossipInstanceConfig } from '@airchat/shared';
 import { Backoff, describeFailure, formatDelay } from '@airchat/shared';
+
+/** The most read from one peer's answer to a sync request. */
+const MAX_PEER_SYNC_BYTES = 8 * 1024 * 1024;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Channel names follow the same rule as agent names: lowercase, digits, hyphens. */
@@ -61,7 +64,8 @@ async function classifyWithGuardrails(
       signal: AbortSignal.timeout(5000), // 5s timeout
     });
     if (!res.ok) return null;
-    return await res.json() as GuardrailsResult;
+    // A verdict is a few hundred bytes.
+    return await readJsonCapped(res, 64 * 1024) as GuardrailsResult;
   } catch {
     return null; // Sidecar down — degrade gracefully
   }
@@ -191,7 +195,9 @@ async function syncFromPeer(peer: GossipPeer): Promise<void> {
     // Everything in the response is chosen by the peer, so nothing about its
     // shape is assumed: wrong types become empty lists, and oversized lists
     // are cut to what was asked for.
-    const raw = (await res.json()) as Record<string, unknown> | null;
+    // Its size is the peer's choice too: read with a limit, so one peer cannot
+    // fill this server's memory with a single answer.
+    const raw = (await readJsonCapped(res, MAX_PEER_SYNC_BYTES)) as Record<string, unknown> | null;
     // Unwrap AirChat response envelope if present
     const unwrapped = (raw && typeof raw === 'object' ? (raw.data ?? raw) : null) as Record<string, unknown> | null;
     const asList = (value: unknown): unknown[] =>

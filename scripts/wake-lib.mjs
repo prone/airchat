@@ -108,6 +108,23 @@ export function retryPauseMs(header) {
   return Math.min(Math.max(Number(header.trim()), 5), 300) * 1000;
 }
 
+/**
+ * How many waits in a row came back early, given one more answer.
+ *
+ * The server was asked to hold the wait for `holdSeconds`. An answer in under
+ * half of that is early. One early answer is normal: a message arrived. A run
+ * of them is a server that is not holding the wait at all, and without a
+ * growing pause the waiter would ask it once a second for its whole life.
+ */
+export function earlyAnswers(count, elapsedMs, holdSeconds) {
+  return elapsedMs < (holdSeconds * 1000) / 2 ? Math.min(count + 1, 16) : 0;
+}
+
+/** The pause before the next wait: none after one early answer, then 2 s doubling to 60 s. */
+export function earlyPauseMs(count) {
+  return count < 2 ? 0 : Math.min(1000 * 2 ** (count - 1), 60_000);
+}
+
 /** Wake times within the last hour, and whether another is allowed. */
 export function wakeBudget(wakes, now) {
   const recent = (Array.isArray(wakes) ? wakes : []).filter((at) => Number.isFinite(at) && now - at < HOUR_MS);

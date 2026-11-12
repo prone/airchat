@@ -60,3 +60,28 @@ export function parseAgentList(answer: string): string[] {
   const names = answer.split(',').map((s) => s.trim().toLowerCase()).filter((s) => /^[a-z0-9][a-z0-9-]{0,99}$/.test(s));
   return [...new Set(names)];
 }
+
+/**
+ * The first part of an error body, for a message to the person running setup.
+ * Read with a limit: `res.text()` would hold the whole body first, whatever
+ * its size, and the address was typed in by hand.
+ */
+export async function readErrorText(res: Response, maxBytes = 4096): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return '';
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (total < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value.subarray(0, maxBytes - total));
+      total += value.byteLength;
+    }
+  } catch {
+    // Whatever arrived before the failure is still worth showing.
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return Buffer.concat(chunks).toString('utf-8');
+}

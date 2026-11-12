@@ -18,7 +18,7 @@ import { normalizeState } from './check-work-plan.mjs';
 import { formatWork } from './check-work-format.mjs';
 import { homedir } from 'os';
 import {
-  wakeSettings, wakeCandidates, wakeBudget, wakePreface, wokenRecord, projectFolder, safeSessionId, waiterCurrent,
+  wakeSettings, wakeCandidates, wakeBudget, wakePreface, wokenRecord, projectFolder, safeSessionId, waiterCurrent, earlyAnswers, earlyPauseMs
 } from './wake-lib.mjs';
 import {
   setMarker, clearMarker, hasMarker, readWoken, claimWaiter, claimMention, gateInstalled, audit, pruneStale, readMarker,
@@ -148,12 +148,17 @@ async function onChange() {
 let cursor = null;
 let backoff = 2000;
 let lastAsk = 0;
+/** Waits in a row that were answered early. */
+let early = 0;
 while (Date.now() - started < MAX_LIFETIME_MS && stillMine()) {
   try {
     // Never ask more than once a second, whatever the server answers: a
     // server that answers at once every time must not turn this into a loop.
     const sinceLast = Date.now() - lastAsk;
     if (sinceLast < MIN_ASK_INTERVAL_MS) await sleep(MIN_ASK_INTERVAL_MS - sinceLast);
+    // And after a run of waits that were not held, pause longer each time.
+    const pause = earlyPauseMs(early);
+    if (pause) await sleep(pause);
     lastAsk = Date.now();
     const answer = await ask(cursor);
     if (answer?.gone) process.exit(0);
@@ -161,6 +166,7 @@ while (Date.now() - started < MAX_LIFETIME_MS && stillMine()) {
     if (!answer || typeof answer.cursor !== 'string') throw new Error('no answer');
     backoff = 2000;
     const first = cursor === null;
+    early = first ? 0 : earlyAnswers(early, Date.now() - lastAsk, WAIT_SECONDS);
     cursor = answer.cursor;
     // The first answer only says where "now" is. Anything already unread is
     // the Stop hook's to show; it runs alongside this script. The exception
