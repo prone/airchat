@@ -255,7 +255,7 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     .description('Add a peer instance')
     .requiredOption('--endpoint <url>', 'Remote instance URL')
     .option('--type <type>', 'Peer type: instance or supernode', 'instance')
-    .option('--scope <scope>', 'Federation scope: peers or global', 'global')
+    .option('--scope <scope>', 'peers (a trusted peer: also syncs shared-* channels) or global (gossip-* channels only)', 'global')
     .action((opts) => peerAdd(client, opts.endpoint, { type: opts.type, scope: opts.scope }));
 
   peerCmd

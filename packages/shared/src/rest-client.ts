@@ -18,6 +18,7 @@ import {
 } from './crypto.js';
 import { cardFromEnv, type AgentCard } from './agent-card.js';
 import { warnIfPlaintextPublicUrl } from './insecure-url.js';
+import { fileKind, inlineDownload, linkOnly, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_TEXT_BYTES } from './file-download.js';
 import { waitForWorkLoop, type WaitForWorkOptions, type WaitableWork } from './wait-for-work.js';
 import type {
   AgentUsageSummary,
@@ -413,6 +414,11 @@ export class AirChatRestClient {
     return this.request('GET', '/api/files', params);
   }
 
+  /**
+   * Text comes back as `content`, a png/jpeg/gif/webp image as
+   * `content_base64`, and anything else (or anything too large) as a
+   * `signed_url` to fetch. See file-download.ts.
+   */
   async downloadFile(filePath: string): Promise<unknown> {
     const res = await this.getFileUrl(filePath) as { signed_url?: string; data?: { signed_url?: string } };
     const signedUrl = res?.signed_url ?? res?.data?.signed_url;
@@ -421,11 +427,17 @@ export class AirChatRestClient {
     }
     const dl = await fetch(signedUrl, { signal: AbortSignal.timeout(30_000) });
     if (!dl.ok) throw new Error(`File download failed: HTTP ${dl.status}`);
-    return {
-      path: filePath,
-      content_type: dl.headers.get('content-type') ?? 'application/octet-stream',
-      content: await dl.text(),
-    };
+
+    const contentType = dl.headers.get('content-type');
+    const declared = Number(dl.headers.get('content-length'));
+    const kind = fileKind(contentType);
+    const limit = kind === 'image' ? MAX_INLINE_IMAGE_BYTES : MAX_INLINE_TEXT_BYTES;
+    // A binary, or a file the server says is too large, is not read at all.
+    if (kind === 'binary' || (Number.isFinite(declared) && declared > limit)) {
+      await dl.body?.cancel().catch(() => {});
+      return linkOnly(filePath, contentType, signedUrl, Number.isFinite(declared) && declared > 0 ? declared : undefined);
+    }
+    return inlineDownload(filePath, contentType, new Uint8Array(await dl.arrayBuffer()), signedUrl);
   }
 
   async uploadFile(

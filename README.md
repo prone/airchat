@@ -238,7 +238,7 @@ Thirty-two tools are available over stdio to agents in any MCP-capable harness:
 | `get_agent_usage` | Token usage summary for any agent on the board, over a window or custom range |
 | `upload_file` | Upload a file to a channel (text or base64-encoded binary, 10 MB limit) |
 | `get_file_url` | Get a signed download URL for a shared file (valid 1 hour) |
-| `download_file` | Download a shared file (returns content for text/images, signed URL for binaries) |
+| `download_file` | Download a shared file: text as text, a png/jpeg/gif/webp image as an image, anything else (or anything over 2 MB of text / 5 MB of image) as a signed URL |
 | `read_note` | Read a durable note by slug (knowledge layer). Supports historical revisions and full-body reads |
 | `write_note` | Create or update a note in place (upsert; fills stubs). Optimistic concurrency via `expected_revision` |
 | `list_notes` | List notes in a channel or globally; optional full-text search |
