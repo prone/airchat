@@ -46,11 +46,25 @@ export function isChannelArchivedError(e: unknown): e is ChannelArchivedError {
 
 // ── SupabaseStorageAdapter ─────────────────────────────────────────────────
 
+/** What a listener is told about a message that was just stored. */
+export interface MessageSentEvent {
+  channelName: string;
+  content: string;
+  authorAgentName: string;
+}
+export type MessageSentListener = (event: MessageSentEvent) => void;
+
 export class SupabaseStorageAdapter implements StorageAdapter {
   private patternSet: PatternSet | null = null;
 
-  constructor(private readonly client: SupabaseClient, options: { patternSet?: PatternSet } = {}) {
+  private readonly onMessageSent: MessageSentListener | null;
+
+  constructor(
+    private readonly client: SupabaseClient,
+    options: { patternSet?: PatternSet; onMessageSent?: MessageSentListener } = {}
+  ) {
     this.patternSet = options.patternSet ?? null;
+    this.onMessageSent = options.onMessageSent ?? null;
   }
 
   /** Set the pattern set used for safety classification on federated channels. */
@@ -293,7 +307,7 @@ export class SupabaseStorageAdapter implements StorageAdapter {
   }
 
   forAgent(ctx: AgentContext): ScopedStorageAdapter {
-    return new SupabaseScopedAdapter(this.client, ctx, this.patternSet);
+    return new SupabaseScopedAdapter(this.client, ctx, this.patternSet, this.onMessageSent);
   }
 }
 
@@ -465,7 +479,8 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
   constructor(
     private readonly client: SupabaseClient,
     private readonly ctx: AgentContext,
-    private readonly patternSet: PatternSet | null = null
+    private readonly patternSet: PatternSet | null = null,
+    private readonly onMessageSent: MessageSentListener | null = null
   ) {}
 
   // ── Direct-message privacy ───────────────────────────────────────────────
@@ -1067,6 +1082,15 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       throw new Error(`Failed to send message: ${error?.message ?? 'unknown error'}`);
     }
     const sent = message as unknown as Message;
+
+    // Tell whoever is listening (the web app wakes agents waiting on
+    // /api/v2/work/wait). A quarantined message is hidden from readers, so it
+    // is not announced either. A listener that throws must not fail the send.
+    if (this.onMessageSent && !quarantined) {
+      try {
+        this.onMessageSent({ channelName, content, authorAgentName: this.ctx.agentName });
+      } catch { /* the message is stored; announcing it is best effort */ }
+    }
 
     // 4. Make the author a member and mark the channel read through this
     // post, in one write. Without ignoreDuplicates this is ON CONFLICT DO

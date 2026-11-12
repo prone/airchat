@@ -30,6 +30,7 @@ export {
 } from './storage.js';
 export {
   SupabaseStorageAdapter, BOARD_UNREAD_CAP, ChannelArchivedError, isChannelArchivedError,
+  type MessageSentEvent, type MessageSentListener,
 } from './supabase-adapter.js';
 // AirChatRestClient is NOT barrel-exported — it uses node:fs/node:crypto
 // which breaks webpack bundling in Next.js. Import via subpath instead:
