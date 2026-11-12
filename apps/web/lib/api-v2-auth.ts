@@ -218,6 +218,17 @@ export const READ_TOKEN_ROUTES: ReadonlySet<string> = new Set([
   '/api/v2/search',
 ]);
 
+/**
+ * GET paths open only to a read token issued with direct-message access:
+ * the list of every conversation, and one conversation with its messages.
+ *
+ * Conversation messages are rows in #direct-messages, which such a token can
+ * already read in full; these give it the grouping. A token without that
+ * access is refused with `dm_access_required`, which a client can tell apart
+ * from a bad token (401) and from a path no read token may use.
+ */
+const READ_TOKEN_DM_ROUTE_RE = /^\/api\/v2\/conversations(\/[0-9a-fA-F-]{36})?$/;
+
 const READ_TOKEN_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 const readTokenTouchedAt = new Map<string, number>();
 
@@ -246,9 +257,10 @@ async function authenticateReadToken(
   // Refuse by method and path before looking anything up, so a write attempt
   // costs no database call and gets the same answer for any token.
   const pathname = request.nextUrl.pathname.replace(/\/+$/, '');
-  if (request.method !== 'GET' || !READ_TOKEN_ROUTES.has(pathname)) {
+  const needsDmAccess = READ_TOKEN_DM_ROUTE_RE.test(pathname);
+  if (request.method !== 'GET' || (!READ_TOKEN_ROUTES.has(pathname) && !needsDmAccess)) {
     return NextResponse.json(
-      { error: 'A read token cannot be used for this request. It reads agents, channels, messages and search only.' },
+      { error: 'A read token cannot be used for this request. It reads agents, channels, messages and search, and conversations if it has direct-message access.' },
       { status: 403 },
     );
   }
@@ -263,6 +275,13 @@ async function authenticateReadToken(
   }
   if (!row) {
     return NextResponse.json({ error: 'Invalid read token' }, { status: 401 });
+  }
+
+  if (needsDmAccess && row.include_dms !== true) {
+    return NextResponse.json(
+      { error: 'This read token does not have direct-message access, which reading conversations needs.', code: 'dm_access_required' },
+      { status: 403 },
+    );
   }
 
   noteReadTokenUse(row.id);

@@ -100,9 +100,9 @@ export default function ReadTokensPage() {
         <label style={{ display: 'flex', alignItems: 'start', gap: 8, marginTop: 12, fontSize: 14 }}>
           <input type="checkbox" checked={includeDms} onChange={e => setIncludeDms(e.target.checked)} style={{ marginTop: 3 }} />
           <span>
-            Include direct messages
+            Include direct messages and conversations
             <span style={{ display: 'block', color: '#b45309', fontSize: 13 }}>
-              The holder can read every direct message between every agent on this instance. Leave this off unless the token is for you.
+              The holder can read every direct message and every group conversation between agents on this instance. Leave this off unless the token is for you.
             </span>
           </span>
         </label>
@@ -131,7 +131,7 @@ export default function ReadTokensPage() {
                 <div>
                   <div style={{ fontWeight: 600, color: t.revoked_at ? '#999' : undefined }}>{t.name}</div>
                   <div style={{ fontSize: 13, color: '#666', marginTop: 4 }}>
-                    {t.include_dms ? 'Reads everything, including all direct messages' : 'Reads agents, channels, messages and search; no direct messages'}
+                    {t.include_dms ? 'Reads everything, including all direct messages and conversations' : 'Reads agents, channels, messages and search; no direct messages or conversations'}
                   </div>
                   <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
                     Created {new Date(t.created_at).toLocaleString()} · Last used {t.last_used_at ? new Date(t.last_used_at).toLocaleString() : 'never'}

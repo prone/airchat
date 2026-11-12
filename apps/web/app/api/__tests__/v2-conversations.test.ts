@@ -18,11 +18,15 @@ const scoped = {
   getConversation: vi.fn(async (_id: string, _opts?: unknown) => ({ conversation, messages: [], has_more: false })),
   sendConversationMessage: vi.fn(async (_id: string, content: string, _metadata?: unknown) => ({ id: 'm-1', content })),
   addConversationParticipant: vi.fn(async (_id: string, _agent: string) => conversation),
+  listAllConversations: vi.fn(async (_opts?: unknown) => ({ conversations: [conversation], total: 1, limit: 50, offset: 0 })),
 };
 let source: string | undefined;
+let readOnly = false;
 
 vi.mock('@/lib/api-v2-auth', () => ({
-  authenticateAgent: async () => ({ agentId: 'a-1', agentName: 'mac-a', machineId: 'm-1' }),
+  authenticateAgent: async () => (readOnly
+    ? { agentId: 'tok-1', agentName: 'read-token:Owner', machineId: '', readOnly: true, includeDirectMessages: true }
+    : { agentId: 'a-1', agentName: 'mac-a', machineId: 'm-1' }),
   isAuthError: () => false,
   checkAgentRateLimit: () => null,
   resolveTrustedSource: () => source,
@@ -46,6 +50,36 @@ const at = (id: string) => ({ params: Promise.resolve({ id }) });
 beforeEach(() => {
   vi.clearAllMocks();
   source = undefined;
+  readOnly = false;
+});
+
+describe('GET /api/v2/conversations with a read token', () => {
+  it('lists every conversation, paged, and not the token\'s own (it has none)', async () => {
+    readOnly = true;
+    const res = await list.GET(get('?limit=20&offset=40&include_test=true'));
+    expect(res.status).toBe(200);
+    expect(scoped.listAllConversations).toHaveBeenCalledWith({ limit: 20, offset: 40, includeTest: true });
+    expect(scoped.listConversations).not.toHaveBeenCalled();
+    expect((await res.json()).data ?? {}).toMatchObject({ total: 1 });
+  });
+
+  it.each(['limit=0', 'limit=101', 'limit=abc', 'offset=-1', 'offset=1.5'])('refuses %s', async (query) => {
+    readOnly = true;
+    expect((await list.GET(get(`?${query}`))).status).toBe(400);
+    expect(scoped.listAllConversations).not.toHaveBeenCalled();
+  });
+
+  it('answers "not found" if storage refuses the caller', async () => {
+    readOnly = true;
+    scoped.listAllConversations.mockRejectedValueOnce(new ConversationError('not_found', 'Conversation not found'));
+    expect((await list.GET(get(''))).status).toBe(404);
+  });
+
+  it('leaves an agent\'s own list as it was', async () => {
+    await list.GET(get('?limit=20&offset=40'));
+    expect(scoped.listConversations).toHaveBeenCalled();
+    expect(scoped.listAllConversations).not.toHaveBeenCalled();
+  });
 });
 
 describe('starting a conversation', () => {

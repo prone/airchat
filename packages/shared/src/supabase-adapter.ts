@@ -23,6 +23,8 @@ import type {
   Conversation,
   ConversationMessage,
   ConversationSummary,
+  ConversationDirectoryEntry,
+  ConversationDirectoryPage,
   MessageReceipt,
   ScopedStorageAdapter,
   StorageAdapter,
@@ -931,18 +933,27 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       return this.getDirectMessages(channelId, cap, before, after);
     }
 
-    let query = this.client
-      .from('messages')
-      .select(MESSAGE_COLUMNS)
-      .eq('channel_id', channelId)
-      .eq('quarantined', false) // Never show quarantined messages to agents
-      .order('created_at', { ascending: forward })
-      .limit(cap);
+    const page = (columns: string) => {
+      let query = this.client
+        .from('messages')
+        .select(columns)
+        .eq('channel_id', channelId)
+        .eq('quarantined', false) // Never show quarantined messages to agents
+        .order('created_at', { ascending: forward })
+        .limit(cap);
+      if (before) query = query.lt('created_at', before);
+      if (after) query = query.gt('created_at', after);
+      return query;
+    };
 
-    if (before) query = query.lt('created_at', before);
-    if (after) query = query.gt('created_at', after);
-
-    const { data, error } = await query;
+    // A read token that sees the whole of #direct-messages is told which rows
+    // belong to a conversation, so a viewer can group or label them. A
+    // database without migration 00040 has no such column: read without it.
+    const labelled = this.seesAllDirectMessages() && (await this.isDirectMessagesChannel(channelId));
+    let { data, error } = await page(labelled ? `${MESSAGE_COLUMNS}, conversation_id` : MESSAGE_COLUMNS);
+    if (error && labelled && error.code === '42703') {
+      ({ data, error } = await page(MESSAGE_COLUMNS));
+    }
     if (error) throw new Error(`Failed to read messages: ${error.message}`);
 
     const rows = data as unknown as Message[];
@@ -1371,7 +1382,11 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
       .map((p) => ({ agent_id: p.agent_id, name: p.agents?.name ?? 'unknown', joined_at: p.joined_at }))
       .sort((a, b) => a.joined_at.localeCompare(b.joined_at) || a.name.localeCompare(b.name));
     // The same answer whether it does not exist or the agent is not in it.
-    if (!row || !participants.some((p) => p.agent_id === this.ctx.agentId)) {
+    // A read token with direct-message access is in no conversation and may
+    // read them all: it can already read every row in #direct-messages.
+    const allowed = this.seesAllDirectMessages()
+      || participants.some((p) => p.agent_id === this.ctx.agentId);
+    if (!row || !allowed) {
       throw new ConversationError('not_found', 'Conversation not found');
     }
     return { id: row.id, title: row.title, created_at: row.created_at, participants };
@@ -1419,6 +1434,38 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     }));
   }
 
+  async listAllConversations(
+    opts: { limit?: number; offset?: number; includeTest?: boolean } = {}
+  ): Promise<ConversationDirectoryPage> {
+    if (!this.seesAllDirectMessages()) {
+      throw new ConversationError('not_found', 'Conversation not found');
+    }
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 100));
+    const offset = Math.max(0, opts.offset ?? 0);
+    const { data, error } = await this.client.rpc('conversation_directory', {
+      p_limit: limit,
+      p_offset: offset,
+      p_include_test: opts.includeTest === true,
+    });
+    if (error) throw new Error(`Failed to list conversations: ${error.message}`);
+    const result = (data ?? {}) as { total?: number; conversations?: ConversationDirectoryEntry[] };
+    const page = result.conversations ?? [];
+    return {
+      // Named fields: whatever the function returns, a row carries these.
+      conversations: page.map((c) => ({
+        id: c.id,
+        title: c.title ?? null,
+        created_at: c.created_at,
+        last_message_at: c.last_message_at ?? null,
+        message_count: Number(c.message_count ?? 0),
+        participants: c.participants ?? [],
+      })),
+      total: Number(result.total ?? page.length),
+      limit,
+      offset,
+    };
+  }
+
   async getConversation(
     id: string,
     opts: { limit?: number; before?: string } = {}
@@ -1442,6 +1489,12 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
     if (error) throw new Error(`Failed to read conversation: ${error.message}`);
     const rows = ((data as unknown as MessageWithAuthor[] | null) ?? []).slice(0, cap).reverse();
     const hasMore = ((data as unknown[] | null) ?? []).length > cap;
+
+    // A read token is nobody's reader: who has seen what is between the
+    // participants, so it gets the messages and nothing about reading.
+    if (this.ctx.readOnly) {
+      return { conversation, messages: rows as unknown as ConversationMessage[], has_more: hasMore };
+    }
 
     // Who has marked each message read. Participants see this about each
     // other. A database without migration 00041 has no read times: the

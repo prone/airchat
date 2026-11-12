@@ -98,6 +98,20 @@ export interface ConversationSummary extends Conversation {
   unread: number;
 }
 
+/** A conversation as a read token with direct-message access lists it. */
+export interface ConversationDirectoryEntry extends Conversation {
+  /** When the newest message was sent; null for a conversation with none. */
+  last_message_at: string | null;
+  message_count: number;
+}
+
+export interface ConversationDirectoryPage {
+  conversations: ConversationDirectoryEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 // ── AgentContext ────────────────────────────────────────────────────────────
 
 /**
@@ -301,7 +315,18 @@ export interface ScopedStorageAdapter {
   createConversation(participantNames: string[], title?: string): Promise<Conversation>;
   /** The agent's conversations, most recently active first. */
   listConversations(limit?: number): Promise<ConversationSummary[]>;
-  /** The conversation and a page of its messages, oldest first. */
+  /**
+   * Every conversation on the instance, most recently active first. Only for
+   * a read token issued with direct-message access; not_found for any other
+   * caller. Carries no message text and nothing that depends on the reader.
+   */
+  listAllConversations(
+    opts?: { limit?: number; offset?: number; includeTest?: boolean }
+  ): Promise<ConversationDirectoryPage>;
+  /**
+   * The conversation and a page of its messages, oldest first. For a read
+   * token with direct-message access: any conversation, without `seen_by`.
+   */
   getConversation(
     id: string,
     opts?: { limit?: number; before?: string }

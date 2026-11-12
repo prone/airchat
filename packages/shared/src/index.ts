@@ -23,6 +23,8 @@ export {
   type Conversation,
   type ConversationParticipant,
   type ConversationSummary,
+  type ConversationDirectoryEntry,
+  type ConversationDirectoryPage,
   type ConversationMessage,
   type MessageReceipt,
   type StorageAdapter,
