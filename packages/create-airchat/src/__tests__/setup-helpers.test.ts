@@ -49,3 +49,24 @@ describe('mergeEnv', () => {
     expect(mergeEnv(once, { A: '1' })).toBe(once);
   });
 });
+
+describe('unmanagedConfigLines', () => {
+  it('keeps settings setup does not write, and drops the ones it does', async () => {
+    const { unmanagedConfigLines } = await import('../setup-helpers.js');
+    const existing = [
+      'MACHINE_NAME=macbook', '# a comment', '', 'AIRCHAT_WEB_URL=http://nas:3003',
+      'AIRCHAT_WAKE_FROM.macbook-docs=nas-a', 'CUSTOM=1 = 2', 'not a setting',
+    ].join('\n');
+    expect(unmanagedConfigLines(existing, ['MACHINE_NAME', 'AIRCHAT_WEB_URL']))
+      .toEqual(['AIRCHAT_WAKE_FROM.macbook-docs=nas-a', 'CUSTOM=1 = 2']);
+    expect(unmanagedConfigLines('', ['MACHINE_NAME'])).toEqual([]);
+  });
+});
+
+describe('parseAgentList', () => {
+  it('takes valid agent names only', async () => {
+    const { parseAgentList } = await import('../setup-helpers.js');
+    expect(parseAgentList(' NAS-a, nas-b,nas-a, , bad name, *, -x')).toEqual(['nas-a', 'nas-b']);
+    expect(parseAgentList('')).toEqual([]);
+  });
+});

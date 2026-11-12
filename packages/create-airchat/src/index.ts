@@ -12,8 +12,8 @@ import { run as runCli } from '@airchat/cli';
 // 'dev' when running from source via tsx, where no define is applied.
 declare const __AIRCHAT_VERSION__: string | undefined;
 const AIRCHAT_VERSION = typeof __AIRCHAT_VERSION__ === 'string' ? __AIRCHAT_VERSION__ : 'dev';
-import { isPostgresUrl, supabaseProjectRef, mergeEnv } from './setup-helpers.js';
-import { HARNESSES, addWorkHooks, buildHookCommand, detectHarnesses, genericSnippet, installInstructions, type McpLaunch } from './harnesses.js';
+import { isPostgresUrl, supabaseProjectRef, mergeEnv, unmanagedConfigLines, parseAgentList } from './setup-helpers.js';
+import { HARNESSES, addWorkHooks, addWakeHooks, buildHookCommand, detectHarnesses, genericSnippet, installInstructions, type McpLaunch } from './harnesses.js';
 
 // Also defined in packages/shared/src/rest-client.ts — keep in sync
 const DEFAULT_AIRCHAT_URL = 'https://supernode-web-production.up.railway.app';
@@ -49,6 +49,11 @@ interface SetupConfig {
   slackBotToken?: string;
   slackAppToken?: string;
   slackWebhookUrl?: string;
+  /**
+   * Set when the user chose to let direct messages start a turn in an idle
+   * Claude Code session: the agents allowed to do so (may be empty).
+   */
+  wakeFrom?: string[];
   adminSecret?: string;
 }
 
@@ -310,6 +315,22 @@ async function collectConfig(rl: readline.Interface, reconfigure: boolean): Prom
     console.log('');
   }
 
+  // Waking is Claude Code only: it relies on its hooks.
+  let wakeFrom: string[] | undefined;
+  if (harnesses.includes('claude')) {
+    // Read from disk even on a first-time run: the file may already be there.
+    const current = readExistingConfig();
+    const wasOn = ['reply', 'act', 'notify'].includes((current.AIRCHAT_WAKE ?? '').toLowerCase());
+    console.log(`  ${dim('A direct message normally waits until you next type. Waking lets a message from an')}`);
+    console.log(`  ${dim('agent you name start a turn in an idle session. That turn can only read files in the')}`);
+    console.log(`  ${dim('project and reply to the sender; it cannot run commands or edit anything.')}`);
+    if (await askYesNo(rl, 'Let chosen agents wake idle Claude Code sessions on this machine?', wasOn)) {
+      const answer = await ask(rl, 'Agents allowed to wake them (comma-separated names, blank for none yet)', current.AIRCHAT_WAKE_FROM ?? '');
+      wakeFrom = parseAgentList(answer);
+    }
+    console.log('');
+  }
+
   return {
     dbProvider,
     supabaseUrl,
@@ -327,6 +348,7 @@ async function collectConfig(rl: readline.Interface, reconfigure: boolean): Prom
     slackAppToken,
     slackWebhookUrl,
     adminSecret,
+    wakeFrom,
   };
 }
 
@@ -547,6 +569,21 @@ function writeAirchatConfig(config: SetupConfig): StepResult {
     if (config.slackBotToken) lines.push(`SLACK_BOT_TOKEN=${config.slackBotToken}`);
     if (config.slackAppToken) lines.push(`SLACK_APP_TOKEN=${config.slackAppToken}`);
     if (config.slackWebhookUrl) lines.push(`SLACK_WEBHOOK_URL=${config.slackWebhookUrl}`);
+    // An existing tier is kept (someone may have set `act` by hand); a new
+    // one starts at `reply`. Declining turns waking off.
+    const managed = [...MANAGED_CONFIG_KEYS];
+    if (config.harnesses.includes('claude')) {
+      managed.push('AIRCHAT_WAKE', 'AIRCHAT_WAKE_FROM');
+      if (config.wakeFrom) {
+        const tier = (readExistingConfig().AIRCHAT_WAKE ?? '').toLowerCase();
+        lines.push(`AIRCHAT_WAKE=${['reply', 'act', 'notify'].includes(tier) ? tier : 'reply'}`);
+        lines.push(`AIRCHAT_WAKE_FROM=${config.wakeFrom.join(',')}`);
+      }
+    }
+    // Keep what setup does not manage, such as per-agent wake lists.
+    let previous = '';
+    try { previous = fs.readFileSync(path.join(configDir, 'config'), 'utf-8'); } catch { /* first run */ }
+    lines.push(...unmanagedConfigLines(previous, managed));
 
     fs.writeFileSync(path.join(configDir, 'config'), lines.join('\n') + '\n', { mode: 0o600 });
 
@@ -653,6 +690,9 @@ function installAgentInstructions(config: SetupConfig): StepResult[] {
   return results;
 }
 
+/** Keys writeAirchatConfig writes itself; everything else in the file is kept. */
+const MANAGED_CONFIG_KEYS = ['MACHINE_NAME', 'AIRCHAT_WEB_URL', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'SLACK_WEBHOOK_URL'] as const;
+
 function installMentionHook(config: SetupConfig): StepResult {
   const name = 'Install work hook';
   try {
@@ -673,6 +713,14 @@ function installMentionHook(config: SetupConfig): StepResult {
     const hookCommand = buildHookCommand(config.nodePath, path.join(config.airchatDir, 'scripts', 'check-work.mjs'));
 
     const added = addWorkHooks(settings, hookCommand);
+    if (config.wakeFrom) {
+      const script = (file: string) => buildHookCommand(config.nodePath, path.join(config.airchatDir, 'scripts', file));
+      added.push(...addWakeHooks(settings, {
+        wait: script('wake-wait.mjs'),
+        gate: script('wake-gate.mjs'),
+        inject: script('wake-inject.mjs'),
+      }).map((event) => `${event} (wake)`));
+    }
 
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');

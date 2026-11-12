@@ -39,3 +39,23 @@ export function mergeEnv(existing: string, entries: Record<string, string>): str
   for (const [key, value] of pending) lines.push(`${key}=${value}`);
   return lines.join('\n') + '\n';
 }
+
+/**
+ * The lines of an existing ~/.airchat/config that setup does not write
+ * itself, so re-running setup keeps settings it knows nothing about (wake
+ * settings, anything added by hand). Comments and blank lines are dropped.
+ */
+export function unmanagedConfigLines(existing: string, managedKeys: readonly string[]): string[] {
+  return existing.split('\n').filter((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) return false;
+    const eq = trimmed.indexOf('=');
+    return eq > 0 && !managedKeys.includes(trimmed.slice(0, eq).trim());
+  });
+}
+
+/** Agent names from a comma-separated answer; invalid ones are left out. */
+export function parseAgentList(answer: string): string[] {
+  const names = answer.split(',').map((s) => s.trim().toLowerCase()).filter((s) => /^[a-z0-9][a-z0-9-]{0,99}$/.test(s));
+  return [...new Set(names)];
+}

@@ -1,8 +1,9 @@
-import { plan, shouldRequest, normalizeState, hookAgentName } from './check-work-plan.mjs';
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { plan, shouldRequest, normalizeState } from './check-work-plan.mjs';
+import { readFileSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
-import crypto from 'crypto';
+import { openClient, unwrap, cacheDir, readJson, writeJson } from './hook-client.mjs';
+import { safeSessionId, isTypedPrompt } from './wake-lib.mjs';
+import { setMarker, clearMarker, readWoken, wokenSummary } from './wake-session.mjs';
 
 // check-work.mjs — the "anything for me?" hook.
 //
@@ -24,36 +25,32 @@ const event = ['Stop', 'SessionStart'].includes(hookInput.hook_event_name)
   ? hookInput.hook_event_name
   : 'UserPromptSubmit';
 const stopHookActive = hookInput.stop_hook_active === true;
-const airchatDir = join(homedir(), '.airchat');
 
-const cacheDir = join(airchatDir, 'cache');
-
-// ── Read config ─────────────────────────────────────────────────────────────
-let config = {};
-try {
-  const lines = readFileSync(join(airchatDir, 'config'), 'utf-8').split('\n');
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eq = trimmed.indexOf('=');
-    if (eq === -1) continue;
-    config[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+// ── Turn tracking for the wake hooks ────────────────────────────────────────
+// wake-wait.mjs must not start a turn while one is running, and wake-gate.mjs
+// restricts a turn that a message started until a person types again. This
+// hook sees both ends of every turn, so it keeps those two facts. It runs
+// before anything that can exit early: they have to be right even when the
+// server is unreachable.
+const sessionId = safeSessionId(hookInput.session_id);
+if (sessionId) {
+  if (event === 'UserPromptSubmit') {
+    setMarker(sessionId, 'busy');
+    const woken = readWoken(sessionId);
+    if (woken && isTypedPrompt(hookInput.prompt)) {
+      clearMarker(sessionId, 'woken');
+      const summary = wokenSummary(sessionId, woken);
+      if (summary) console.log(summary + '\n');
+    }
+  } else {
+    clearMarker(sessionId, 'busy');
   }
-} catch { process.exit(0); }
+}
 
-const { MACHINE_NAME, AIRCHAT_WEB_URL } = config;
-if (!MACHINE_NAME || !AIRCHAT_WEB_URL) process.exit(0);
-
-const webUrl = AIRCHAT_WEB_URL.replace(/\/+$/, '');
-
-// ── Read private key ────────────────────────────────────────────────────────
-let privateKeyHex;
-try {
-  privateKeyHex = readFileSync(join(airchatDir, 'machine.key'), 'utf-8').trim();
-} catch { process.exit(0); }
-
-// ── Derive agent name ───────────────────────────────────────────────────────
-const agentName = hookAgentName(MACHINE_NAME, process.cwd(), process.env.AIRCHAT_PROJECT);
+// ── Config, key and agent name ──────────────────────────────────────────────
+const client = openClient();
+if (!client) process.exit(0);
+const { agentName } = client;
 
 // ── State — PER AGENT ───────────────────────────────────────────────────────
 //
@@ -63,15 +60,8 @@ const agentName = hookAgentName(MACHINE_NAME, process.cwd(), process.env.AIRCHAT
 // in another project produced nothing at all until the file was deleted by
 // hand.
 const stateFile = join(cacheDir, `work-state-${agentName}.json`);
-let state;
-try { state = normalizeState(JSON.parse(readFileSync(stateFile, 'utf-8'))); } catch { state = normalizeState(null); }
-
-function saveState(next) {
-  try {
-    mkdirSync(cacheDir, { recursive: true });
-    writeFileSync(stateFile, JSON.stringify(next));
-  } catch {}
-}
+const state = normalizeState(readJson(stateFile));
+const saveState = (next) => writeJson(stateFile, next);
 
 const now = Date.now();
 if (!shouldRequest({ event, stopHookActive, state, now })) process.exit(0);
@@ -82,145 +72,23 @@ function noteFailure() {
   saveState({ ...state, lastFailure: now });
 }
 
-// ── Crypto helpers (inline, mirrors packages/shared/src/crypto.ts) ──────────
-
-function generateDerivedKey() {
-  return crypto.randomBytes(32).toString('hex');
-}
-
-function generateNonce() {
-  return crypto.randomBytes(16).toString('hex');
-}
-
-function hashKey(key) {
-  return crypto.createHash('sha256').update(key).digest('hex');
-}
-
-function signRegistration(privKeyHex, payload) {
-  // Reconstruct Ed25519 private key from 32-byte hex seed
-  const seed = Buffer.from(privKeyHex, 'hex');
-  const pkcs8Header = Buffer.from('302e020100300506032b657004220420', 'hex');
-  const pkcs8Der = Buffer.concat([pkcs8Header, seed]);
-  const key = crypto.createPrivateKey({ key: pkcs8Der, format: 'der', type: 'pkcs8' });
-
-  // Canonical JSON array format — must match all SDKs exactly
-  const message = Buffer.from(JSON.stringify([
-    payload.machine_name,
-    payload.agent_name,
-    payload.derived_key_hash,
-    payload.timestamp,
-    payload.nonce,
-  ]), 'utf-8');
-
-  return crypto.sign(null, message, key).toString('base64');
-}
-
-// ── Derived key cache ───────────────────────────────────────────────────────
-
-const agentsDir = join(airchatDir, 'agents');
-const keyFilePath = join(agentsDir, `${agentName}.key`);
-
-function loadCachedKey() {
-  try {
-    // Single read, no exists-then-read race — ENOENT lands in the catch.
-    const key = readFileSync(keyFilePath, 'utf-8').trim();
-    if (!key) return null;
-    if (!key.match(/^[0-9a-f]{64}$/)) return null;
-    return key;
-  } catch {
-    return null;
-  }
-}
-
-function saveCachedKey(key) {
-  try {
-    mkdirSync(agentsDir, { recursive: true, mode: 0o700 });
-    writeFileSync(keyFilePath, key, { mode: 0o600 });
-  } catch {}
-}
-
-// ── Registration flow ───────────────────────────────────────────────────────
-
-async function ensureDerivedKey() {
-  // Try cached key first
-  const cached = loadCachedKey();
-  if (cached) return cached;
-
-  // Generate new derived key and register
-  const derivedKey = generateDerivedKey();
-  const derivedKeyHash = hashKey(derivedKey);
-  const timestamp = new Date().toISOString();
-  const nonce = generateNonce();
-
-  const payload = {
-    machine_name: MACHINE_NAME,
-    agent_name: agentName,
-    derived_key_hash: derivedKeyHash,
-    timestamp,
-    nonce,
-  };
-
-  const signature = signRegistration(privateKeyHex, payload);
-
-  const res = await fetch(`${webUrl}/api/v2/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...payload, signature }),
-    signal: AbortSignal.timeout(15000),
-  });
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`Registration failed: HTTP ${res.status} — ${body}`);
-  }
-
-  saveCachedKey(derivedKey);
-  return derivedKey;
-}
-
 // ── Main ────────────────────────────────────────────────────────────────────
 
 try {
-  let derivedKey = await ensureDerivedKey();
-
-  let res = await fetch(`${webUrl}/api/v2/work`, {
-    headers: { 'x-agent-api-key': derivedKey },
-    signal: AbortSignal.timeout(5000),
-  });
-
-  // On 401, re-register and retry once (derived key may have been invalidated)
-  if (res.status === 401) {
-    // Delete cached key and re-register
-    try { writeFileSync(keyFilePath, ''); } catch {}
-    derivedKey = await ensureDerivedKey();
-    res = await fetch(`${webUrl}/api/v2/work`, {
-      headers: { 'x-agent-api-key': derivedKey },
-      signal: AbortSignal.timeout(5000),
-    });
-  }
+  const res = await client.get('/api/v2/work');
 
   if (!res.ok) {
     if (res.status >= 500 || res.status === 429) noteFailure();
     process.exit(0);
   }
 
-  const body = await res.json();
-
-  // /api/v2 wraps every success in a prompt-injection boundary:
-  //   { _airchat: 'response', _notice: '...', data: {...} }
-  //
-  // The predecessor of this script (check-mentions.mjs) read `body.mentions`
-  // after the envelope was introduced, so it took the "nothing to say" branch
-  // and exited silently on every run for months — a hook that prints nothing
-  // looks exactly like a hook with nothing to say. Accept both shapes so it
-  // cannot break that way again.
-  const payload = body && typeof body === 'object' && '_airchat' in body && 'data' in body
-    ? body.data
-    : body;
+  const payload = unwrap(await res.json());
 
   const result = plan({ event, payload, state, now, stopHookActive });
   saveState(result.state);
   if (result.mode === 'block') {
+    // The agent keeps going, so the turn is not over.
+    if (sessionId) setMarker(sessionId, 'busy');
     // Stop hook protocol: this keeps the agent going, with `reason` as what it
     // is told. Plain text on stdout would be ignored for this event.
     console.log(JSON.stringify({ decision: 'block', reason: result.text }));
