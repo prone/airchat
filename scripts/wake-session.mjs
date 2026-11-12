@@ -196,19 +196,14 @@ export function audit(entry) {
   try {
     mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
     const file = join(cacheDir, 'wake-audit.log');
-    let fd = openSync(file, 'a', 0o600);
+    const fd = openSync(file, 'a', 0o600);
     try {
-      // Keep one older file, so a burst of entries cannot erase the record.
-      // The size is read from the open file, not looked up by name again.
-      if (fstatSync(fd).size > AUDIT_MAX_BYTES) {
-        closeSync(fd);
-        fd = -1;
-        renameSync(file, file + '.1');
-        fd = openSync(file, 'a', 0o600);
-      }
       appendFileSync(fd, JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n');
+      // Keep one older file, so a burst of entries cannot erase the record.
+      // The size comes from the open file; the next entry starts a new one.
+      if (fstatSync(fd).size > AUDIT_MAX_BYTES) renameSync(file, file + '.1');
     } finally {
-      if (fd >= 0) closeSync(fd);
+      closeSync(fd);
     }
   } catch {}
 }
