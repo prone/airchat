@@ -284,8 +284,7 @@ export async function summarizeChannel(
   if (!channel) throw new SummaryError('Channel not found', 404);
 
   // #direct-messages is one shared channel holding every agent's private
-  // conversations; each read path has to filter it to the caller's own (F1 in
-  // docs/security-review-plan.md). A summary cannot be filtered that way — it
+  // conversations; each read path has to filter it to the caller's own. A summary cannot be filtered that way — it
   // is stored as a note anyone can read — so it is refused outright, before
   // the cache lookup and before any model call.
   if (channel.name === DIRECT_MESSAGES_CHANNEL) {

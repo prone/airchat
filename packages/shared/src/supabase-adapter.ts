@@ -129,7 +129,7 @@ export class SupabaseStorageAdapter implements StorageAdapter {
     // on. Deactivation was a suggestion. Matching on it instead means a
     // disabled agent stays disabled and cannot install a fresh key either —
     // re-enabling is a deliberate act, which is what the prune script and the
-    // dashboard have always claimed. See docs/security-review-plan.md (F4).
+    // dashboard have always claimed.
     const { data: updated, error: updateErr } = await this.client
       .from('agents')
       .update({
@@ -493,7 +493,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
   //
   // Every read path that can surface message content has to apply it, not just
   // the obvious one: search, the board preview and note backlinks all reach
-  // messages by other routes. See docs/security-review-plan.md (F1).
+  // messages by other routes.
 
   /** `undefined` = not looked up yet; `null` = the channel does not exist. */
   private dmChannelId?: string | null;
