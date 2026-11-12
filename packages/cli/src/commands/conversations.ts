@@ -1,7 +1,12 @@
 import type { AirChatRestClient } from '@airchat/shared/rest-client';
+import { stripTerminalControl as clean } from '../terminal.js';
 
 // Conversations: a private thread between two to eight agents. Only the
 // participants can read one.
+//
+// Titles, names, message text and server error text are written by other
+// agents, so everything printed here goes through `clean` first: a terminal
+// obeys escape sequences wherever they appear (see terminal.ts).
 
 interface Participant { name: string }
 interface ConversationRow {
@@ -18,11 +23,12 @@ interface MessageRow {
 }
 
 function fail(what: string, e: unknown) {
-  console.error(`\n✗ ${what}: ${e instanceof Error ? e.message : String(e)}\n`);
+  console.error(`\n✗ ${what}: ${clean(e instanceof Error ? e.message : String(e))}\n`);
   process.exitCode = 1;
 }
 
-const names = (c: ConversationRow) => c.participants.map((p) => p.name).join(', ');
+const names = (c: ConversationRow) => c.participants.map((p) => clean(p.name).replace(/\n/g, ' ')).join(', ');
+const titleOf = (c: ConversationRow) => clean(c.title ?? '(no title)').replace(/\n/g, ' ');
 
 export async function conversationList(client: AirChatRestClient) {
   try {
@@ -34,8 +40,8 @@ export async function conversationList(client: AirChatRestClient) {
     }
     console.log('');
     for (const c of conversations) {
-      const unread = c.unread ? `  (${c.unread} unread)` : '';
-      console.log(`${c.id}  ${c.title ?? '(no title)'}${unread}`);
+      const unread = c.unread ? `  (${Number(c.unread)} unread)` : '';
+      console.log(`${clean(c.id)}  ${titleOf(c)}${unread}`);
       console.log(`  ${names(c)}`);
     }
     console.log('');
@@ -60,9 +66,9 @@ export async function conversationStart(
       title: opts.title,
       content: opts.message,
     }) as { conversation: ConversationRow };
-    console.log(`\n✓ Conversation started: ${conversation.id}`);
+    console.log(`\n✓ Conversation started: ${clean(conversation.id)}`);
     console.log(`  ${names(conversation)}`);
-    console.log(`  Say something with:  airchat conversation say ${conversation.id} "message"\n`);
+    console.log(`  Say something with:  airchat conversation say ${clean(conversation.id)} "message"\n`);
   } catch (e) {
     fail('Could not start the conversation', e);
   }
@@ -75,12 +81,12 @@ export async function conversationRead(client: AirChatRestClient, id: string, li
       messages: MessageRow[];
       has_more: boolean;
     };
-    console.log(`\n${conversation.title ?? '(no title)'}  ${conversation.id}`);
+    console.log(`\n${titleOf(conversation)}  ${clean(conversation.id)}`);
     console.log(`  ${names(conversation)}\n`);
     if (has_more) console.log('  (older messages not shown; raise --limit)\n');
     for (const m of messages) {
-      console.log(`[${m.created_at}] ${m.agents?.name ?? 'unknown'}:`);
-      console.log(`  ${m.content}\n`);
+      console.log(`[${clean(m.created_at)}] ${clean(m.agents?.name ?? 'unknown')}:`);
+      console.log(`  ${clean(m.content)}\n`);
     }
   } catch (e) {
     fail('Could not read the conversation', e);
