@@ -369,3 +369,47 @@ export function addWorkHooks(settings: any, hookCommand: string): string[] {
   }
   return added;
 }
+
+/**
+ * Add the wake hooks to a Claude Code settings object, leaving other hooks
+ * alone. Safe to run repeatedly. Returns the events it added a hook to.
+ *
+ *   SessionStart, Stop   wake-wait.mjs, with `asyncRewake`: runs in the
+ *                        background while the session is idle and starts a
+ *                        turn when a direct message from an allowed sender
+ *                        arrives.
+ *   PreToolUse           wake-gate.mjs: in a turn a message started, refuses
+ *                        the tools the wake tier does not allow.
+ *   PostToolUse          wake-inject.mjs: shows a message that arrived in the
+ *                        middle of a turn after the next tool call.
+ *
+ * The three scripts do nothing unless ~/.airchat/config sets AIRCHAT_WAKE.
+ */
+export function addWakeHooks(
+  settings: any,
+  commands: { wait: string; gate: string; inject: string },
+): string[] {
+  if (!settings.hooks) settings.hooks = {};
+  const added: string[] = [];
+  const ensure = (event: string, script: string, hook: Record<string, unknown>, matcher?: string) => {
+    const entries: any[] = Array.isArray(settings.hooks[event]) ? settings.hooks[event] : [];
+    const present = entries.some((entry: any) => entry.hooks?.some((h: any) => h.command?.includes(script)));
+    if (!present) {
+      const entry: any = { hooks: [{ type: 'command', ...hook }] };
+      if (matcher !== undefined) entry.matcher = matcher;
+      entries.push(entry);
+      added.push(event);
+    }
+    settings.hooks[event] = entries;
+  };
+  // The waiter lives as long as the session is idle, so its timeout is hours,
+  // not the seconds a normal hook gets. It ends itself after twelve.
+  const wait = { command: commands.wait, asyncRewake: true, timeout: WAKE_WAIT_TIMEOUT_S };
+  ensure('SessionStart', 'wake-wait', wait);
+  ensure('Stop', 'wake-wait', wait);
+  ensure('PreToolUse', 'wake-gate', { command: commands.gate, timeout: 10 }, '');
+  ensure('PostToolUse', 'wake-inject', { command: commands.inject, timeout: 15 }, '');
+  return added;
+}
+
+export const WAKE_WAIT_TIMEOUT_S = 12 * 60 * 60 + 600;

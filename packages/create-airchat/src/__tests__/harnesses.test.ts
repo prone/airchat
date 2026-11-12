@@ -220,6 +220,40 @@ describe('addWorkHooks', () => {
   });
 });
 
+describe('addWakeHooks', () => {
+  const commands = {
+    wait: '/usr/bin/node /opt/airchat/scripts/wake-wait.mjs',
+    gate: '/usr/bin/node /opt/airchat/scripts/wake-gate.mjs',
+    inject: '/usr/bin/node /opt/airchat/scripts/wake-inject.mjs',
+  };
+
+  it('adds the waiter in the background and the gate before every tool', async () => {
+    const { addWakeHooks } = await import('../harnesses.js');
+    const settings: any = {};
+    expect(addWakeHooks(settings, commands)).toEqual(['SessionStart', 'Stop', 'PreToolUse', 'PostToolUse']);
+    for (const event of ['SessionStart', 'Stop']) {
+      expect(settings.hooks[event][0].hooks[0]).toMatchObject({ type: 'command', command: commands.wait, asyncRewake: true });
+      expect(settings.hooks[event][0].hooks[0].timeout).toBeGreaterThan(12 * 60 * 60);
+    }
+    expect(settings.hooks.PreToolUse[0]).toMatchObject({ matcher: '', hooks: [{ command: commands.gate }] });
+    expect(settings.hooks.PreToolUse[0].hooks[0].asyncRewake).toBeUndefined();
+    expect(settings.hooks.PostToolUse[0].hooks[0].command).toBe(commands.inject);
+  });
+
+  it('is safe to run again, and sits beside the work hook and other hooks', async () => {
+    const { addWakeHooks, addWorkHooks } = await import('../harnesses.js');
+    const other = { matcher: 'Bash', hooks: [{ type: 'command', command: 'audit.sh' }] };
+    const settings: any = { hooks: { PreToolUse: [other] } };
+    addWorkHooks(settings, '/usr/bin/node /opt/airchat/scripts/check-work.mjs');
+    addWakeHooks(settings, commands);
+    expect(addWakeHooks(settings, commands)).toEqual([]);
+    expect(settings.hooks.PreToolUse).toHaveLength(2);
+    expect(settings.hooks.PreToolUse[0]).toBe(other);
+    expect(settings.hooks.Stop).toHaveLength(2);
+    expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
+  });
+});
+
 /**
  * The hook command is one string run by a shell on every prompt. It is built
  * from install paths, and a path can contain anything a directory name can.
