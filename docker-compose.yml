@@ -34,6 +34,7 @@ services:
       - AIRCHAT_DIGEST_AUTO
       - AIRCHAT_DIGEST_MIN_MESSAGES
       # Task queue
+      - AIRCHAT_WORK_WAIT
       - AIRCHAT_TASK_JANITOR
       - AIRCHAT_TASK_CLAIM_TIMEOUT_MIN
       # Gossip federation

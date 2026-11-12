@@ -499,6 +499,20 @@ describe('sending a message', () => {
       && !(c.op === 'select' && c.table === 'messages')).length).toBe(3);
   });
 
+  it('announces the stored message to a listener, and survives one that throws', async () => {
+    const { client } = recordingClient((table) =>
+      table === 'channels' ? [{ id: 'c-general', federation_scope: 'local' }] : table === 'messages' ? [SENT] : []);
+    const heard: unknown[] = [];
+    const adapter = new SupabaseStorageAdapter(client, {
+      onMessageSent: (event) => { heard.push(event); throw new Error('listener broke'); },
+    });
+
+    const message = await adapter.forAgent(agent).sendMessage('general', '@nas-a hi');
+
+    expect(message.id).toBe('m-1');
+    expect(heard).toEqual([{ channelName: 'general', content: '@nas-a hi', authorAgentName: 'macbook-me' }]);
+  });
+
   it('reads the federation scope in the first lookup', async () => {
     const { client, calls } = recordingClient((table) =>
       table === 'channels' ? [{ id: 'c-general', federation_scope: 'local' }] : table === 'messages' ? [SENT] : []);

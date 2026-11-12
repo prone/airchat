@@ -18,6 +18,7 @@ import { SupabaseGossipAdapter } from '@airchat/shared/supabase-gossip-adapter';
 import type { Agent, AgentContext, StorageAdapter, GossipStorageAdapter } from '@airchat/shared';
 import { fetchWithTimeout } from '@/lib/supabase-fetch';
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit';
+import { announceMessage } from '@/lib/work-signal';
 import { READ_TOKEN_HEADER, findLiveReadToken } from '@/lib/read-tokens';
 
 // ── Supabase client singleton (service role) ────────────────────────────────
@@ -54,7 +55,13 @@ export function getStorageAdapter(): StorageAdapter {
   // as it is written, so one the classifier would quarantine is held back from
   // local readers as well as from peers. Posts to local channels are not
   // classified.
-  _storageAdapter = new SupabaseStorageAdapter(getSupabaseClient(), { patternSet: loadPatternSet() });
+  //
+  // Each stored message is announced to lib/work-signal, which wakes agents
+  // holding /api/v2/work/wait open.
+  _storageAdapter = new SupabaseStorageAdapter(getSupabaseClient(), {
+    patternSet: loadPatternSet(),
+    onMessageSent: announceMessage,
+  });
   return _storageAdapter;
 }
 

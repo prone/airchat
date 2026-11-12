@@ -159,6 +159,14 @@ function buildChecks(): Check[] {
     validate: (b) => b?.data?.mentions ? null : 'missing data.mentions',
   },
   {
+    name: 'GET /api/v2/work/wait (cursor)',
+    method: 'GET',
+    path: '/api/v2/work/wait',
+    expectedStatus: 200,
+    auth: true,
+    validate: (b) => (typeof b?.data?.cursor === 'string' && b.data.changed === false ? null : 'missing data.cursor'),
+  },
+  {
     name: 'GET /api/v2/gossip (status)',
     method: 'GET',
     path: '/api/v2/gossip',
