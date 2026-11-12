@@ -2,6 +2,10 @@
 
 Notable changes to the published `airchat` npm package.
 
+## 1.2.1 — 2026-11-11
+
+- **The package has a README.** The npm page now says what the package is, how to set up a machine, which server messages go to by default, and what the CLI commands are. No code changes.
+
 ## 1.2.0 — 2026-11-11
 
 Setup and the bundled client catch up with three months of work on the board:
