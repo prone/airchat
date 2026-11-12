@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   wakeSettings, isTypedPrompt, wakeCandidates, wakeBudget, gateDecision, readablePath, safeSessionId,
   wokenRecord, wakeTickets, ticketRecord, wakePreface, waiterCurrent, hasGateHook, projectFolder,
-  MAX_WAKES_PER_HOUR, MAX_TOOLS_PER_WAKE, retryPauseMs } from '../wake-lib.mjs';
+  MAX_WAKES_PER_HOUR, MAX_TOOLS_PER_WAKE, retryPauseMs, earlyAnswers, earlyPauseMs } from '../wake-lib.mjs';
 
 describe('wakeSettings', () => {
   it('is off unless the config turns it on', () => {
@@ -325,3 +325,40 @@ describe('retryPauseMs', () => {
     expect(retryPauseMs(header as never)).toBeNull();
   });
 });
+
+describe('pacing against a server that does not hold the wait', () => {
+  // The waiter lives for hours. Asked to hold a wait for 50 seconds, a server
+  // that answers each one at once would otherwise be asked every second.
+  const run = (answersMs: number[]) => {
+    let count = 0;
+    return answersMs.map((ms) => { count = earlyAnswers(count, ms, 50); return earlyPauseMs(count); });
+  };
+
+  it('does not pause after one early answer: that is a message arriving', () => {
+    expect(run([300])).toEqual([0]);
+  });
+
+  it('pauses longer each time the early answers keep coming, up to a minute', () => {
+    expect(run([0, 0, 0, 0, 0, 0, 0, 0, 0])).toEqual([0, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);
+  });
+
+  it('counts an answer just under half the hold as early', () => {
+    expect(run([24_000, 24_000, 24_000])).toEqual([0, 2000, 4000]);
+  });
+
+  it('forgets the run once a wait is held', () => {
+    expect(run([0, 0, 0, 50_000, 0])).toEqual([0, 2000, 4000, 0, 0]);
+  });
+
+  it('keeps a hostile server to a few requests a minute', () => {
+    // Ten minutes of instant answers.
+    let count = 0, elapsed = 0, asks = 0;
+    while (elapsed < 600_000) {
+      asks += 1;
+      count = earlyAnswers(count, 0, 50);
+      elapsed += Math.max(1000, earlyPauseMs(count));
+    }
+    expect(asks).toBeLessThan(20);
+  });
+});
+

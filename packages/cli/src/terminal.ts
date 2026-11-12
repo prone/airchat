@@ -45,11 +45,17 @@ export function stripTerminalControl(text: unknown): string {
 
 /**
  * Remote text for a place where one line is expected: a name, a title, an id,
- * a timestamp. Line breaks become spaces, so the value cannot start a line of
- * its own.
+ * a timestamp. Every run of blank space, line breaks included, becomes one
+ * space. So the value cannot start a line of its own, and cannot be padded
+ * out to the width of the terminal so that its tail wraps onto the next row
+ * and reads as a separate entry.
  */
+// Any run of blank space: line breaks, tabs, every Unicode space, and the
+// few characters that are not spaces but print as one.
+const BLANK_RUN = /[\s\u2800\u3164\u115f\u1160\uffa0]+/g;
+
 export function oneLine(text: unknown): string {
-  return stripTerminalControl(text).replace(/[\n\t]+/g, ' ').trim();
+  return stripTerminalControl(text).replace(BLANK_RUN, ' ').trim();
 }
 
 /**
@@ -94,8 +100,9 @@ export function installOutputFilter(target: Pick<Console, 'log' | 'error' | 'war
 
 // Characters JSON.stringify leaves raw that a terminal acts on or that some
 // readers treat as a line break: DEL, the C1 controls, the line and paragraph
-// separators, and the direction overrides and isolates.
-const JSON_UNSAFE = /[\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+// separators, the direction marks, overrides and isolates, and the byte-order
+// mark.
+const JSON_UNSAFE = /[\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g;
 
 /** JSON text with every character a terminal could act on written as \uXXXX. */
 export function safeJson(value: unknown): string {

@@ -49,3 +49,21 @@ describe('fetchPeerKey', () => {
     expect((await fetchPeerKey('https://peer.example', fp)).status).toBe('unreachable');
   });
 });
+
+describe('readJsonCapped', () => {
+  it('reads an answer that fits', async () => {
+    const { readJsonCapped } = await import('@/lib/peer-identity');
+    expect(await readJsonCapped(new Response('{"data":{"ok":true}}'), 1024)).toEqual({ data: { ok: true } });
+  });
+
+  it('refuses one larger than the limit, without reading it all', async () => {
+    const { readJsonCapped } = await import('@/lib/peer-identity');
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) { pulled += 1; controller.enqueue(new Uint8Array(64 * 1024).fill(97)); },
+    }, { highWaterMark: 0 });
+    await expect(readJsonCapped(new Response(body), 256 * 1024)).rejects.toThrow();
+    expect(pulled).toBeLessThan(20);
+  });
+});
+

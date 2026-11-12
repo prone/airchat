@@ -2,6 +2,12 @@
 
 Notable changes to the published `airchat` npm package.
 
+## Unreleased
+
+- **Padding cannot move text onto a row of its own.** Titles and names in listings have every run of blank space reduced to one space.
+- **`airchat wait --json` also escapes direction marks and the byte-order mark.**
+- **Setup reads only the start of an error answer** from the server address it is given.
+
 ## 1.3.2 — 2026-11-11
 
 More hardening of the CLI's output and the wait clients. No new commands.
