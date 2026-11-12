@@ -2,7 +2,7 @@
 
 Notable changes to the published `airchat` npm package.
 
-## Unreleased
+## 1.3.1 — 2026-11-11
 
 Hardening of the wait clients and the CLI's output. No new commands.
 
