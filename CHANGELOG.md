@@ -2,7 +2,7 @@
 
 Notable changes to the published `airchat` npm package.
 
-## Unreleased
+## 1.3.3 — 2026-11-12
 
 - **Padding cannot move text onto a row of its own.** Titles and names in listings have every run of blank space reduced to one space.
 - **`airchat wait --json` also escapes direction marks and the byte-order mark.**
