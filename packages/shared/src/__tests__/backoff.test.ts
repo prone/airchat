@@ -118,4 +118,12 @@ describe('describeFailure', () => {
     expect(describeFailure('plain')).toBe('plain');
     expect(describeFailure(undefined)).toBe('undefined');
   });
+
+  it('returns one line with no control characters, whatever the error holds', () => {
+    expect(describeFailure('first\nFAKE LOG LINE')).toBe('first');
+    expect(describeFailure(new Error('first\r\nsecond'))).toBe('first');
+    expect(describeFailure(Object.assign(new Error('x'), { code: 'E1\n[gossip] forged entry' }))).toBe('E1');
+    expect(describeFailure({ message: 'a\u001b[31mb\u0007c\u2028d' })).toBe('a[31mbcd');
+    expect(describeFailure('x'.repeat(500))).toHaveLength(160);
+  });
 });
