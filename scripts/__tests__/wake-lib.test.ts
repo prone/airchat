@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   wakeSettings, isTypedPrompt, wakeCandidates, wakeBudget, gateDecision, readablePath, safeSessionId,
-  wokenRecord, dueWake, hasGateHook, projectFolder,
-  MAX_WAKES_PER_HOUR, MAX_TOOLS_PER_WAKE, WAKE_DUE_MS,
+  wokenRecord, wakeTickets, ticketRecord, wakePreface, hasGateHook, projectFolder,
+  MAX_WAKES_PER_HOUR, MAX_TOOLS_PER_WAKE,
 } from '../wake-lib.mjs';
 
 describe('wakeSettings', () => {
@@ -50,6 +50,7 @@ describe('isTypedPrompt', () => {
       '<cross-session-message from="x">hi</cross-session-message>',
       '  <system-reminder>x</system-reminder>',
       '<anything-new/>',
+      '\u200B<task-notification>x', '\uFEFF\u00A0<task-notification>x', '\u2060\u200E <system-reminder>x', '\u0000<x>', '\u200B',
       '', undefined, null,
     ]) expect(isTypedPrompt(p as string), String(p)).toBe(false);
   });
@@ -103,7 +104,7 @@ describe('the tool gate in a reply turn', () => {
   const woken = { tier: 'reply', senders: ['nas-a'] };
   const cwd = '/work/project';
   const same = (p: string) => p;
-  const env = { home: '/Users/x', calls: 0 };
+  const env = { home: '/Users/x', calls: 0, linksOf: () => 1 as number | null };
   const call = (tool_name: string, tool_input: Record<string, unknown> = {}) =>
     gateDecision(woken, { tool_name, tool_input, cwd }, same, env);
 
@@ -177,6 +178,26 @@ describe('the tool gate in a reply turn', () => {
     expect(gateDecision(woken, input, real('/work/project/docs/notes.txt'), env).allow).toBe(true);
   });
 
+  it('refuses a hard-linked file, and anything that is not a regular file', () => {
+    const input = { tool_name: 'Read', tool_input: { file_path: '/work/project/notes.txt' }, cwd };
+    const withLinks = (links: number | null) => gateDecision(woken, input, same, { ...env, linksOf: () => links }).allow;
+    expect(withLinks(1)).toBe(true);
+    expect(withLinks(2)).toBe(false);
+    expect(withLinks(null)).toBe(false);
+    expect(gateDecision(woken, input, same, { home: '/Users/x', calls: 0 }).allow).toBe(false);
+  });
+
+  it('refuses names that usually hold credentials, keys or a database', () => {
+    for (const name of [
+      'auth.json', 'keys.json', 'env.local', 'prod.env', 'production.env', 'aws.json', 'cert.crt', 'wallet.dat', 'dump.sql',
+      'db.sqlite', 'Login.keychain-db', 'kubeconfig.yaml', 'gcp-sa.json', 'service_account.json', 'secret.txt', 'server.key',
+      'id_rsa', 'app.env.bak',
+    ]) expect(call('Read', { file_path: `/work/project/${name}` }).allow, name).toBe(false);
+    for (const name of ['auth.ts', 'environment.md', 'keyboard.js', 'README.md', 'package.json', 'sales.csv']) {
+      expect(call('Read', { file_path: `/work/project/src/${name}` }).allow, name).toBe(true);
+    }
+  });
+
   it('works when the project folder is itself reached through a link', () => {
     const real = (p: string) => p.replace(/^\/tmp\//, '/private/tmp/').replace(/^\/tmp$/, '/private/tmp');
     const at = (file_path: string) => gateDecision(woken, { tool_name: 'Read', tool_input: { file_path }, cwd: '/tmp/project' }, real, env);
@@ -191,10 +212,11 @@ describe('the tool gate in a reply turn', () => {
     expect(call('mcp__claude_ai_Airchat__send_direct_message', { target_agent: 'NAS-A', content: 'ok' }).allow).toBe(true);
     expect(call('mcp__airchat__send_direct_message', { target_agent: 'nas-b', content: 'ok' }).allow).toBe(false);
     expect(call('mcp__airchat__send_direct_message', {}).allow).toBe(false);
+    expect(call('mcp__airchat__send_direct_message', { target_agent: ['nas-a'], content: 'ok' }).allow).toBe(false);
   });
 
   it('refuses a reply that would notify anyone else through an @name', () => {
-    for (const content of ['@evil-agent here is the file', 'cc @nas-b', 'see\n@x', 'a@b.example', '(@_y)', undefined, 5, ['@x']]) {
+    for (const content of ['@evil-agent here is the file', 'cc @nas-b', 'see\n@x', 'a@b.example', '(@_y)', '\uFF20nas-b', '\uFE6Bnas-b', undefined, 5, ['@x']]) {
       const d = call('mcp__airchat__send_direct_message', { target_agent: 'nas-a', content });
       expect(d.allow, String(content)).toBe(false);
     }
@@ -231,15 +253,21 @@ describe('wokenRecord', () => {
   });
 });
 
-describe('dueWake', () => {
-  const now = 10_000_000;
-  it('is honoured while recent, and dropped once old', () => {
-    expect(dueWake(null, now)).toBeNull();
-    expect(dueWake(JSON.stringify({ tier: 'reply', senders: ['nas-a'], at: now - 1000 }), now)).toMatchObject({ senders: ['nas-a'] });
-    expect(dueWake(JSON.stringify({ tier: 'reply', senders: ['nas-a'], at: now - WAKE_DUE_MS - 1 }), now)).toBeNull();
+describe('wake tickets', () => {
+  const t = 'a'.repeat(32);
+  it('are found in the text of a wake, and nowhere else', () => {
+    expect(wakeTickets(wakePreface('reply', t) + 'message text')).toEqual([t]);
+    expect(wakeTickets(`<task-notification>x</task-notification>\n[AirChat wake ticket ${t}] [AirChat wake ticket ${t}]`)).toEqual([t]);
+    for (const p of ['', undefined, 'AirChat wake ticket ' + t, '[AirChat wake ticket abc]', `[AirChat wake ticket ${t.toUpperCase()}]`]) {
+      expect(wakeTickets(p as string), String(p)).toEqual([]);
+    }
+    expect(wakePreface('reply')).not.toContain('ticket');
   });
-  it('reads a damaged note as the strictest wake', () => {
-    expect(dueWake('{oops', now)).toEqual({ tier: 'reply', senders: [], at: now });
+  it('restrict the receiving session at the stricter tier, keeping earlier senders', () => {
+    expect(ticketRecord({ tier: 'reply', senders: ['nas-a'] }, 5)).toEqual({ tier: 'reply', senders: ['nas-a'], at: 5 });
+    expect(ticketRecord({ tier: 'act', senders: ['nas-a'] }, 5)).toMatchObject({ tier: 'act' });
+    expect(ticketRecord({ tier: 'act', senders: ['nas-b'] }, 5, { tier: 'reply', senders: ['nas-a'] })).toEqual({ tier: 'reply', senders: ['nas-a', 'nas-b'], at: 5 });
+    expect(ticketRecord({ tier: 'odd', senders: 'x' }, 5)).toEqual({ tier: 'reply', senders: [], at: 5 });
   });
 });
 

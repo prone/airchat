@@ -7,13 +7,19 @@
 //   sess-<id>.busy     a turn is running (set on a prompt, cleared at Stop)
 //   sess-<id>.woken    this turn was started by a message; holds the tier and
 //                      the senders. Present = the tool gate is on.
-//   sess-<id>.due      a wake was sent and its turn has not started yet
 //   sess-<id>.calls    tool calls allowed so far in this woken turn
 //   sess-<id>.pending  a message arrived mid-turn; show it after the next tool
 //   sess-<id>.waiter   pid of the process waiting for messages
+//
+// Two more kinds of file are not per session:
+//
+//   wake-ticket-<hex>          what one wake stands for (tier, senders), until
+//                              the turn it started picks it up
+//   sess-claude-<pid>.current  the session id a Claude Code process is on now
 
 import { readFileSync, writeFileSync, rmSync, mkdirSync, readdirSync, statSync, appendFileSync, renameSync } from 'fs';
 import { join } from 'path';
+import { randomBytes } from 'crypto';
 import { homedir } from 'os';
 import { cacheDir } from './hook-client.mjs';
 import { hasGateHook } from './wake-lib.mjs';
@@ -97,15 +103,73 @@ export function claimMention(mentionId, sessionId) {
   }
 }
 
+/**
+ * Store what a wake stands for under a new one-time ticket. Returns the
+ * ticket, or null when it could not be stored (then the session is not woken).
+ */
+export function writeTicket(record) {
+  const ticket = randomBytes(16).toString('hex');
+  const file = join(cacheDir, `wake-ticket-${ticket}`);
+  try {
+    mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+    writeFileSync(file, JSON.stringify(record), { flag: 'wx', mode: 0o600 });
+    return readFileSync(file, 'utf-8') === JSON.stringify(record) ? ticket : null;
+  } catch {
+    return null;
+  }
+}
+
+export function dropTicket(ticket) {
+  try { rmSync(join(cacheDir, `wake-ticket-${ticket}`), { force: true }); } catch {}
+}
+
+/**
+ * Use up a ticket. Returns what it stands for, or null when there is no such
+ * ticket. One that is there but cannot be read stands for the strictest wake.
+ */
+export function takeTicket(ticket) {
+  if (!/^[a-f0-9]{32}$/.test(String(ticket))) return null;
+  const file = join(cacheDir, `wake-ticket-${ticket}`);
+  let raw;
+  try {
+    raw = readFileSync(file, 'utf-8');
+  } catch (err) {
+    if (err?.code === 'ENOENT') return null;
+    return { tier: 'reply', senders: [] };
+  }
+  try { rmSync(file, { force: true }); } catch {}
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {}
+  return { tier: 'reply', senders: [] };
+}
+
+/**
+ * Note which session a Claude Code process (the hooks' parent) is on, and read
+ * it back. A waiter left over from before /clear uses this to see that its
+ * session is no longer the one on screen.
+ */
+export function setCurrentSession(claudePid, sessionId) {
+  return setMarker(`claude-${claudePid}`, 'current', sessionId);
+}
+
+export function currentSession(claudePid) {
+  return readMarker(`claude-${claudePid}`, 'current');
+}
+
 /** Count one more allowed tool call in this woken turn; returns the count before it. */
 export function countToolCall(sessionId) {
-  const calls = Number(readMarker(sessionId, 'calls')) || 0;
+  const calls = toolCalls(sessionId);
   if (!setMarker(sessionId, 'calls', String(calls + 1))) throw new Error('tool count not written');
   return calls;
 }
 
+/** Tool calls allowed so far. A count that cannot be read counts as used up. */
 export function toolCalls(sessionId) {
-  return Number(readMarker(sessionId, 'calls')) || 0;
+  const raw = readMarker(sessionId, 'calls');
+  if (raw === null) return 0;
+  return /^\d{1,6}$/.test(raw.trim()) ? Number(raw) : Number.MAX_SAFE_INTEGER;
 }
 
 /**
@@ -140,7 +204,7 @@ export function audit(entry) {
 export function pruneStale(now = Date.now()) {
   try {
     for (const name of readdirSync(cacheDir)) {
-      if (!name.startsWith('sess-') && !name.startsWith('woke-')) continue;
+      if (!name.startsWith('sess-') && !name.startsWith('woke-') && !name.startsWith('wake-ticket-')) continue;
       // A session someone left woken stays restricted however long they are away.
       if (name.endsWith('.woken')) continue;
       const file = join(cacheDir, name);

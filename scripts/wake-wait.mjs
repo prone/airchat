@@ -20,6 +20,7 @@ import { homedir } from 'os';
 import { wakeSettings, wakeCandidates, wakeBudget, wakePreface, wokenRecord, projectFolder, safeSessionId } from './wake-lib.mjs';
 import {
   setMarker, clearMarker, hasMarker, readWoken, claimWaiter, claimMention, gateInstalled, audit, pruneStale, readMarker,
+  writeTicket, dropTicket, setCurrentSession, currentSession,
 } from './wake-session.mjs';
 
 const WAIT_SECONDS = 50;
@@ -37,6 +38,13 @@ if (!client) process.exit(0);
 const settings = wakeSettings(client.config, client.agentName);
 if (!settings.listens) process.exit(0);
 
+// Claude Code starts this script itself, so the parent process is the session
+// on screen. After /clear that process is on a new session id while a waiter
+// for the old one may still be running; noting the id here lets that one see
+// it has been replaced and stop.
+const claudePid = process.ppid;
+setCurrentSession(claudePid, sessionId);
+
 // One waiter per session. Every Stop runs this script; without the claim each
 // turn would leave another process holding a request open.
 if (!claimWaiter(sessionId)) process.exit(0);
@@ -44,7 +52,10 @@ pruneStale();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const started = Date.now();
-const stillMine = () => Number(readMarker(sessionId, 'waiter')) === process.pid;
+const stillMine = () => Number(readMarker(sessionId, 'waiter')) === process.pid
+  // Claude Code has gone, or has moved to another session: nothing to wake.
+  && process.ppid === claudePid
+  && currentSession(claudePid) === sessionId;
 const stateFile = join(cacheDir, `work-state-${client.agentName}.json`);
 const wakeFile = join(cacheDir, `wake-state-${client.agentName}.json`);
 
@@ -65,6 +76,7 @@ async function ask(after) {
  * Returns only when there is nothing to wake for.
  */
 async function onChange() {
+  if (!stillMine()) process.exit(0);
   if (hasMarker(sessionId, 'busy')) {
     setMarker(sessionId, 'pending');
     return;
@@ -90,13 +102,17 @@ async function onChange() {
   if (settings.tier !== 'act' && !projectFolder(hookInput.cwd, homedir())) return skip('session is not in a project folder');
 
   // Mark the session woken BEFORE anything else, and check it took: the gate
-  // reads this file, so a wake without it would be an unrestricted turn.
+  // reads this file, so a wake without it would be an unrestricted turn. The
+  // ticket does the same for the turn the wake starts, whichever session id
+  // it runs under and even if a typed prompt lifts the mark first (see
+  // check-work.mjs).
   const earlier = readMarker(sessionId, 'woken');
   const record = wokenRecord(settings.tier, senders, now, readWoken(sessionId));
-  const marked = setMarker(sessionId, 'due', record) && setMarker(sessionId, 'woken', record)
+  const ticket = writeTicket(record);
+  const marked = ticket !== null && setMarker(sessionId, 'woken', record)
     && readMarker(sessionId, 'woken') === JSON.stringify(record);
   const undo = () => {
-    clearMarker(sessionId, 'due');
+    if (ticket) dropTicket(ticket);
     if (earlier === null) clearMarker(sessionId, 'woken'); else setMarker(sessionId, 'woken', earlier);
   };
   if (!marked) { undo(); return skip('marker not written'); }
@@ -111,7 +127,7 @@ async function onChange() {
   writeJson(wakeFile, { wakes: [...budget.recent, now] });
   audit({ event: 'wake', session: sessionId, agent: client.agentName, tier: settings.tier, senders, messages: candidates.length });
 
-  process.stderr.write(wakePreface(settings.tier) + formatWork({ mentions: candidates }) + '\n');
+  process.stderr.write(wakePreface(settings.tier, ticket) + formatWork({ mentions: candidates }) + '\n');
   process.exit(2);
 }
 

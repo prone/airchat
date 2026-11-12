@@ -2,8 +2,8 @@ import { plan, shouldRequest, normalizeState } from './check-work-plan.mjs';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { openClient, unwrap, cacheDir, readJson, writeJson } from './hook-client.mjs';
-import { safeSessionId, isTypedPrompt, dueWake } from './wake-lib.mjs';
-import { setMarker, clearMarker, readMarker, readWoken, wokenSummary } from './wake-session.mjs';
+import { safeSessionId, isTypedPrompt, wakeTickets, ticketRecord } from './wake-lib.mjs';
+import { setMarker, clearMarker, readWoken, wokenSummary, takeTicket } from './wake-session.mjs';
 
 // check-work.mjs — the "anything for me?" hook.
 //
@@ -33,11 +33,13 @@ const stopHookActive = hookInput.stop_hook_active === true;
 // before anything that can exit early: they have to be right even when the
 // server is unreachable.
 //
-// A wake and a typed prompt can cross: the waiter marks the session woken and
-// sends the wake, the person's prompt lands a moment later and lifts the
-// restriction, and the wake's own turn then starts after theirs. So the
-// waiter also leaves a `due` note, which only the wake's own (not typed)
-// prompt uses up, putting the restriction back for that turn.
+// The waiter marks its session woken before it sends a wake, but that alone
+// is not enough, for two reasons. A wake and a typed prompt can cross: the
+// person's prompt lands a moment after the mark and lifts it, and the wake's
+// own turn starts after theirs. And after /clear the wake of a waiter started
+// under the old session id arrives in a session with a new one. So every wake
+// carries a one-time ticket in its text, and the prompt that delivers it
+// (never a typed one) switches the restriction on for the session it is in.
 const sessionId = safeSessionId(hookInput.session_id);
 let inWokenTurn = false;
 if (sessionId) {
@@ -52,9 +54,13 @@ if (sessionId) {
         if (summary) console.log(summary + '\n');
       }
     } else {
-      const due = dueWake(readMarker(sessionId, 'due'), Date.now());
-      if (due && !readWoken(sessionId)) setMarker(sessionId, 'woken', due);
-      clearMarker(sessionId, 'due');
+      for (const ticket of wakeTickets(hookInput.prompt)) {
+        const record = takeTicket(ticket);
+        if (!record) continue;
+        // If the mark cannot be written, leave one that reads as damaged,
+        // which the gate treats as the strictest wake.
+        if (!setMarker(sessionId, 'woken', ticketRecord(record, Date.now(), readWoken(sessionId)))) setMarker(sessionId, 'woken', '!');
+      }
     }
   } else if (event === 'Stop' || hookInput.source !== 'compact') {
     // SessionStart also fires when a running turn compacts its context; the

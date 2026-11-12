@@ -19,8 +19,6 @@ export const DIRECT_MESSAGES_CHANNEL = 'direct-messages';
 export const MAX_WAKES_PER_HOUR = 6;
 /** Tool calls one woken turn may make before the rest are refused. */
 export const MAX_TOOLS_PER_WAKE = 40;
-/** How long a wake that has not started its turn yet stays owed. */
-export const WAKE_DUE_MS = 30 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 
 const AGENT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,99}$/;
@@ -72,7 +70,8 @@ export function safeSessionId(value) {
  * restriction.
  */
 export function isTypedPrompt(prompt) {
-  const text = String(prompt ?? '').trimStart();
+  // Invisible characters in front of a tag must not make it read as typed.
+  const text = String(prompt ?? '').replace(/^[\s\p{Cc}\p{Cf}]+/u, '');
   if (!text) return false;
   return !/^<[A-Za-z][A-Za-z0-9_-]*[\s>/]/.test(text);
 }
@@ -100,14 +99,47 @@ export function wakeBudget(wakes, now) {
   return { recent, allowed: recent.length < MAX_WAKES_PER_HOUR };
 }
 
+// ── Wake tickets ────────────────────────────────────────────────────────────
+// The waiter knows the session id it was started with, but the turn it starts
+// may run under another one: after /clear the session has a new id while the
+// old waiter is still running. So the restriction cannot be keyed on the
+// waiter's session id alone. Each wake carries a one-time ticket in its first
+// line, the waiter stores what the ticket stands for, and the prompt hook of
+// the turn that receives it switches the restriction on for that session.
+// Message text that imitates a ticket names no stored one and does nothing.
+
+const TICKET_RE = /\[AirChat wake ticket ([a-f0-9]{32})\]/g;
+
+/** The tickets in a prompt nobody typed. */
+export function wakeTickets(prompt) {
+  const found = new Set();
+  for (const match of String(prompt ?? '').matchAll(TICKET_RE)) {
+    found.add(match[1]);
+    if (found.size >= 8) break;
+  }
+  return [...found];
+}
+
+/**
+ * The marker for the session that received a ticket: the ticket's senders
+ * added to any earlier wake's, at the stricter of the two tiers.
+ */
+export function ticketRecord(ticket, now, earlier = null) {
+  const limited = (t) => t !== 'act';
+  const tier = (earlier && limited(earlier.tier)) || limited(ticket?.tier) ? 'reply' : 'act';
+  return wokenRecord(tier, Array.isArray(ticket?.senders) ? ticket.senders : [], now, earlier);
+}
+
 /** What a woken session is told, above the message itself. */
-export function wakePreface(tier) {
+export function wakePreface(tier, ticket = '') {
   const limits = tier === 'act'
     ? 'This session is set to act on such messages with its normal tools.'
     : 'In this turn your tools are limited to reading files in this project and answering the sender on AirChat ' +
       '(send_direct_message to the sender, mark_mentions_read). Other tools are refused; do not look for a way round that. ' +
       'Do not put an @name in your reply: it would notify another agent, so such a reply is refused.';
   return [
+    // First, so it survives if a long notice is ever cut short.
+    ...(ticket ? [`[AirChat wake ticket ${ticket}]`] : []),
     'A direct message arrived on AirChat while this session was idle, and started this turn. No person typed it.',
     limits,
     'If it asks something you can answer, reply to the sender, then call mark_mentions_read. If it only acknowledges or thanks, mark it read and do not reply.',
@@ -125,18 +157,6 @@ export function wokenRecord(tier, senders, now, earlier = null) {
   const kept = Array.isArray(earlier?.senders) ? earlier.senders : [];
   const all = [...kept, ...senders].map((s) => String(s).toLowerCase()).filter((s) => AGENT_NAME_RE.test(s));
   return { tier, senders: [...new Set(all)], at: now };
-}
-
-/**
- * A wake that was sent but whose turn has not started (`due`), if it is still
- * recent enough to honour. See check-work.mjs for why this exists.
- */
-export function dueWake(raw, now) {
-  if (typeof raw !== 'string') return null;
-  let parsed = null;
-  try { parsed = JSON.parse(raw); } catch {}
-  if (!parsed || typeof parsed !== 'object') return { tier: 'reply', senders: [], at: now };
-  return Number.isFinite(parsed.at) && now - parsed.at > WAKE_DUE_MS ? null : parsed;
 }
 
 /**
@@ -169,12 +189,15 @@ const REPLY_PLAIN_TOOLS = new Set(['ToolSearch']);
 // sender that has itself been subverted could otherwise ask for them and have
 // them sent back in the reply. Every dot-file and dot-folder is refused
 // (.env, .git, .mcp.json, .envrc, .vercel, supabase/.temp, ...), and so is any
-// folder or file whose name suggests credentials.
+// folder or file whose name suggests credentials, keys, certificates or a
+// database. The name list is a second line of defence, not a boundary: a
+// secret kept in a file with an ordinary name (config.json) is not caught.
 const SECRET_NAME_RE = new RegExp('^(' + [
   'id_(rsa|dsa|ecdsa|ed25519).*',
-  '.*\\.(pem|key|p12|pfx|keystore|jks|kdbx|ovpn|tfstate|tfvars)(\\..*)?',
-  '.*(secret|credential|password|passwd|token|api[-_]?key|private[-_]?key|service[-_]?account).*',
-  'database\\.ya?ml', 'wp-config\\.php', 'kubeconfig', 'netrc', 'npmrc', 'pypirc',
+  '.*\\.(pem|key|p12|pfx|keystore|jks|kdbx|ovpn|tfstate|tfvars|env|crt|cer|der|sqlite3?|db|sql|dump|bak|keychain|keychain-db)(\\..*)?',
+  '.*(secret|credential|password|passwd|token|api[-_]?key|private[-_]?key|service[-_]?account|kubeconfig).*',
+  'env(\\..*)?', '(auth|keys?|creds?|aws|gcp|azure)\\.(json|ya?ml|toml|ini|cfg|conf)', '.*[-_.]sa\\.json', 'wallet\\..*',
+  'database\\.ya?ml', 'wp-config\\.php', 'netrc', 'npmrc', 'pypirc',
 ].join('|') + ')$', 'i');
 
 // Exact names: another server whose name merely ends in "airchat" is not it.
@@ -250,8 +273,10 @@ export function readablePath(cwd, filePath, realPath, realCwd, home = null) {
  *               { tier, senders: string[] }
  * @param input  the PreToolUse hook input (tool_name, tool_input, cwd)
  * @param realPathOf  resolves symlinks for a path, or returns null
- * @param env    { home, calls }: the user's home folder, and how many tool
- *               calls this woken turn has been allowed so far
+ * @param env    { home, calls, linksOf }: the user's home folder, how many
+ *               tool calls this woken turn has been allowed so far, and a
+ *               function giving the number of names (hard links) a regular
+ *               file has, or null when it is not a regular file
  * @returns {{ allow: boolean, reason?: string }}
  */
 export function gateDecision(woken, input, realPathOf = () => null, env = {}) {
@@ -274,20 +299,29 @@ export function gateDecision(woken, input, realPathOf = () => null, env = {}) {
     const filePath = args.file_path;
     const cwd = String(input?.cwd ?? '');
     const real = typeof filePath === 'string' && filePath ? realPathOf(filePath) : null;
-    return readablePath(cwd, filePath, real, cwd ? realPathOf(cwd) : null, env.home ?? null)
+    if (!readablePath(cwd, filePath, real, cwd ? realPathOf(cwd) : null, env.home ?? null)) {
+      return refuse('that file is outside this project, may hold secrets, or was not given as a full plain path.');
+    }
+    // A hard link is a second name for a file that may really live outside
+    // the project or under a dot or secret name, and resolving the path does
+    // not show it. So only a regular file with exactly one name is read.
+    const links = typeof env.linksOf === 'function' ? env.linksOf(real) : null;
+    return links === 1
       ? { allow: true }
-      : refuse('that file is outside this project, may hold secrets, or was not given as a full plain path.');
+      : refuse('that is not a regular file, or it is hard-linked, so it may be a file from outside this project under another name.');
   }
 
   const airchat = airchatToolName(tool);
   if (airchat && REPLY_AIRCHAT_TOOLS.has(airchat)) {
     if (airchat === 'send_direct_message') {
-      const target = String(args.target_agent ?? '').toLowerCase();
+      const target = typeof args.target_agent === 'string' ? args.target_agent.toLowerCase() : '';
       const senders = Array.isArray(woken.senders) ? woken.senders.map((s) => String(s).toLowerCase()) : [];
       if (!senders.includes(target)) return refuse('a woken turn may only message the agent that woke it.');
       // The server notifies every @name in the text, not only the target, so
       // a reply could otherwise reach (and wake) agents nobody allowed.
-      if (typeof args.content !== 'string' || /@[A-Za-z0-9_-]/.test(args.content)) {
+      // Look-alike @ signs (fullwidth, small) are folded to "@" first, so this
+      // check can never be looser than the server's.
+      if (typeof args.content !== 'string' || /@[A-Za-z0-9_-]/.test(args.content.normalize('NFKC'))) {
         return refuse('a reply from a woken turn may not contain an @name, which would notify another agent. Write the name without the @.');
       }
     }
