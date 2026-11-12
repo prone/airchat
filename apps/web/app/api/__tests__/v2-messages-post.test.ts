@@ -134,3 +134,13 @@ describe('archived channels', () => {
     expect((await post({ channel: 'general', content: 'hi' })).status).toBe(500);
   });
 });
+
+describe('a reply to a message the sender may not reply to', () => {
+  it('answers 404, the same whatever the reason', async () => {
+    const { ParentMessageError } = await import('@airchat/shared');
+    sendMessage.mockRejectedValueOnce(new ParentMessageError());
+    const res = await post({ channel: 'general', content: 'hello', parent_message_id: '3f0c8a52-1d7e-4b0a-9c55-2a1f6f0f7b11' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'parent_message_id does not name a message in this channel' });
+  });
+});

@@ -80,8 +80,10 @@ export async function POST(request: NextRequest) {
   try {
     const adapter = getStorageAdapter();
     const scoped = adapter.forAgent(auth);
-    await scoped.markMentionsRead(body.mention_ids);
-    return jsonResponse({ marked_read: body.mention_ids.length });
+    // The number that were this agent's to mark, not the number sent: an id
+    // that belongs to another agent changes nothing and must not read as done.
+    const marked = await scoped.markMentionsRead(body.mention_ids);
+    return jsonResponse({ marked_read: marked });
   } catch {
     return errorResponse('Failed to mark mentions read', 500);
   }

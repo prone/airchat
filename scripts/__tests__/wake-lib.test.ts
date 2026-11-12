@@ -2,8 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   wakeSettings, isTypedPrompt, wakeCandidates, wakeBudget, gateDecision, readablePath, safeSessionId,
   wokenRecord, wakeTickets, ticketRecord, wakePreface, waiterCurrent, hasGateHook, projectFolder,
-  MAX_WAKES_PER_HOUR, MAX_TOOLS_PER_WAKE,
-} from '../wake-lib.mjs';
+  MAX_WAKES_PER_HOUR, MAX_TOOLS_PER_WAKE, retryPauseMs } from '../wake-lib.mjs';
 
 describe('wakeSettings', () => {
   it('is off unless the config turns it on', () => {
@@ -311,5 +310,18 @@ describe('projectFolder', () => {
   it('rejects the home folder, anything above it, and the root', () => {
     expect(projectFolder('/Users/x/projects/app', '/Users/x')).toBe(true);
     for (const cwd of ['/Users/x', '/Users/x/', '/Users', '/', '', undefined]) expect(projectFolder(cwd as string, '/Users/x'), String(cwd)).toBe(false);
+  });
+});
+
+describe('retryPauseMs', () => {
+  // A waiter told "full, try again in N seconds" pauses and asks again. Told
+  // nothing, it takes the server to have waiting turned off and stops.
+  it.each([
+    ['60', 60_000], ['1', 5000], ['0', 5000], ['3000000', 300_000], [' 30 ', 30_000],
+  ])('pauses for "%s" within 5 seconds to 5 minutes', (header, ms) => {
+    expect(retryPauseMs(header)).toBe(ms);
+  });
+  it.each([null, undefined, '', '-5', 'soon', '1.5', '1e9', '9999999999'])('is null for %s', (header) => {
+    expect(retryPauseMs(header as never)).toBeNull();
   });
 });

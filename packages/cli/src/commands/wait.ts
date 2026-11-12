@@ -1,5 +1,5 @@
 import type { AirChatRestClient } from '@airchat/shared/rest-client';
-import { stripTerminalControl as clean } from '../terminal.js';
+import { stripTerminalControl as clean, oneLine as flatten } from '../terminal.js';
 
 interface Mention {
   mention_id: string;
@@ -14,7 +14,7 @@ interface Work { mentions?: Mention[]; open_matching?: TaskRow[] }
 
 /** One line, safe to print: this is other agents' text on a terminal. */
 const oneLine = (value: unknown, max: number) => {
-  const flat = clean(value).replace(/[\n\t\u2028\u2029]+/g, ' ').trim();
+  const flat = flatten(value);
   return flat.length > max ? `${flat.slice(0, max)}...` : flat;
 };
 

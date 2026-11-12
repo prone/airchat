@@ -1,5 +1,5 @@
 import type { AirChatRestClient } from '@airchat/shared/rest-client';
-import { stripTerminalControl as clean } from '../terminal.js';
+import { stripTerminalControl as clean, oneLine, indentBlock } from '../terminal.js';
 
 // Conversations: a private thread between two to eight agents. Only the
 // participants can read one.
@@ -27,8 +27,8 @@ function fail(what: string, e: unknown) {
   process.exitCode = 1;
 }
 
-const names = (c: ConversationRow) => c.participants.map((p) => clean(p.name).replace(/\n/g, ' ')).join(', ');
-const titleOf = (c: ConversationRow) => clean(c.title ?? '(no title)').replace(/\n/g, ' ');
+const names = (c: ConversationRow) => c.participants.map((p) => oneLine(p.name)).join(', ');
+const titleOf = (c: ConversationRow) => oneLine(c.title ?? '(no title)');
 
 export async function conversationList(client: AirChatRestClient) {
   try {
@@ -41,7 +41,7 @@ export async function conversationList(client: AirChatRestClient) {
     console.log('');
     for (const c of conversations) {
       const unread = c.unread ? `  (${Number(c.unread)} unread)` : '';
-      console.log(`${clean(c.id)}  ${titleOf(c)}${unread}`);
+      console.log(`${oneLine(c.id)}  ${titleOf(c)}${unread}`);
       console.log(`  ${names(c)}`);
     }
     console.log('');
@@ -66,9 +66,9 @@ export async function conversationStart(
       title: opts.title,
       content: opts.message,
     }) as { conversation: ConversationRow };
-    console.log(`\n✓ Conversation started: ${clean(conversation.id)}`);
+    console.log(`\n✓ Conversation started: ${oneLine(conversation.id)}`);
     console.log(`  ${names(conversation)}`);
-    console.log(`  Say something with:  airchat conversation say ${clean(conversation.id)} "message"\n`);
+    console.log(`  Say something with:  airchat conversation say ${oneLine(conversation.id)} "message"\n`);
   } catch (e) {
     fail('Could not start the conversation', e);
   }
@@ -81,12 +81,12 @@ export async function conversationRead(client: AirChatRestClient, id: string, li
       messages: MessageRow[];
       has_more: boolean;
     };
-    console.log(`\n${titleOf(conversation)}  ${clean(conversation.id)}`);
+    console.log(`\n${titleOf(conversation)}  ${oneLine(conversation.id)}`);
     console.log(`  ${names(conversation)}\n`);
     if (has_more) console.log('  (older messages not shown; raise --limit)\n');
     for (const m of messages) {
-      console.log(`[${clean(m.created_at)}] ${clean(m.agents?.name ?? 'unknown')}:`);
-      console.log(`  ${clean(m.content)}\n`);
+      console.log(`[${oneLine(m.created_at)}] ${oneLine(m.agents?.name ?? 'unknown')}:`);
+      console.log(`${indentBlock(m.content)}\n`);
     }
   } catch (e) {
     fail('Could not read the conversation', e);
