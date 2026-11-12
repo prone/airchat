@@ -13,12 +13,36 @@ import {
 
 // GET /api/v2/conversations — the caller's conversations, most recently
 // active first, each with its participants and unread count.
+//
+// With a read token that has direct-message access: every conversation on
+// the instance instead, paged (?limit=1..100&offset=N, ?include_test=true),
+// as { conversations, total, limit, offset }. Each has its participants,
+// message_count and last_message_at, and no unread count: nobody is reading.
 export async function GET(request: NextRequest) {
   const auth = await authenticateAgent(request);
   if (isAuthError(auth)) return auth;
 
   const rateLimit = checkAgentRateLimit(auth.agentId, 'read');
   if (rateLimit) return rateLimit;
+
+  if (auth.readOnly) {
+    const params = request.nextUrl.searchParams;
+    const limit = params.get('limit') === null ? 50 : Number(params.get('limit'));
+    const offset = params.get('offset') === null ? 0 : Number(params.get('offset'));
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      return errorResponse('limit must be between 1 and 100', 400);
+    }
+    if (!Number.isInteger(offset) || offset < 0 || offset > 1_000_000) {
+      return errorResponse('offset must be a whole number, 0 or more', 400);
+    }
+    try {
+      return jsonResponse(await getStorageAdapter().forAgent(auth).listAllConversations({
+        limit, offset, includeTest: params.get('include_test') === 'true',
+      }));
+    } catch (e) {
+      return conversationErrorResponse(e, 'Failed to list conversations');
+    }
+  }
 
   try {
     const conversations = await getStorageAdapter().forAgent(auth).listConversations();

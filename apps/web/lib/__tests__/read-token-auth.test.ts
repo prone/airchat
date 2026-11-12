@@ -96,6 +96,39 @@ describe('what a read token is accepted for', () => {
   });
 });
 
+describe('conversations, for a token with direct-message access', () => {
+  const ID = '3f0c8a52-1d7e-4b0a-9c55-2a1f6f0f7b11';
+  const paths = ['/api/v2/conversations', '/api/v2/conversations?limit=5&offset=10', `/api/v2/conversations/${ID}`, `/api/v2/conversations/${ID}/`];
+
+  it('reads the list and one conversation', async () => {
+    for (const path of paths) {
+      expect(await withToken(path, 'GET', OTHER), path)
+        .toMatchObject({ agentId: 'tok-2', readOnly: true, includeDirectMessages: true });
+    }
+  });
+
+  it('refuses a token without that access, in a way a client can tell from a bad token', async () => {
+    for (const path of paths) {
+      const res = await withToken(path) as NextResponse;
+      expect(res.status, path).toBe(403);
+      expect((await res.json()).code, path).toBe('dm_access_required');
+    }
+    expect(status(await withToken(paths[0], 'GET', 'airchat_ro_' + 'x'.repeat(43)))).toBe(401);
+  });
+
+  it('opens nothing else under conversations, and no write', async () => {
+    for (const path of [`/api/v2/conversations/${ID}/messages`, `/api/v2/conversations/${ID}/participants`,
+      '/api/v2/conversations/mine', `/api/v2/conversations/${ID}/../../work`, '/api/v2/conversationsx', '/api/v2/messages/receipts']) {
+      expect(status(await withToken(path, 'GET', OTHER)), path).toBe(403);
+    }
+    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+      expect(status(await withToken(paths[0], method, OTHER)), method).toBe(403);
+      expect(status(await withToken(paths[2], method, OTHER)), method).toBe(403);
+    }
+    expect(db.lookups).toBe(0);
+  });
+});
+
 describe('what it is refused for', () => {
   it('refuses every write, without even looking the token up', async () => {
     for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
