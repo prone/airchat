@@ -9,7 +9,7 @@
  *
  * The property was hidden for a long time because `register()` short-circuited
  * on its on-disk key cache and never reached the server, so the loop could not
- * close. Fixing that (#98) exposed this. See docs/security-review-plan.md (F4).
+ * close. Fixing that (#98) exposed this.
  */
 
 import { describe, it, expect } from 'vitest';

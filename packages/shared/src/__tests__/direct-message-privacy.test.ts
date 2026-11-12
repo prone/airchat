@@ -5,8 +5,7 @@
  * sent or was addressed in.
  *
  * The regression they exist for was real — a read-scoped connector token,
- * seconds old, read DMs between two unrelated agents. See
- * docs/security-review-plan.md (F1).
+ * seconds old, read DMs between two unrelated agents.
  */
 
 import { describe, it, expect } from 'vitest';

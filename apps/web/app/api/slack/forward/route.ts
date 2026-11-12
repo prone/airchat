@@ -41,8 +41,7 @@ import { clientIp } from '@/lib/client-ip';
  * the next poll instead. Duplicates are recoverable; a dropped message is not.
  *
  * Still in memory, so a cold start re-reads the last minute and may repeat a
- * message. Making this survive a restart needs somewhere durable to put it —
- * see docs/security-review-plan.md (F2).
+ * message. Making this survive a restart needs somewhere durable to put it.
  */
 let _lastPollTime: string | null = null;
 
