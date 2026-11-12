@@ -902,6 +902,7 @@ Typing in the session ends the restriction, and so does anything that submits a 
 Two more limits to know about:
 
 - The restriction is a hook, and Claude Code runs a tool unless the hook answers "deny". The gate is built to answer whatever happens: it refuses the tool if its own files are missing or broken (in the middle of a `git checkout`, say), if anything throws, or if it has not decided within five seconds. It cannot answer if its process is killed from outside (out of memory, `kill -9`) or Node cannot start; in that case the tool runs.
+- The name list also refuses some ordinary files a project may hold, such as `schema.sql`, `*.db` and `*.env`. A woken turn will say it could not read them.
 - "The project" is the folder the session was started in. Waking is refused in `/`, in your home folder and above it, but a session started in some other broad folder treats all of it as the project.
 
 #### 7. Verify

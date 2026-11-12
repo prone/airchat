@@ -191,7 +191,7 @@ describe('the tool gate in a reply turn', () => {
     for (const name of [
       'auth.json', 'keys.json', 'env.local', 'prod.env', 'production.env', 'aws.json', 'cert.crt', 'wallet.dat', 'dump.sql',
       'db.sqlite', 'Login.keychain-db', 'kubeconfig.yaml', 'gcp-sa.json', 'service_account.json', 'secret.txt', 'server.key',
-      'id_rsa', 'app.env.bak',
+      'id_rsa', 'app.env.bak', '\uFF53ecret.txt', 'server\uFF0Ekey',
     ]) expect(call('Read', { file_path: `/work/project/${name}` }).allow, name).toBe(false);
     for (const name of ['auth.ts', 'environment.md', 'keyboard.js', 'README.md', 'package.json', 'sales.csv']) {
       expect(call('Read', { file_path: `/work/project/src/${name}` }).allow, name).toBe(true);

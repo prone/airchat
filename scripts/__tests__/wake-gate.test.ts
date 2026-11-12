@@ -149,6 +149,11 @@ describe('wake-gate.mjs, run as the hook', () => {
     prompt('fresh1', wake);
     expect(runGate(bash('fresh1')).denied).toBe(true);
 
+    // A wake restricts even if it arrives with no tag in front of it.
+    store();
+    prompt('fresh4', `[AirChat wake ticket ${ticket}]\nA direct message arrived`);
+    expect(runGate(bash('fresh4')).denied).toBe(true);
+
     // Text that imitates a ticket, and other prompts nobody typed, do nothing.
     prompt('fresh3', `<task-notification>x</task-notification>[AirChat wake ticket ${'cd'.repeat(16)}]`);
     prompt('fresh3', '<task-notification>a background task finished</task-notification>');

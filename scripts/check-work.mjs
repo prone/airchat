@@ -39,27 +39,27 @@ const stopHookActive = hookInput.stop_hook_active === true;
 // own turn starts after theirs. And after /clear the wake of a waiter started
 // under the old session id arrives in a session with a new one. So every wake
 // carries a one-time ticket in its text, and the prompt that delivers it
-// (never a typed one) switches the restriction on for the session it is in.
+// switches the restriction on for the session it is in.
 const sessionId = safeSessionId(hookInput.session_id);
 let inWokenTurn = false;
 if (sessionId) {
   if (event === 'UserPromptSubmit') {
     setMarker(sessionId, 'busy');
-    if (isTypedPrompt(hookInput.prompt)) {
+    // A prompt that carries a stored ticket is a wake, however it is wrapped:
+    // this does not rely on Claude Code putting a tag in front of it.
+    const tickets = wakeTickets(hookInput.prompt).map(takeTicket).filter(Boolean);
+    for (const record of tickets) {
+      // If the mark cannot be written, leave one that reads as damaged,
+      // which the gate treats as the strictest wake.
+      if (!setMarker(sessionId, 'woken', ticketRecord(record, Date.now(), readWoken(sessionId)))) setMarker(sessionId, 'woken', '!');
+    }
+    if (!tickets.length && isTypedPrompt(hookInput.prompt)) {
       const woken = readWoken(sessionId);
       if (woken) {
         clearMarker(sessionId, 'woken');
         clearMarker(sessionId, 'calls');
         const summary = wokenSummary(sessionId, woken);
         if (summary) console.log(summary + '\n');
-      }
-    } else {
-      for (const ticket of wakeTickets(hookInput.prompt)) {
-        const record = takeTicket(ticket);
-        if (!record) continue;
-        // If the mark cannot be written, leave one that reads as damaged,
-        // which the gate treats as the strictest wake.
-        if (!setMarker(sessionId, 'woken', ticketRecord(record, Date.now(), readWoken(sessionId)))) setMarker(sessionId, 'woken', '!');
       }
     }
   } else if (event === 'Stop' || hookInput.source !== 'compact') {

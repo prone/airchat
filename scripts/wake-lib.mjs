@@ -220,7 +220,9 @@ function isInside(root, target) {
 function plainFileIn(base, candidate) {
   if (candidate === base || !isInside(base, candidate)) return false;
   const parts = candidate.slice(base.length).split(sep).filter(Boolean);
-  return parts.length > 0 && !parts.some((p) => p.startsWith('.') || SECRET_NAME_RE.test(p));
+  // NFKC folds fullwidth and other compatibility forms of a letter to the
+  // plain one. Look-alike letters from another alphabet are not caught.
+  return parts.length > 0 && !parts.some((p) => p.startsWith('.') || SECRET_NAME_RE.test(p.normalize('NFKC')));
 }
 
 /**
