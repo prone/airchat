@@ -21,7 +21,9 @@ import type {
   MentionWithContext,
   ChannelReadCursor,
   Conversation,
+  ConversationMessage,
   ConversationSummary,
+  MessageReceipt,
   ScopedStorageAdapter,
   StorageAdapter,
 } from './storage.js';
@@ -1420,7 +1422,7 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
   async getConversation(
     id: string,
     opts: { limit?: number; before?: string } = {}
-  ): Promise<{ conversation: Conversation; messages: MessageWithAuthor[]; has_more: boolean }> {
+  ): Promise<{ conversation: Conversation; messages: ConversationMessage[]; has_more: boolean }> {
     const conversation = await this.conversationForParticipant(id);
     const cap = Math.max(1, Math.min(opts.limit ?? 50, 200));
 
@@ -1438,12 +1440,69 @@ class SupabaseScopedAdapter implements ScopedStorageAdapter {
 
     const { data, error } = await query;
     if (error) throw new Error(`Failed to read conversation: ${error.message}`);
-    const rows = (data as unknown as MessageWithAuthor[] | null) ?? [];
+    const rows = ((data as unknown as MessageWithAuthor[] | null) ?? []).slice(0, cap).reverse();
+    const hasMore = ((data as unknown[] | null) ?? []).length > cap;
+
+    // Who has marked each message read. Participants see this about each
+    // other. A database without migration 00041 has no read times: the
+    // conversation is still returned, with nobody shown as having seen it.
+    const seen = new Map<string, Array<{ name: string; at: string }>>();
+    if (rows.length > 0) {
+      const { data: reads, error: readsError } = await this.client
+        .from('mentions')
+        .select('message_id, read_at, agents:mentioned_agent_id(name)')
+        .in('message_id', rows.map((m) => m.id))
+        .not('read_at', 'is', null)
+        .order('read_at', { ascending: true });
+      if (!readsError) {
+        for (const r of (reads as unknown as Array<{ message_id: string; read_at: string; agents: { name: string } | null }>) ?? []) {
+          const list = seen.get(r.message_id) ?? [];
+          list.push({ name: r.agents?.name ?? 'unknown', at: r.read_at });
+          seen.set(r.message_id, list);
+        }
+      }
+    }
     return {
       conversation,
-      messages: rows.slice(0, cap).reverse(),
-      has_more: rows.length > cap,
+      messages: rows.map((m) => ({ ...m, seen_by: seen.get(m.id) ?? [] })),
+      has_more: hasMore,
     };
+  }
+
+  async getMessageReceipts(messageIds: string[]): Promise<MessageReceipt[]> {
+    const ids = [...new Set(messageIds)].slice(0, 50);
+    if (ids.length === 0) return [];
+
+    // Only the author is told who has read a message.
+    const { data: mine, error } = await this.client
+      .from('messages')
+      .select('id')
+      .in('id', ids)
+      .eq('author_agent_id', this.ctx.agentId);
+    if (error) throw new Error(`Failed to read receipts: ${error.message}`);
+    const own = ((mine as { id: string }[] | null) ?? []).map((m) => m.id);
+    if (own.length === 0) return [];
+
+    const { data: rows, error: rowsError } = await this.client
+      .from('mentions')
+      .select('message_id, read, read_at, agents:mentioned_agent_id(name)')
+      .in('message_id', own);
+    if (rowsError) throw new Error(`Failed to read receipts: ${rowsError.message}`);
+
+    const byMessage = new Map<string, MessageReceipt['recipients']>(own.map((id) => [id, []]));
+    for (const r of (rows as unknown as Array<{ message_id: string; read: boolean; read_at: string | null; agents: { name: string } | null }>) ?? []) {
+      byMessage.get(r.message_id)?.push({
+        name: r.agents?.name ?? 'unknown',
+        read: r.read === true,
+        read_at: r.read_at ?? null,
+      });
+    }
+    return ids
+      .filter((id) => byMessage.has(id))
+      .map((id) => ({
+        message_id: id,
+        recipients: (byMessage.get(id) ?? []).sort((a, b) => a.name.localeCompare(b.name)),
+      }));
   }
 
   async sendConversationMessage(

@@ -52,6 +52,7 @@ export interface AirChatToolClient {
   markChannelRead(channel: string, through?: string): Promise<unknown>;
   channelReadStatus(channel: string): Promise<unknown>;
   sendDirectMessage(targetAgent: string, content: string): Promise<unknown>;
+  messageReceipts(messageIds: string[]): Promise<unknown>;
   startConversation(
     participants: string[],
     opts?: { title?: string; content?: string },

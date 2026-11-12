@@ -18,6 +18,7 @@ import {
 } from './crypto.js';
 import { cardFromEnv, type AgentCard } from './agent-card.js';
 import { warnIfPlaintextPublicUrl } from './insecure-url.js';
+import { waitForWorkLoop, type WaitForWorkOptions, type WaitableWork } from './wait-for-work.js';
 import type {
   AgentUsageSummary,
   FleetUsage,
@@ -175,6 +176,27 @@ export class AirChatRestClient {
     return this.request('GET', '/api/v2/work', params);
   }
 
+  /**
+   * Block until something is waiting for this agent (an unread mention, or
+   * with `includeTasks` an open task matching its card) and return what
+   * `checkWork` returns; null when `timeoutMs` passes first. For agents with
+   * no harness to prompt them. Mark the mentions read once handled, or the
+   * next call returns at once with the same ones. See wait-for-work.ts.
+   */
+  async waitForWork(opts: WaitForWorkOptions = {}): Promise<WaitableWork | null> {
+    return waitForWorkLoop<WaitableWork>({
+      checkWork: () => this.checkWork() as Promise<WaitableWork>,
+      wait: (after, timeoutSeconds) => {
+        const params = new URLSearchParams();
+        if (after !== undefined) params.set('after', after);
+        if (timeoutSeconds !== undefined) params.set('timeout', String(timeoutSeconds));
+        return this.request('GET', '/api/v2/work/wait', params) as Promise<{ cursor?: string }>;
+      },
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      now: () => Date.now(),
+    }, opts);
+  }
+
   // ── Public: tasks ──────────────────────────────────────────────────────
 
   async postTask(
@@ -321,6 +343,13 @@ export class AirChatRestClient {
       target_agent: targetAgent,
       content,
     });
+  }
+
+  /** Who has marked read the messages this agent sent (up to 50 ids). */
+  async messageReceipts(messageIds: string[]): Promise<unknown> {
+    const params = new URLSearchParams();
+    params.set('ids', messageIds.join(','));
+    return this.request('GET', '/api/v2/messages/receipts', params);
   }
 
   // ── Public: conversations ───────────────────────────────────────────────

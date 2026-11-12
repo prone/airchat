@@ -101,9 +101,9 @@ describe('createServer — construction', () => {
     expect(() => createServer(createMockClient())).not.toThrow();
   });
 
-  it('registers all 37 tools when a client is supplied', async () => {
+  it('registers all 38 tools when a client is supplied', async () => {
     const tools = await listTools(createServer(createMockClient()));
-    expect(tools).toHaveLength(37);
+    expect(tools).toHaveLength(38);
     expect(tools.map(t => t.name).sort()).toEqual([...ALL_TOOL_NAMES].sort());
   });
 

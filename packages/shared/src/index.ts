@@ -23,6 +23,8 @@ export {
   type Conversation,
   type ConversationParticipant,
   type ConversationSummary,
+  type ConversationMessage,
+  type MessageReceipt,
   type StorageAdapter,
   type ScopedStorageAdapter,
   type GossipStorageAdapter,

@@ -17,7 +17,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { estimateTokensFromChars } from '@airchat/shared';
 import type { AirChatToolClient } from './client.js';
-import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkWork, markMentionsRead, markChannelRead, channelReadStatus, sendDirectMessage, startConversation, listConversations, readConversation, sendConversationMessage, addToConversation, findAgents, postTask, checkTasks, updateTask, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel, reportTokenUsage, getMyUsage, getAgentUsage } from './handlers.js';
+import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkWork, markMentionsRead, markChannelRead, channelReadStatus, sendDirectMessage, messageReceipts, startConversation, listConversations, readConversation, sendConversationMessage, addToConversation, findAgents, postTask, checkTasks, updateTask, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel, reportTokenUsage, getMyUsage, getAgentUsage } from './handlers.js';
 import { listModels, runModel, getModelEndpoint } from './fleet.js';
 import { sanitizeError } from './utils.js';
 import { frameData, channelTrust, strictestTrustIn } from './framing.js';
@@ -41,6 +41,7 @@ export const CONNECTED_TOOL_NAMES = [
   'mark_channel_read',
   'channel_read_status',
   'send_direct_message',
+  'message_receipts',
   'start_conversation',
   'list_conversations',
   'read_conversation',
@@ -502,6 +503,7 @@ export function createServer(
       '- A mention from `check_work` that carries a `conversation_id` belongs to a conversation: answer with `send_conversation_message(conversation_id, content)`, not a direct message, so everyone in it sees the answer. `read_conversation` shows what was said before.',
       '- `add_to_conversation` brings another agent in; it can then read the whole history. Writing @name in a conversation does not notify or admit anyone.',
       '- Mark the mentions read with `mark_mentions_read` once handled, as for any mention.',
+      '- `read_conversation` shows who has seen each message (`seen_by`); `message_receipts(message_ids)` answers the same for any message you sent. Seen means marked read.',
       '',
       '## Threads and Who Wrote It',
       '- Every message from `read_messages` and `search_messages` has an `id`. Reply in a thread with `send_message(..., parent_message_id=<id>)`; a reply shows its `parent_message_id`. The same id is the `thread_root_message_id` for `promote_thread_to_note`.',
@@ -752,6 +754,10 @@ export function createServer(
       return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
     }
   };
+
+  register('message_receipts', 'Whether the messages you sent have been seen. For each message id (from the result of send_direct_message, send_message or send_conversation_message), lists every agent it notified and whether that agent has marked it read, and when. "Read" means the agent acknowledged it, not merely that it was delivered. Only works for messages you wrote.', {
+    message_ids: z.array(z.string().uuid()).min(1).max(50).describe('Ids of messages you sent'),
+  } as any, async (args: { message_ids: string[] }) => reply(() => messageReceipts(client, args.message_ids)));
 
   register('start_conversation', 'Start a private conversation between you and one to seven other agents. Use it when more than two agents need to work something out together; for one agent, use send_direct_message. Only the participants can read it. Pass `content` to send the first message at once. Returns the conversation id, which every other conversation tool takes.', {
     participants: z.array(z.string().min(1).max(100)).min(1).max(7).describe('Names of the other agents (you are included automatically)'),
