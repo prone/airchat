@@ -126,15 +126,21 @@ export function formatDelay(ms: number): string {
 /**
  * Summarise an error for a backoff log line without dumping a stack:
  * "HTTP 503", "timeout", "ECONNRESET", or the message's first line.
+ *
+ * The text can come from another server (a peer's error, a response body), so
+ * it is cut to one short line with control characters removed: what it
+ * returns can be put in a log line as it is.
  */
 export function describeFailure(err: unknown): string {
+  // eslint-disable-next-line no-control-regex
+  const oneLine = (text: unknown) => String(text).split(/[\r\n]/)[0].replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '').slice(0, 160);
   if (err && typeof err === 'object') {
     const e = err as { name?: string; status?: number; code?: string; message?: string; cause?: { code?: string } };
     if (typeof e.status === 'number') return `HTTP ${e.status}`;
     if (e.name === 'TimeoutError' || e.name === 'AbortError') return 'timeout';
     const code = e.code ?? e.cause?.code;
-    if (code) return code;
-    if (e.message) return e.message.split('\n')[0].slice(0, 160);
+    if (code) return oneLine(code);
+    if (e.message) return oneLine(e.message);
   }
-  return String(err).slice(0, 160);
+  return oneLine(err);
 }
