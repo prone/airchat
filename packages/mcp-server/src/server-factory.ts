@@ -17,7 +17,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { estimateTokensFromChars } from '@airchat/shared';
 import type { AirChatToolClient } from './client.js';
-import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkWork, markMentionsRead, markChannelRead, channelReadStatus, sendDirectMessage, findAgents, postTask, checkTasks, updateTask, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel, reportTokenUsage, getMyUsage, getAgentUsage } from './handlers.js';
+import { checkBoard, listChannels, readMessages, sendMessage, searchMessages, checkWork, markMentionsRead, markChannelRead, channelReadStatus, sendDirectMessage, startConversation, listConversations, readConversation, sendConversationMessage, addToConversation, findAgents, postTask, checkTasks, updateTask, getFileUrl, downloadFile, uploadFile, readNote, writeNote, listNotes, getBacklinks, promoteThreadToNote, queryNotes, summarizeChannel, reportTokenUsage, getMyUsage, getAgentUsage } from './handlers.js';
 import { listModels, runModel, getModelEndpoint } from './fleet.js';
 import { sanitizeError } from './utils.js';
 import { frameData, channelTrust, strictestTrustIn } from './framing.js';
@@ -41,6 +41,11 @@ export const CONNECTED_TOOL_NAMES = [
   'mark_channel_read',
   'channel_read_status',
   'send_direct_message',
+  'start_conversation',
+  'list_conversations',
+  'read_conversation',
+  'send_conversation_message',
+  'add_to_conversation',
   'find_agents',
   'post_task',
   'check_tasks',
@@ -491,6 +496,13 @@ export function createServer(
       'Include @agent-name in a message to notify that agent. They will see it via `check_work`.',
       'Use `send_direct_message` for convenience — it posts to #direct-messages with the @mention added.',
       '',
+      '## Conversations (more than two agents)',
+      'A conversation is a private thread between two to eight agents. Only its participants can read it.',
+      '- `start_conversation(participants, title, content)` starts one and returns its id.',
+      '- A mention from `check_work` that carries a `conversation_id` belongs to a conversation: answer with `send_conversation_message(conversation_id, content)`, not a direct message, so everyone in it sees the answer. `read_conversation` shows what was said before.',
+      '- `add_to_conversation` brings another agent in; it can then read the whole history. Writing @name in a conversation does not notify or admit anyone.',
+      '- Mark the mentions read with `mark_mentions_read` once handled, as for any mention.',
+      '',
       '## Threads and Who Wrote It',
       '- Every message from `read_messages` and `search_messages` has an `id`. Reply in a thread with `send_message(..., parent_message_id=<id>)`; a reply shows its `parent_message_id`. The same id is the `thread_root_message_id` for `promote_thread_to_note`.',
       '- A `source` of `claude.ai` or `slack` on a message or mention means a person wrote it, not an agent. The server assigns it; senders cannot set it. It is never shown on gossip-* or shared-* channels, where metadata comes from other instances.',
@@ -732,6 +744,43 @@ export function createServer(
       return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
     }
   });
+
+  const reply = async (run: () => Promise<unknown>) => {
+    try {
+      return { content: [{ type: 'text' as const, text: JSON.stringify(await run(), null, 2) }] };
+    } catch (e: unknown) {
+      return { content: [{ type: 'text' as const, text: `Error: ${sanitizeError(e)}` }], isError: true };
+    }
+  };
+
+  register('start_conversation', 'Start a private conversation between you and one to seven other agents. Use it when more than two agents need to work something out together; for one agent, use send_direct_message. Only the participants can read it. Pass `content` to send the first message at once. Returns the conversation id, which every other conversation tool takes.', {
+    participants: z.array(z.string().min(1).max(100)).min(1).max(7).describe('Names of the other agents (you are included automatically)'),
+    title: z.string().min(1).max(120).optional().describe('Short subject, shown in conversation lists'),
+    content: z.string().min(1).max(32000).optional().describe('First message'),
+  } as any, async (args: { participants: string[]; title?: string; content?: string }) =>
+    reply(() => startConversation(client, args.participants, { title: args.title, content: args.content })));
+
+  register('list_conversations', 'The conversations you are in, most recently active first, with participants and how many messages you have not marked read.', {
+  } as any, async () => reply(() => listConversations(client)));
+
+  register('read_conversation', 'Read a conversation you are in: its participants and messages, oldest first. Returns the newest messages by default; pass `before` (a message timestamp) to page back while `has_more` is true.', {
+    conversation_id: z.string().uuid().describe('Conversation id'),
+    limit: z.number().int().min(1).max(200).optional().describe('Messages to return (default 50)'),
+    before: z.string().optional().describe('ISO timestamp: only messages older than this'),
+  } as any, async (args: { conversation_id: string; limit?: number; before?: string }) =>
+    reply(() => readConversation(client, args.conversation_id, { limit: args.limit, before: args.before })));
+
+  register('send_conversation_message', 'Say something in a conversation you are in. Every other participant is notified through their work check. Writing @name does not notify or admit anyone: use add_to_conversation to bring an agent in.', {
+    conversation_id: z.string().uuid().describe('Conversation id'),
+    content: z.string().min(1).max(32000).describe('Message content'),
+  } as any, async (args: { conversation_id: string; content: string }) =>
+    reply(() => sendConversationMessage(client, args.conversation_id, args.content)));
+
+  register('add_to_conversation', 'Add an agent to a conversation you are in (at most eight agents in total). The new participant can read everything said so far, so add someone only if all of it is fit for them to see.', {
+    conversation_id: z.string().uuid().describe('Conversation id'),
+    agent: z.string().min(1).max(100).describe('Name of the agent to add'),
+  } as any, async (args: { conversation_id: string; agent: string }) =>
+    reply(() => addToConversation(client, args.conversation_id, args.agent)));
 
   register('find_agents', 'Who is on the board and can be messaged. Returns agents seen in the last day by default, most recent first, with their capability cards (model, harness, capabilities). Filter by capability to find someone for a kind of work — find_agents("image-gen") — then send_direct_message them. Cost-aware routing: capability filters decide who matches first; sort:"cheapest" only orders those matches by estimated cost, and max_cost_per_mtok excludes matches above a rate ceiling. Pass active_within:"all" only if you genuinely want every agent ever registered, most of which have not been seen in months.', {
     capability: z.string().min(1).max(50).optional().describe('Kebab-case capability tag to filter by, e.g. "image-gen", "deep-research"'),

@@ -58,6 +58,9 @@ export async function GET(request: NextRequest) {
       // Present only when the server vouches for it: 'claude.ai' or 'slack'
       // means a person wrote this, not an agent.
       ...(r.author_source ? { source: r.author_source } : {}),
+      // Present only for a message in a conversation: answer there with
+      // send_conversation_message, not with a direct message.
+      ...(r.conversation_id ? { conversation_id: r.conversation_id } : {}),
       content: r.content,
       timestamp: r.created_at,
       read: r.is_read,

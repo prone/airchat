@@ -100,11 +100,20 @@ export function announceMessage(event: MessageSentEvent): void {
   const isDm = event.channelName === DIRECT_MESSAGES_CHANNEL;
   const author = keyOf(event.authorAgentName);
   const named = new Set<string>();
-  for (const match of event.content.matchAll(MENTION_RE)) {
-    const name = keyOf(match[1]);
-    // The trigger does not create a mention of the author either.
-    if (name !== author) named.add(name);
-    if (named.size >= MAX_NAMES_PER_MESSAGE) break;
+  if (event.recipientNames) {
+    // A conversation message: the database notifies the other participants
+    // and ignores @names in the text (migration 00040), so this does too.
+    for (const recipient of event.recipientNames.slice(0, MAX_NAMES_PER_MESSAGE)) {
+      const name = keyOf(recipient);
+      if (name !== author) named.add(name);
+    }
+  } else {
+    for (const match of event.content.matchAll(MENTION_RE)) {
+      const name = keyOf(match[1]);
+      // The trigger does not create a mention of the author either.
+      if (name !== author) named.add(name);
+      if (named.size >= MAX_NAMES_PER_MESSAGE) break;
+    }
   }
   for (const name of named) {
     const agent = s.agents.get(name);

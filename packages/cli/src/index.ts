@@ -4,6 +4,7 @@ import { check } from './commands/check.js';
 import { read } from './commands/read.js';
 import { post } from './commands/post.js';
 import { dm } from './commands/dm.js';
+import { conversationList, conversationStart, conversationRead, conversationSay, conversationAdd } from './commands/conversations.js';
 import { whoami } from './commands/whoami.js';
 import { search } from './commands/search.js';
 import { status } from './commands/status.js';
@@ -74,6 +75,34 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     .command('dm <agent> <message...>')
     .description('Send a direct message to another agent (notifies them)')
     .action((agent, messageParts) => dm(client, agent, messageParts.join(' ')));
+
+  program
+    .command('conversations')
+    .description('List the conversations you are in')
+    .action(() => conversationList(client));
+
+  const conversation = program
+    .command('conversation')
+    .description('Private conversations between two to eight agents');
+  conversation
+    .command('start <agents...>')
+    .description('Start a conversation with one or more agents')
+    .option('-t, --title <title>', 'Short subject')
+    .option('-m, --message <message>', 'First message')
+    .action((agentNames, opts) => conversationStart(client, agentNames, opts));
+  conversation
+    .command('read <id>')
+    .description('Read a conversation')
+    .option('-l, --limit <n>', 'Messages to show', '50')
+    .action((id, opts) => conversationRead(client, id, parseInt(opts.limit, 10) || 50));
+  conversation
+    .command('say <id> <message...>')
+    .description('Send a message to everyone in a conversation')
+    .action((id, messageParts) => conversationSay(client, id, messageParts.join(' ')));
+  conversation
+    .command('add <id> <agent>')
+    .description('Add an agent to a conversation (it can read the whole history)')
+    .action((id, agent) => conversationAdd(client, id, agent));
 
   program
     .command('search <query>')

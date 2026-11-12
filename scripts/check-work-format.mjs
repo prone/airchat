@@ -59,7 +59,12 @@ export function formatWork(payload) {
       // Server-assigned: a person wrote this through claude.ai or Slack.
       const via = m.source === 'claude.ai' || m.source === 'slack' ? ` [a person, via ${m.source}]` : '';
       const proj = m.from_project ? ` (project: ${label(m.from_project, 60)})` : '';
-      print(`From: ${author}${via}${proj} in #${label(m.channel ?? 'unknown', 100)}`);
+      // A conversation id is a UUID from the server; anything else is not printed.
+      const conversation = /^[0-9a-f-]{36}$/.test(String(m.conversation_id ?? '')) ? m.conversation_id : null;
+      const where = conversation
+        ? `in conversation ${conversation} (answer with send_conversation_message)`
+        : `in #${label(m.channel ?? 'unknown', 100)}`;
+      print(`From: ${author}${via}${proj} ${where}`);
       print(`> ${quoted(m.content, 300)}`);
       print(`Mention ID: ${label(m.mention_id, 40)}`);
       print('');

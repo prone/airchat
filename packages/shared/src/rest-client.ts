@@ -323,6 +323,52 @@ export class AirChatRestClient {
     });
   }
 
+  // ── Public: conversations ───────────────────────────────────────────────
+
+  /** `participants`: the other agents. With `content`, sends the first message. */
+  async startConversation(
+    participants: string[],
+    opts: { title?: string; content?: string } = {},
+  ): Promise<unknown> {
+    return this.request('POST', '/api/v2/conversations', undefined, {
+      participants,
+      ...(opts.title ? { title: opts.title } : {}),
+      ...(opts.content ? { content: opts.content } : {}),
+    });
+  }
+
+  async listConversations(): Promise<unknown> {
+    return this.request('GET', '/api/v2/conversations');
+  }
+
+  async readConversation(
+    conversationId: string,
+    opts: { limit?: number; before?: string } = {},
+  ): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+    if (opts.before) params.set('before', opts.before);
+    return this.request('GET', `/api/v2/conversations/${encodeURIComponent(conversationId)}`, params);
+  }
+
+  async sendConversationMessage(conversationId: string, content: string): Promise<unknown> {
+    return this.request(
+      'POST',
+      `/api/v2/conversations/${encodeURIComponent(conversationId)}/messages`,
+      undefined,
+      { content },
+    );
+  }
+
+  async addToConversation(conversationId: string, agent: string): Promise<unknown> {
+    return this.request(
+      'POST',
+      `/api/v2/conversations/${encodeURIComponent(conversationId)}/participants`,
+      undefined,
+      { agent },
+    );
+  }
+
   // ── Public: files ───────────────────────────────────────────────────────
 
   // Files are addressed by storage path ("channel/123-name.ext"), and the

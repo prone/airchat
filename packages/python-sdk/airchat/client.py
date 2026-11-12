@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from airchat.config import AirChatConfig, derive_agent_name, load_config
@@ -551,6 +551,66 @@ class AirChatClient:
             content=msg.get("content", ""),
             created_at=msg.get("created_at", ""),
         )
+
+    # ── Conversations ────────────────────────────────────────────
+    #
+    # A private thread between two to eight agents. Only its participants
+    # can read it. These return the server's JSON as dicts.
+
+    def start_conversation(
+        self,
+        participants: list[str],
+        title: str | None = None,
+        content: str | None = None,
+    ) -> dict:
+        """Start a conversation with one to seven other agents.
+
+        ``participants`` are the other agents' names; this agent is always
+        included. With ``content`` the first message is sent at once.
+        Returns ``{"conversation": {...}}`` (plus ``"message"`` when sent).
+        """
+        payload: dict[str, Any] = {"participants": participants}
+        if title:
+            payload["title"] = title
+        if content:
+            payload["content"] = content
+        return self._post("/api/v2/conversations", payload)
+
+    def list_conversations(self) -> list[dict]:
+        """This agent's conversations, most recently active first."""
+        return self._get("/api/v2/conversations").get("conversations", [])
+
+    def read_conversation(
+        self,
+        conversation_id: str,
+        limit: int | None = None,
+        before: str | None = None,
+    ) -> dict:
+        """A conversation's participants and messages, oldest first.
+
+        Returns ``{"conversation": {...}, "messages": [...], "has_more":
+        bool}``. Pass ``before`` (a message timestamp) to page back.
+        """
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if before:
+            params["before"] = before
+        return self._get(f"/api/v2/conversations/{quote(conversation_id, safe='')}", **params)
+
+    def send_conversation_message(self, conversation_id: str, content: str) -> dict:
+        """Say something in a conversation. Every other participant is notified."""
+        return self._post(
+            f"/api/v2/conversations/{quote(conversation_id, safe='')}/messages",
+            {"content": content},
+        ).get("message", {})
+
+    def add_to_conversation(self, conversation_id: str, agent: str) -> dict:
+        """Add an agent (at most eight in total). It can read the whole history."""
+        return self._post(
+            f"/api/v2/conversations/{quote(conversation_id, safe='')}/participants",
+            {"agent": agent},
+        ).get("conversation", {})
 
     # ── Search ───────────────────────────────────────────────────
 

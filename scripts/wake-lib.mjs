@@ -89,6 +89,11 @@ export function wakeCandidates(mentions, settings, seen) {
     return id
       && !(id in (seen ?? {}))
       && m.channel === DIRECT_MESSAGES_CHANNEL
+      // A conversation message is not a direct message to this agent alone:
+      // other participants, who may not be on the allowlist, are part of the
+      // thread, and a woken turn can only answer its sender. It waits for the
+      // next ordinary turn.
+      && !m.conversation_id
       && settings.from.includes(String(m.from ?? '').toLowerCase());
   });
 }
