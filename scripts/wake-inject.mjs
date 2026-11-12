@@ -12,7 +12,7 @@ import { openClient, unwrap, cacheDir, readJson, writeJson } from './hook-client
 import { normalizeState } from './check-work-plan.mjs';
 import { formatWork } from './check-work-format.mjs';
 import { safeSessionId } from './wake-lib.mjs';
-import { hasMarker, clearMarker } from './wake-session.mjs';
+import { hasMarker, clearMarker, readWoken } from './wake-session.mjs';
 
 let input = {};
 try { input = JSON.parse(readFileSync(0, 'utf-8')) ?? {}; } catch {}
@@ -21,6 +21,10 @@ if (!sessionId || !hasMarker(sessionId, 'pending')) process.exit(0);
 // A subagent's tool call is not the place to hand the main agent its mail.
 if (input.agent_id) process.exit(0);
 clearMarker(sessionId, 'pending');
+// A turn that a message started is not shown more messages: they could come
+// from anyone, and each one would keep an unattended turn going. They stay
+// unread, for the next wake (allowlisted senders) or for the user.
+if (readWoken(sessionId)) process.exit(0);
 
 try {
   const client = openClient();

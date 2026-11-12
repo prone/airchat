@@ -117,7 +117,14 @@ export function openClient() {
       headers: { 'x-agent-api-key': key },
       signal: AbortSignal.timeout(timeoutMs),
     });
-    let res = await send(await ensureDerivedKey());
+    const used = await ensureDerivedKey();
+    let res = await send(used);
+    if (res.status === 401) {
+      // Another hook process may have registered a new key meanwhile; try
+      // that one before registering yet another and invalidating theirs.
+      const current = loadCachedKey();
+      if (current && current !== used) res = await send(current);
+    }
     if (res.status === 401) {
       try { writeFileSync(keyFilePath, ''); } catch {}
       res = await send(await ensureDerivedKey());

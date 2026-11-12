@@ -2,8 +2,8 @@ import { plan, shouldRequest, normalizeState } from './check-work-plan.mjs';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { openClient, unwrap, cacheDir, readJson, writeJson } from './hook-client.mjs';
-import { safeSessionId, isTypedPrompt } from './wake-lib.mjs';
-import { setMarker, clearMarker, readWoken, wokenSummary } from './wake-session.mjs';
+import { safeSessionId, isTypedPrompt, dueWake } from './wake-lib.mjs';
+import { setMarker, clearMarker, readMarker, readWoken, wokenSummary } from './wake-session.mjs';
 
 // check-work.mjs — the "anything for me?" hook.
 //
@@ -32,20 +32,41 @@ const stopHookActive = hookInput.stop_hook_active === true;
 // hook sees both ends of every turn, so it keeps those two facts. It runs
 // before anything that can exit early: they have to be right even when the
 // server is unreachable.
+//
+// A wake and a typed prompt can cross: the waiter marks the session woken and
+// sends the wake, the person's prompt lands a moment later and lifts the
+// restriction, and the wake's own turn then starts after theirs. So the
+// waiter also leaves a `due` note, which only the wake's own (not typed)
+// prompt uses up, putting the restriction back for that turn.
 const sessionId = safeSessionId(hookInput.session_id);
+let inWokenTurn = false;
 if (sessionId) {
   if (event === 'UserPromptSubmit') {
     setMarker(sessionId, 'busy');
-    const woken = readWoken(sessionId);
-    if (woken && isTypedPrompt(hookInput.prompt)) {
-      clearMarker(sessionId, 'woken');
-      const summary = wokenSummary(sessionId, woken);
-      if (summary) console.log(summary + '\n');
+    if (isTypedPrompt(hookInput.prompt)) {
+      const woken = readWoken(sessionId);
+      if (woken) {
+        clearMarker(sessionId, 'woken');
+        clearMarker(sessionId, 'calls');
+        const summary = wokenSummary(sessionId, woken);
+        if (summary) console.log(summary + '\n');
+      }
+    } else {
+      const due = dueWake(readMarker(sessionId, 'due'), Date.now());
+      if (due && !readWoken(sessionId)) setMarker(sessionId, 'woken', due);
+      clearMarker(sessionId, 'due');
     }
-  } else {
+  } else if (event === 'Stop' || hookInput.source !== 'compact') {
+    // SessionStart also fires when a running turn compacts its context; the
+    // turn is still running then.
     clearMarker(sessionId, 'busy');
   }
+  inWokenTurn = readWoken(sessionId) !== null;
 }
+// At the end of a turn a message started, do not hand it more messages to
+// carry on with: they could be from anyone. The waiter that starts now checks
+// for more from allowlisted senders, within the hourly limit.
+if (event === 'Stop' && inWokenTurn) process.exit(0);
 
 // ── Config, key and agent name ──────────────────────────────────────────────
 const client = openClient();

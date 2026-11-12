@@ -43,12 +43,13 @@ export function mergeEnv(existing: string, entries: Record<string, string>): str
 /**
  * The lines of an existing ~/.airchat/config that setup does not write
  * itself, so re-running setup keeps settings it knows nothing about (wake
- * settings, anything added by hand). Comments and blank lines are dropped.
+ * settings, anything added by hand) and its comments. Blank lines are dropped.
  */
 export function unmanagedConfigLines(existing: string, managedKeys: readonly string[]): string[] {
   return existing.split('\n').filter((line) => {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) return false;
+    if (!trimmed) return false;
+    if (trimmed.startsWith('#')) return true;
     const eq = trimmed.indexOf('=');
     return eq > 0 && !managedKeys.includes(trimmed.slice(0, eq).trim());
   });

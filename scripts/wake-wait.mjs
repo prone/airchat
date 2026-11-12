@@ -16,8 +16,11 @@ import { join } from 'path';
 import { openClient, unwrap, cacheDir, readJson, writeJson } from './hook-client.mjs';
 import { normalizeState } from './check-work-plan.mjs';
 import { formatWork } from './check-work-format.mjs';
-import { wakeSettings, wakeCandidates, wakeBudget, wakePreface, safeSessionId } from './wake-lib.mjs';
-import { setMarker, hasMarker, claimWaiter, claimMention, audit, pruneStale, readMarker } from './wake-session.mjs';
+import { homedir } from 'os';
+import { wakeSettings, wakeCandidates, wakeBudget, wakePreface, wokenRecord, projectFolder, safeSessionId } from './wake-lib.mjs';
+import {
+  setMarker, clearMarker, hasMarker, readWoken, claimWaiter, claimMention, gateInstalled, audit, pruneStale, readMarker,
+} from './wake-session.mjs';
 
 const WAIT_SECONDS = 50;
 // Stop waiting after this long; the next Stop or SessionStart starts another.
@@ -73,25 +76,39 @@ async function onChange() {
   const payload = unwrap(await res.json());
   const state = normalizeState(readJson(stateFile));
   const candidates = wakeCandidates(payload?.mentions, settings, state.seen)
-    .filter((m) => claimMention(m.mention_id));
+    .filter((m) => claimMention(m.mention_id, sessionId));
   if (!candidates.length) return;
 
   const now = Date.now();
   const budget = wakeBudget(readJson(wakeFile, {})?.wakes, now);
   const senders = [...new Set(candidates.map((m) => String(m.from).toLowerCase()))];
-  if (!budget.allowed) {
-    // Over the hourly limit: the message stays unread and is shown when the
-    // user next types, as it would be with waking off.
-    audit({ event: 'wake-skipped', reason: 'hourly limit', session: sessionId, agent: client.agentName, senders });
-    return;
-  }
-  // A turn may have started while this was asking the server.
-  if (hasMarker(sessionId, 'busy')) { setMarker(sessionId, 'pending'); return; }
+  // Not waking leaves the message unread; it is shown when the user next
+  // types, as it would be with waking off.
+  const skip = (reason) => audit({ event: 'wake-skipped', reason, session: sessionId, agent: client.agentName, senders });
+  if (!budget.allowed) return skip('hourly limit');
+  if (settings.tier !== 'act' && !gateInstalled(hookInput.cwd)) return skip('tool gate hook not installed');
+  if (settings.tier !== 'act' && !projectFolder(hookInput.cwd, homedir())) return skip('session is not in a project folder');
 
+  // Mark the session woken BEFORE anything else, and check it took: the gate
+  // reads this file, so a wake without it would be an unrestricted turn.
+  const earlier = readMarker(sessionId, 'woken');
+  const record = wokenRecord(settings.tier, senders, now, readWoken(sessionId));
+  const marked = setMarker(sessionId, 'due', record) && setMarker(sessionId, 'woken', record)
+    && readMarker(sessionId, 'woken') === JSON.stringify(record);
+  const undo = () => {
+    clearMarker(sessionId, 'due');
+    if (earlier === null) clearMarker(sessionId, 'woken'); else setMarker(sessionId, 'woken', earlier);
+  };
+  if (!marked) { undo(); return skip('marker not written'); }
+  // A person may have started a turn while this was asking the server. Their
+  // turn must not be restricted: take the mark back and hand over to
+  // wake-inject.
+  if (hasMarker(sessionId, 'busy')) { undo(); setMarker(sessionId, 'pending'); return; }
+
+  clearMarker(sessionId, 'calls');
   for (const m of candidates) state.seen[String(m.mention_id)] = now;
   writeJson(stateFile, state);
   writeJson(wakeFile, { wakes: [...budget.recent, now] });
-  setMarker(sessionId, 'woken', { tier: settings.tier, senders, at: now });
   audit({ event: 'wake', session: sessionId, agent: client.agentName, tier: settings.tier, senders, messages: candidates.length });
 
   process.stderr.write(wakePreface(settings.tier) + formatWork({ mentions: candidates }) + '\n');
@@ -109,8 +126,10 @@ while (Date.now() - started < MAX_LIFETIME_MS && stillMine()) {
     const first = cursor === null;
     cursor = answer.cursor;
     // The first answer only says where "now" is. Anything already unread is
-    // the Stop hook's to show; it runs alongside this script.
-    if (!first && answer.changed) await onChange();
+    // the Stop hook's to show; it runs alongside this script. The exception
+    // is a session still in a woken state: the Stop hook shows it nothing, so
+    // messages that arrived during the woken turn are looked for here.
+    if (first ? readWoken(sessionId) !== null : answer.changed) await onChange();
   } catch {
     await sleep(backoff);
     backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);

@@ -5,8 +5,9 @@
 // file read and exit. The rules are in wake-lib.mjs.
 
 import { readFileSync, realpathSync } from 'fs';
+import { homedir } from 'os';
 import { safeSessionId, gateDecision } from './wake-lib.mjs';
-import { readWoken, audit } from './wake-session.mjs';
+import { readWoken, audit, toolCalls, countToolCall } from './wake-session.mjs';
 
 const deny = (reason) => console.log(JSON.stringify({
   hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason },
@@ -24,7 +25,9 @@ if (!woken) process.exit(0);
 // refuses the tool: a bug in this script must not open the gate.
 try {
   const realPathOf = (p) => { try { return realpathSync(p); } catch { return null; } };
-  const decision = gateDecision(woken, input, realPathOf);
+  const limited = woken.tier !== 'act';
+  const decision = gateDecision(woken, input, realPathOf, { home: homedir(), calls: limited ? toolCalls(sessionId) : 0 });
+  if (decision.allow && limited) countToolCall(sessionId);
   audit({ event: decision.allow ? 'tool-allowed' : 'tool-refused', session: sessionId, tool: String(input.tool_name ?? '') });
   if (!decision.allow) deny(decision.reason);
 } catch {

@@ -58,7 +58,7 @@ describe('unmanagedConfigLines', () => {
       'AIRCHAT_WAKE_FROM.macbook-docs=nas-a', 'CUSTOM=1 = 2', 'not a setting',
     ].join('\n');
     expect(unmanagedConfigLines(existing, ['MACHINE_NAME', 'AIRCHAT_WEB_URL']))
-      .toEqual(['AIRCHAT_WAKE_FROM.macbook-docs=nas-a', 'CUSTOM=1 = 2']);
+      .toEqual(['# a comment', 'AIRCHAT_WAKE_FROM.macbook-docs=nas-a', 'CUSTOM=1 = 2']);
     expect(unmanagedConfigLines('', ['MACHINE_NAME'])).toEqual([]);
   });
 });

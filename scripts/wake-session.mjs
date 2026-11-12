@@ -7,23 +7,31 @@
 //   sess-<id>.busy     a turn is running (set on a prompt, cleared at Stop)
 //   sess-<id>.woken    this turn was started by a message; holds the tier and
 //                      the senders. Present = the tool gate is on.
+//   sess-<id>.due      a wake was sent and its turn has not started yet
+//   sess-<id>.calls    tool calls allowed so far in this woken turn
 //   sess-<id>.pending  a message arrived mid-turn; show it after the next tool
 //   sess-<id>.waiter   pid of the process waiting for messages
 
-import { readFileSync, writeFileSync, rmSync, mkdirSync, readdirSync, statSync, appendFileSync } from 'fs';
+import { readFileSync, writeFileSync, rmSync, mkdirSync, readdirSync, statSync, appendFileSync, renameSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import { cacheDir } from './hook-client.mjs';
+import { hasGateHook } from './wake-lib.mjs';
 
 const STALE_MS = 7 * 24 * 60 * 60 * 1000;
 const AUDIT_MAX_BYTES = 1024 * 1024;
 
 const fileOf = (sessionId, kind) => join(cacheDir, `sess-${sessionId}.${kind}`);
 
+/** Write a marker. Returns false when it could not be written. */
 export function setMarker(sessionId, kind, value = '') {
   try {
     mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
     writeFileSync(fileOf(sessionId, kind), typeof value === 'string' ? value : JSON.stringify(value), { mode: 0o600 });
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function clearMarker(sessionId, kind) {
@@ -45,8 +53,14 @@ export function hasMarker(sessionId, kind) {
  * the strictest tier: a damaged file must not switch the gate off.
  */
 export function readWoken(sessionId) {
-  const raw = readMarker(sessionId, 'woken');
-  if (raw === null) return null;
+  let raw;
+  try {
+    raw = readFileSync(fileOf(sessionId, 'woken'), 'utf-8');
+  } catch (err) {
+    // Only "no such file" means not woken. A marker that is there but cannot
+    // be read (permissions, a full or failing disk) keeps the gate on.
+    return err?.code === 'ENOENT' ? null : { tier: 'reply', senders: [] };
+  }
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object') return parsed;
@@ -69,16 +83,46 @@ export function claimWaiter(sessionId) {
 
 /**
  * Claim one mention for this session, so two sessions of the same agent are
- * not both woken by the same message. First writer wins.
+ * not both woken by the same message. The first session to ask wins, and
+ * keeps the claim if it asks again (it may have had to put the wake off).
  */
-export function claimMention(mentionId) {
+export function claimMention(mentionId, sessionId) {
+  const file = join(cacheDir, `woke-${String(mentionId).replace(/[^A-Za-z0-9-]/g, '')}`);
   try {
     mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
-    writeFileSync(join(cacheDir, `woke-${String(mentionId).replace(/[^A-Za-z0-9-]/g, '')}`), String(process.pid), { flag: 'wx', mode: 0o600 });
+    writeFileSync(file, sessionId, { flag: 'wx', mode: 0o600 });
     return true;
   } catch {
-    return false;
+    try { return readFileSync(file, 'utf-8') === sessionId; } catch { return false; }
   }
+}
+
+/** Count one more allowed tool call in this woken turn; returns the count before it. */
+export function countToolCall(sessionId) {
+  const calls = Number(readMarker(sessionId, 'calls')) || 0;
+  if (!setMarker(sessionId, 'calls', String(calls + 1))) throw new Error('tool count not written');
+  return calls;
+}
+
+export function toolCalls(sessionId) {
+  return Number(readMarker(sessionId, 'calls')) || 0;
+}
+
+/**
+ * Whether Claude Code is set up to run the tool gate in this project: looks in
+ * the user's settings and the project's for the PreToolUse hook. A settings
+ * source this cannot see (managed settings, a plugin) reads as "no", which
+ * only means the session is not woken.
+ */
+export function gateInstalled(cwd) {
+  const userDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+  const files = [join(userDir, 'settings.json')];
+  if (typeof cwd === 'string' && cwd) {
+    files.push(join(cwd, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.local.json'));
+  }
+  return files.some((file) => {
+    try { return hasGateHook(JSON.parse(readFileSync(file, 'utf-8'))); } catch { return false; }
+  });
 }
 
 /** One line per wake and per tool decision in a woken turn. Never content. */
@@ -86,7 +130,8 @@ export function audit(entry) {
   try {
     mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
     const file = join(cacheDir, 'wake-audit.log');
-    try { if (statSync(file).size > AUDIT_MAX_BYTES) rmSync(file, { force: true }); } catch {}
+    // Keep one older file, so a burst of entries cannot erase the record.
+    try { if (statSync(file).size > AUDIT_MAX_BYTES) renameSync(file, file + '.1'); } catch {}
     appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n', { mode: 0o600 });
   } catch {}
 }
@@ -96,6 +141,8 @@ export function pruneStale(now = Date.now()) {
   try {
     for (const name of readdirSync(cacheDir)) {
       if (!name.startsWith('sess-') && !name.startsWith('woke-')) continue;
+      // A session someone left woken stays restricted however long they are away.
+      if (name.endsWith('.woken')) continue;
       const file = join(cacheDir, name);
       try { if (now - statSync(file).mtimeMs > STALE_MS) rmSync(file, { force: true }); } catch {}
     }
@@ -113,7 +160,9 @@ export function wokenSummary(sessionId, woken) {
   const refused = new Set();
   let wakes = 0;
   try {
-    for (const line of readFileSync(join(cacheDir, 'wake-audit.log'), 'utf-8').split('\n')) {
+    const log = join(cacheDir, 'wake-audit.log');
+    const read = (file) => { try { return readFileSync(file, 'utf-8'); } catch { return ''; } };
+    for (const line of (read(log + '.1') + '\n' + read(log)).split('\n')) {
       if (!line.includes(sessionId)) continue;
       let entry;
       try { entry = JSON.parse(line); } catch { continue; }

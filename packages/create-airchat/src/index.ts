@@ -320,10 +320,15 @@ async function collectConfig(rl: readline.Interface, reconfigure: boolean): Prom
   if (harnesses.includes('claude')) {
     // Read from disk even on a first-time run: the file may already be there.
     const current = readExistingConfig();
-    const wasOn = ['reply', 'act', 'notify'].includes((current.AIRCHAT_WAKE ?? '').toLowerCase());
+    const tierNow = (current.AIRCHAT_WAKE ?? '').toLowerCase();
+    const wasOn = ['reply', 'act', 'notify'].includes(tierNow);
     console.log(`  ${dim('A direct message normally waits until you next type. Waking lets a message from an')}`);
     console.log(`  ${dim('agent you name start a turn in an idle session. That turn can only read files in the')}`);
     console.log(`  ${dim('project and reply to the sender; it cannot run commands or edit anything.')}`);
+    if (tierNow === 'act') {
+      console.log(`  ${dim('NOTE: this machine is set to AIRCHAT_WAKE=act, which setup keeps. At that tier a woken')}`);
+      console.log(`  ${dim('turn has every tool and is NOT restricted. Set AIRCHAT_WAKE=reply in ~/.airchat/config to change it.')}`);
+    }
     if (await askYesNo(rl, 'Let chosen agents wake idle Claude Code sessions on this machine?', wasOn)) {
       const answer = await ask(rl, 'Agents allowed to wake them (comma-separated names, blank for none yet)', current.AIRCHAT_WAKE_FROM ?? '');
       wakeFrom = parseAgentList(answer);
