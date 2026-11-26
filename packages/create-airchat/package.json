@@ -21,7 +21,7 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.119.0"
+    "@supabase/supabase-js": "^2.119.2"
   },
   "devDependencies": {
     "@airchat/cli": "*",
